@@ -1,0 +1,24 @@
+# perf-demo 示例被测应用配置
+# 默认端口 8081；数据库为独立 demo 库（与平台 performance_testor 库分离）
+server:
+  port: 8081
+
+spring:
+  application:
+    name: perf-demo
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/demo?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&createDatabaseIfNotExist=true
+    username: root
+    password: root123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    com.perfdemo: info
