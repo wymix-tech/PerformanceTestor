@@ -73,4 +73,44 @@
   .page-title {
     @apply text-xl font-semibold text-fg-main mb-4 flex items-center gap-2;
   }
+  /* 输入框 / 下拉框（统一深色风格） */
+  .input-text, .input-select, .file-input {
+    @apply bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-fg-main placeholder:text-fg-sub/50 outline-none transition-all;
+  }
+  .input-text:focus, .input-select:focus, .file-input:focus {
+    @apply border-neon-green/50 bg-white/10;
+    box-shadow: 0 0 0 1px rgba(0, 229, 160, 0.2);
+  }
+  .input-select {
+    @apply appearance-none cursor-pointer;
+    background-image: linear-gradient(45deg, transparent 50%, #8A94A6 50%), linear-gradient(135deg, #8A94A6 50%, transparent 50%);
+    background-position: calc(100% - 16px) calc(50% - 2px), calc(100% - 11px) calc(50% - 2px);
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+  }
+  .input-select option {
+    @apply bg-bg-panel text-fg-main;
+  }
+  /* 主按钮：荧光青绿 */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-bg-base bg-neon-green transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+    box-shadow: 0 0 16px rgba(0, 229, 160, 0.3);
+  }
+  .btn-primary:hover:not(:disabled) {
+    box-shadow: 0 0 26px rgba(0, 229, 160, 0.55);
+    transform: translateY(-1px);
+  }
+  /* 调用树背景 */
+  .tree-bg {
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .file-input {
+    @apply cursor-pointer;
+  }
+  .file-input::file-selector-button {
+    @apply mr-3 px-3 py-1.5 rounded-md text-xs text-neon-green bg-white/10 border border-white/15 cursor-pointer transition-colors;
+  }
+  .file-input::file-selector-button:hover {
+    @apply bg-white/15;
+  }
 }
