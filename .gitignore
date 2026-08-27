@@ -1,0 +1,30 @@
+# ===== Java / Maven =====
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+*.war
+
+# ===== 前端 =====
+node_modules/
+dist/
+*.local
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# ===== 运行时日志与临时文件 =====
+logs/
+*.log
+*.pid
+tmp/
+temp/
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+
+# 注意：docs/ 目录为项目中间产出物归档，必须纳入 git 管理，严禁加入忽略列表

@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 8%;
+    --foreground: 213 60% 96%;
+    --card: 222 36% 12%;
+    --card-foreground: 213 60% 96%;
+    --primary: 160 100% 45%;
+    --primary-foreground: 222 47% 8%;
+    --muted: 220 15% 32%;
+    --muted-foreground: 218 14% 60%;
+    --accent: 199 89% 48%;
+    --destructive: 0 84% 60%;
+    --border: 220 20% 22%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html, body, #app {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background-color: #0B1220;
+    color: #E6EDF7;
+    font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 全局滚动条美化 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 229, 160, 0.25);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 229, 160, 0.45);
+  }
+}
+
+@layer components {
+  /* 玻璃拟态卡片 */
+  .glass-card {
+    @apply bg-bg-card/70 backdrop-blur-md border border-white/10 rounded-xl shadow-glass;
+  }
+  /* 关键指标卡：渐变底 + 光晕 */
+  .metric-card {
+    @apply glass-card p-5 relative overflow-hidden transition-all duration-300 hover:-translate-y-1 hover:shadow-neon;
+  }
+  .metric-card::before {
+    content: '';
+    @apply absolute inset-0 opacity-60 pointer-events-none;
+    background: linear-gradient(135deg, rgba(0, 229, 160, 0.12) 0%, rgba(14, 165, 233, 0.06) 50%, transparent 100%);
+  }
+  /* 荧光强调文本 */
+  .neon-text {
+    @apply text-neon-green;
+    text-shadow: 0 0 12px rgba(0, 229, 160, 0.5);
+  }
+  /* 页面标题 */
+  .page-title {
+    @apply text-xl font-semibold text-fg-main mb-4 flex items-center gap-2;
+  }
+}

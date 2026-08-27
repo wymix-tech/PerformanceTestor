@@ -1,0 +1,83 @@
+# =====================================================================
+# PerformanceTestor perf-server 全局配置
+# 多机分离部署关键配置说明：
+#   1. 平台服务器：本文件即平台配置（perf-server + MySQL + 源码存储）
+#   2. 被测服务器：agent 上报地址在 start-agent.sh 的 REPORT_URL 配置
+#   3. 网络：平台→被测（压测端口）、被测→平台（本机 8080 上报端口）、平台→被测库（3306）
+# =====================================================================
+server:
+  port: 8080
+
+spring:
+  application:
+    name: perf-server
+  datasource:
+    # 平台库：存元数据 / 时序指标 / 任务 / 源码索引 / 问题与方案
+    url: jdbc:mysql://127.0.0.1:3306/performance_testor?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&allowMultiQueries=true
+    username: root
+    password: root123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 10000
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.perfserver.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+# ===== 平台业务配置 =====
+perf:
+  # 源码文件存储根目录（平台服务器磁盘）
+  source:
+    storage-dir: /data/perf-source
+    max-file-size-mb: 1        # 单文件上限 MB
+    max-total-size-mb: 200     # 仓库总大小上限 MB
+    max-file-count: 5000       # 仓库文件数上限
+
+  # 压测引擎配置
+  stress:
+    default-engine: http       # http / jmeter
+    max-concurrency: 5000      # 并发上限保护
+    max-duration-sec: 3600     # 时长上限保护
+    qps-sampling-interval-sec: 2  # QPS 采样周期
+    # 压测请求客户端配置
+    connect-timeout-ms: 3000
+    read-timeout-ms: 30000
+
+  # 容量评估与扩容建议
+  capacity:
+    target-p95-ms: 200         # 目标 P95 RT 阈值（容量评估与扩容触发共用）
+    cpu-threshold: 80          # CPU 使用率触发扩容阈值 %
+    error-rate-threshold: 0.05 # 错误率触发阈值
+    thread-pool-usage-threshold: 0.9  # 线程池活跃占比触发阈值
+    full-gc-threshold: 5       # 每分钟 Full GC 次数触发阈值
+    sample-window-min: 30      # 扩容建议分析时间窗口（分钟）
+
+  # AI 大模型配置（OpenAI 兼容 API；无 key 时自动降级规则示例模式）
+  ai:
+    enabled: true
+    base-url: https://api.openai.com/v1
+    api-key: ""
+    model: gpt-4o-mini
+    timeout-sec: 60
+    # 并发限流
+    max-concurrent-requests: 4
+
+  # Agent 上报接口配置
+  agent:
+    # 上报数据落库的采样写入批大小
+    batch-size: 200
+    # 上报缓冲区（agent 侧）上限，超出丢弃旧数据
+    buffer-size: 5000
+
+logging:
+  level:
+    root: info
+    com.perfserver: info
+    com.perfagent: info
+  file:
+    name: logs/perf-server.log

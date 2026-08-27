@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# =====================================================================
+# PerformanceTestor 多机分离部署 - 平台服务器启动脚本
+# 在【平台服务器】上启动 perf-server + perf-web
+# 网络要求：平台 → 被测应用（压测端口）；被测 → 平台（本机 8080 上报端口）
+# =====================================================================
+set -e
+cd "$(dirname "$0")/.."
+mkdir -p logs
+
+SERVER_PORT=${SERVER_PORT:-8080}
+WEB_PORT=${WEB_PORT:-5173}
+MYSQL_HOST=${MYSQL_HOST:-127.0.0.1}
+MYSQL_PORT=${MYSQL_PORT:-3306}
+MYSQL_USER=${MYSQL_USER:-root}
+MYSQL_PASSWORD=${MYSQL_PASSWORD:-root123}
+
+echo "==> [1/3] 初始化数据库"
+if command -v mysql >/dev/null 2>&1; then
+  mysql -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" < sql/init.sql
+else
+  echo "    [WARN] 未找到 mysql 客户端，请手工执行 sql/init.sql"
+fi
+
+echo "==> [2/3] 启动 perf-server（端口 ${SERVER_PORT}，上报接口 /api/agent/report）"
+if [ ! -f perf-server/target/perf-server.jar ]; then
+  echo "    未找到 jar，先构建后端..." && mvn -q package -DskipTests
+fi
+nohup java -jar perf-server/target/perf-server.jar \
+  --server.port=${SERVER_PORT} \
+  --spring.datasource.url="jdbc:mysql://${MYSQL_HOST}:${MYSQL_PORT}/performance_testor?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true" \
+  --spring.datasource.username=${MYSQL_USER} \
+  --spring.datasource.password=${MYSQL_PASSWORD} \
+  > logs/server.log 2>&1 &
+echo "    日志: logs/server.log (PID $!)"
+
+echo "==> [3/3] 启动 perf-web 前端（端口 ${WEB_PORT}）"
+if [ ! -d perf-web/node_modules ]; then
+  echo "    未安装依赖，执行 npm install ..." && (cd perf-web && npm install --registry=https://registry.npmmirror.com)
+fi
+(cd perf-web && nohup npm run dev > ../logs/web.log 2>&1 &)
+echo "    日志: logs/web.log"
+
+sleep 3
+echo "==> 平台启动完成 🎉"
+echo "    Web 后台:   http://<平台服务器IP>:${WEB_PORT}"
+echo "    API 服务:   http://<平台服务器IP>:${SERVER_PORT}/api"
+echo "    被测端 agent 上报地址: http://<平台服务器IP>:${SERVER_PORT}/api/agent/report"
+echo "    请在被测服务器执行 scripts/start-agent.sh 并配置 REPORT_URL 指向本机"
