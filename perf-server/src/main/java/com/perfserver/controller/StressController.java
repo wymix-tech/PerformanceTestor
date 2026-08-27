@@ -66,7 +66,7 @@ public class StressController {
         }
         Map<String, Object> data = new HashMap<>();
         data.put("task", task);
-        data.put("result", stressTaskService.parseResult(task));
+        data.put("result", stressTaskService.parseResultJson(task));
         return ApiResponse.ok(data);
     }
 }

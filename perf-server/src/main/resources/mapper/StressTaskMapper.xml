@@ -41,6 +41,10 @@
         WHERE id = #{id}
     </update>
 
+    <update id="updateResultJson">
+        UPDATE stress_task SET result_json = #{resultJson} WHERE id = #{id}
+    </update>
+
     <sql id="BaseColumns">
         id, task_name, engine_type, target_url, method, concurrency, duration_sec, qps_limit,
         status, result_json, error_msg, create_time, finish_time

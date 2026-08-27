@@ -25,6 +25,9 @@ public interface StressTaskMapper {
     /** 更新为 failed */
     int updateFailed(@Param("id") long id, @Param("errorMsg") String errorMsg);
 
+    /** 更新结果 JSON（容量评估等后续追加字段） */
+    int updateResultJson(@Param("id") long id, @Param("resultJson") String resultJson);
+
     StressTask findById(@Param("id") long id);
 
     /** 任务列表：按状态过滤（空查全部），时间倒序 */

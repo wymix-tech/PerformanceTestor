@@ -1,5 +1,6 @@
 package com.perfserver.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.perfserver.entity.StressSample;
 import com.perfserver.entity.StressTask;
@@ -127,6 +128,19 @@ public class StressTaskService {
             return objectMapper.readValue(task.getResultJson(), StressTaskResult.class);
         } catch (Exception e) {
             log.warn("parse stress result failed, taskId={}", task.getId(), e);
+            return null;
+        }
+    }
+
+    /** 解析压测结果原始 JSON（含 capacity 等追加字段） */
+    public JsonNode parseResultJson(StressTask task) {
+        if (task == null || task.getResultJson() == null || task.getResultJson().isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(task.getResultJson());
+        } catch (Exception e) {
+            log.warn("parse stress result json failed, taskId={}", task.getId(), e);
             return null;
         }
     }
