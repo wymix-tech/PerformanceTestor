@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.SourceRepoMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.SourceRepo">
+        <id column="id" property="id"/>
+        <result column="repo_name" property="repoName"/>
+        <result column="repo_type" property="repoType"/>
+        <result column="source_path" property="sourcePath"/>
+        <result column="status" property="status"/>
+        <result column="file_count" property="fileCount"/>
+        <result column="total_size" property="totalSize"/>
+        <result column="error_msg" property="errorMsg"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO source_repo (repo_name, repo_type, source_path, status, file_count, total_size)
+        VALUES (#{repoName}, #{repoType}, #{sourcePath}, 'importing', 0, 0)
+    </insert>
+
+    <update id="updateStatus">
+        UPDATE source_repo SET status = #{status}, error_msg = #{errorMsg} WHERE id = #{id}
+    </update>
+
+    <update id="updateIndexed">
+        UPDATE source_repo SET status = 'ready', file_count = #{fileCount}, total_size = #{totalSize}
+        WHERE id = #{id}
+    </update>
+
+    <sql id="BaseColumns">
+        id, repo_name, repo_type, source_path, status, file_count, total_size, error_msg, create_time
+    </sql>
+
+    <select id="findById" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/> FROM source_repo WHERE id = #{id} LIMIT 1
+    </select>
+
+    <select id="query" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM source_repo
+        ORDER BY create_time DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

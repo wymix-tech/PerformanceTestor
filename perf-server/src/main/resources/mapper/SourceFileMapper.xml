@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.SourceFileMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.SourceFile">
+        <id column="id" property="id"/>
+        <result column="repo_id" property="repoId"/>
+        <result column="relative_path" property="relativePath"/>
+        <result column="file_name" property="fileName"/>
+        <result column="language" property="language"/>
+        <result column="size" property="size"/>
+        <result column="content_hash" property="contentHash"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <insert id="batchInsert">
+        INSERT INTO source_file (repo_id, relative_path, file_name, language, size, content_hash)
+        VALUES
+        <foreach collection="list" item="f" separator=",">
+            (#{f.repoId}, #{f.relativePath}, #{f.fileName}, #{f.language}, #{f.size}, #{f.contentHash})
+        </foreach>
+    </insert>
+
+    <sql id="BaseColumns">
+        id, repo_id, relative_path, file_name, language, size, content_hash, create_time
+    </sql>
+
+    <select id="findByRepoAndPath" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM source_file
+        WHERE repo_id = #{repoId} AND relative_path = #{relativePath}
+        LIMIT 1
+    </select>
+
+    <select id="listByRepo" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM source_file
+        WHERE repo_id = #{repoId}
+        <if test="prefix != null and prefix != ''">
+            AND relative_path LIKE CONCAT(#{prefix}, '%')
+        </if>
+        ORDER BY relative_path ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findById" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/> FROM source_file WHERE id = #{id} LIMIT 1
+    </select>
+
+    <select id="listByName" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM source_file
+        WHERE repo_id = #{repoId} AND file_name = #{fileName}
+        ORDER BY relative_path ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="listByRepoContains" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM source_file
+        WHERE repo_id = #{repoId} AND relative_path LIKE CONCAT('%', #{keyword}, '%')
+        ORDER BY relative_path ASC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.PerformanceIssueMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.PerformanceIssue">
+        <id column="id" property="id"/>
+        <result column="issue_type" property="issueType"/>
+        <result column="app_name" property="appName"/>
+        <result column="title" property="title"/>
+        <result column="evidence_json" property="evidenceJson"/>
+        <result column="source_repo_id" property="sourceRepoId"/>
+        <result column="source_file_id" property="sourceFileId"/>
+        <result column="line_start" property="lineStart"/>
+        <result column="line_end" property="lineEnd"/>
+        <result column="root_cause" property="rootCause"/>
+        <result column="status" property="status"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO performance_issue (issue_type, app_name, title, evidence_json, source_repo_id,
+                                       source_file_id, line_start, line_end, root_cause, status)
+        VALUES (#{issueType}, #{appName}, #{title}, #{evidenceJson}, #{sourceRepoId},
+                #{sourceFileId}, #{lineStart}, #{lineEnd}, #{rootCause}, 'pending')
+    </insert>
+
+    <update id="updateAnalyzed">
+        UPDATE performance_issue SET root_cause = #{rootCause}, status = 'analyzed' WHERE id = #{id}
+    </update>
+
+    <update id="updateStatus">
+        UPDATE performance_issue SET status = #{status} WHERE id = #{id}
+    </update>
+
+    <sql id="BaseColumns">
+        id, issue_type, app_name, title, evidence_json, source_repo_id, source_file_id,
+        line_start, line_end, root_cause, status, create_time
+    </sql>
+
+    <select id="findById" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/> FROM performance_issue WHERE id = #{id} LIMIT 1
+    </select>
+
+    <select id="query" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM performance_issue
+        <where>
+            <if test="issueType != null and issueType != ''">
+                issue_type = #{issueType}
+            </if>
+            <if test="status != null and status != ''">
+                AND status = #{status}
+            </if>
+        </where>
+        ORDER BY create_time DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>
