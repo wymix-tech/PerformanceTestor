@@ -14,6 +14,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.Semaphore;
 
 /**
@@ -88,6 +89,87 @@ public class LlmClient {
         } finally {
             limiter.release();
         }
+    }
+
+    /**
+     * Function Calling 对话补全：支持多轮消息（system/user/assistant/tool）与工具调用。
+     *
+     * @param messages 完整消息数组（OpenAI 格式 ObjectNode 列表）
+     * @param tools    工具函数定义数组（OpenAI format）
+     * @return 模型回复（含最终 content 与/或 tool_calls）；失败或不可用时返回 null
+     */
+    public ChatResult chatWithTools(List<JsonNode> messages, ArrayNode tools) {
+        if (!available()) {
+            return null;
+        }
+        limiter.acquireUninterruptibly();
+        try {
+            ObjectNode body = objectMapper.createObjectNode();
+            body.put("model", model);
+            body.put("temperature", 0.3);
+            ArrayNode msgArray = body.putArray("messages");
+            messages.forEach(msgArray::add);
+            body.set("tools", tools);
+            body.put("tool_choice", "auto");
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl.replaceAll("/+$", "") + "/chat/completions"))
+                    .timeout(Duration.ofSeconds(timeoutSec))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("llm api error, status={}, body={}", response.statusCode(),
+                        response.body() == null ? "" : response.body().substring(0, Math.min(500, response.body().length())));
+                return null;
+            }
+            JsonNode root = objectMapper.readTree(response.body());
+            JsonNode message = root.path("choices").path(0).path("message");
+            ChatResult result = new ChatResult();
+            result.setContent(message.path("content").asText(null));
+            JsonNode calls = message.path("tool_calls");
+            if (calls.isArray()) {
+                for (JsonNode call : calls) {
+                    ToolCall tc = new ToolCall();
+                    tc.setId(call.path("id").asText());
+                    tc.setName(call.path("function").path("name").asText());
+                    tc.setArguments(call.path("function").path("arguments").asText("{}"));
+                    result.getToolCalls().add(tc);
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            log.warn("llm tool call failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 工具调用结果封装 */
+    public static class ToolCall {
+        private String id;
+        private String name;
+        private String arguments;
+
+        public String getId() { return id; }
+        public void setId(String id) { this.id = id; }
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public String getArguments() { return arguments; }
+        public void setArguments(String arguments) { this.arguments = arguments; }
+    }
+
+    /** 对话结果：最终回复文本 + 模型请求的工具调用列表 */
+    public static class ChatResult {
+        private String content;
+        private List<ToolCall> toolCalls = new java.util.ArrayList<>();
+
+        public String getContent() { return content; }
+        public void setContent(String content) { this.content = content; }
+        public List<ToolCall> getToolCalls() { return toolCalls; }
+        public void setToolCalls(List<ToolCall> toolCalls) { this.toolCalls = toolCalls; }
     }
 
     private String doChat(String system, String user, JsonNode responseSchema) {
