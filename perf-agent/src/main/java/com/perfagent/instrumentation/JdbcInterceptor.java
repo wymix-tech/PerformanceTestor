@@ -61,8 +61,13 @@ public class JdbcInterceptor {
         }
     }
 
-    /** 提取 SQL 文本：优先取 String 参数，否则尝试 toString() */
-    private static String extractSql(String methodName, Object[] args, Object self) {
+    /**
+     * 提取 SQL 文本：优先取 String 参数，否则尝试 toString()。
+     * <p>注意：该方法被 Advice 内联代码引用（enter 方法体会被复制到目标类，
+     * 如 HikariProxyStatement），必须为 public 以免内联后跨类访问私有方法
+     * 触发 IllegalAccessError。
+     */
+    public static String extractSql(String methodName, Object[] args, Object self) {
         if (args != null) {
             for (Object arg : args) {
                 if (arg instanceof String sql && !sql.isBlank()) {
@@ -87,7 +92,8 @@ public class JdbcInterceptor {
         return "<unknown-sql>";
     }
 
-    private static String truncate(String sql) {
+    /** 截断超长 SQL（public：被内联代码调用，见 extractSql 说明） */
+    public static String truncate(String sql) {
         return sql.length() > 2000 ? sql.substring(0, 2000) + "..." : sql;
     }
 }
