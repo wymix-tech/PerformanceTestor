@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.TraceChainMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.TraceChain">
+        <id column="id" property="id"/>
+        <result column="trace_id" property="traceId"/>
+        <result column="app_name" property="appName"/>
+        <result column="root_method" property="rootMethod"/>
+        <result column="trace_json" property="traceJson"/>
+        <result column="total_ms" property="totalMs"/>
+        <result column="start_time" property="startTime"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO trace_chain (trace_id, app_name, root_method, trace_json, total_ms, start_time)
+        VALUES (#{traceId}, #{appName}, #{rootMethod}, #{traceJson}, #{totalMs}, #{startTime})
+        ON DUPLICATE KEY UPDATE
+            root_method = VALUES(root_method),
+            trace_json  = VALUES(trace_json),
+            total_ms    = VALUES(total_ms),
+            start_time  = VALUES(start_time)
+    </insert>
+
+    <sql id="BaseColumns">
+        id, trace_id, app_name, root_method, trace_json, total_ms, start_time
+    </sql>
+
+    <select id="query" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM trace_chain
+        WHERE start_time &gt;= #{start} AND start_time &lt;= #{end}
+        <if test="appName != null and appName != ''">
+            AND app_name = #{appName}
+        </if>
+        <if test="method != null and method != ''">
+            AND root_method LIKE CONCAT('%', #{method}, '%')
+        </if>
+        ORDER BY start_time DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findByTraceId" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM trace_chain
+        WHERE trace_id = #{traceId}
+        LIMIT 1
+    </select>
+
+</mapper>

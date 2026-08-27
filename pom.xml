@@ -82,6 +82,8 @@
                     <configuration>
                         <release>${maven.compiler.release}</release>
                         <encoding>${project.build.sourceEncoding}</encoding>
+                        <!-- 保留方法参数名，供 Spring MVC @RequestParam 反射绑定 -->
+                        <parameters>true</parameters>
                     </configuration>
                 </plugin>
             </plugins>

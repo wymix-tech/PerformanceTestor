@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.AppInstanceMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.AppInstance">
+        <id column="id" property="id"/>
+        <result column="app_name" property="appName"/>
+        <result column="app_host" property="appHost"/>
+        <result column="agent_version" property="agentVersion"/>
+        <result column="status" property="status"/>
+        <result column="last_report_time" property="lastReportTime"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <insert id="upsertByAppName">
+        INSERT INTO app_instance (app_name, app_host, agent_version, status, last_report_time)
+        VALUES (#{appName}, #{appHost}, #{agentVersion}, 1, #{lastReportTime})
+        ON DUPLICATE KEY UPDATE
+            app_host        = VALUES(app_host),
+            agent_version   = VALUES(agent_version),
+            status          = 1,
+            last_report_time = VALUES(last_report_time)
+    </insert>
+
+    <select id="findAll" resultMap="BaseResultMap">
+        SELECT id, app_name, app_host, agent_version, status, last_report_time, create_time
+        FROM app_instance
+        ORDER BY status DESC, last_report_time DESC
+    </select>
+
+    <select id="findByAppName" resultMap="BaseResultMap">
+        SELECT id, app_name, app_host, agent_version, status, last_report_time, create_time
+        FROM app_instance
+        WHERE app_name = #{appName}
+        LIMIT 1
+    </select>
+
+</mapper>
