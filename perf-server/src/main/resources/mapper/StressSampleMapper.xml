@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.StressSampleMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.StressSample">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="sample_time" property="sampleTime"/>
+        <result column="concurrency" property="concurrency"/>
+        <result column="qps" property="qps"/>
+        <result column="p50_ms" property="p50Ms"/>
+        <result column="p95_ms" property="p95Ms"/>
+        <result column="p99_ms" property="p99Ms"/>
+        <result column="error_count" property="errorCount"/>
+    </resultMap>
+
+    <!-- 分区表主键含 sample_time，必须显式写入 -->
+    <insert id="batchInsert">
+        INSERT INTO stress_sample (task_id, sample_time, concurrency, qps, p50_ms, p95_ms, p99_ms, error_count)
+        VALUES
+        <foreach collection="list" item="s" separator=",">
+            (#{s.taskId}, #{s.sampleTime}, #{s.concurrency}, #{s.qps}, #{s.p50Ms}, #{s.p95Ms}, #{s.p99Ms}, #{s.errorCount})
+        </foreach>
+    </insert>
+
+    <sql id="BaseColumns">
+        id, task_id, sample_time, concurrency, qps, p50_ms, p95_ms, p99_ms, error_count
+    </sql>
+
+    <select id="queryByTask" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM stress_sample
+        WHERE task_id = #{taskId}
+        ORDER BY sample_time ASC
+        LIMIT #{limit}
+    </select>
+
+</mapper>
