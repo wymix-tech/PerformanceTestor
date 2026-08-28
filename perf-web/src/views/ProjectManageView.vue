@@ -93,6 +93,9 @@
                 {{ resyncingId === r.id ? '同步中…' : '↻ 重新同步' }}
               </button>
               <button class="text-xs text-neon-blue hover:underline" @click="showFiles(r)">文件</button>
+              <button class="text-xs text-red-400 hover:underline" :disabled="cleaningId === r.id" @click="cleanupData(r)">
+                {{ cleaningId === r.id ? '清理中…' : '清理数据' }}
+              </button>
             </div>
           </div>
         </div>
@@ -269,6 +272,41 @@ async function resyncRepo(r: Record<string, any>) {
     await loadRepos()
   } finally {
     resyncingId.value = 0
+  }
+}
+
+// ===================== 清理历史数据 =====================
+const cleaningId = ref<number>(0)
+async function cleanupData(r: Record<string, any>) {
+  if (!r.appName) {
+    alert('该项目未绑定应用（appName），无法定位历史数据，请先在项目列表绑定应用')
+    return
+  }
+  const ok = window.confirm(
+    `确认清理项目「${r.repoName}」的全部历史数据吗？\n` +
+    `将删除该应用(${r.appName})的压测任务/采样、慢SQL、JVM监控、调用链、性能问题/修复方案、应用实例、数据库连接等数据。\n` +
+    `源码与项目本身保留，此操作不可恢复。`
+  )
+  if (!ok) return
+  cleaningId.value = r.id
+  try {
+    const res = await sourceApi.cleanupData(r.id)
+    const d = (res.data?.deleted || {}) as Record<string, number>
+    const num = (v: unknown) => Number(v || 0)
+    const total =
+      num(d.stressSample) + num(d.stressTask) + num(d.slowSql) +
+      num(d.jvmMetric) + num(d.traceChain) + num(d.performanceIssue) +
+      num(d.fixSuggestion) + num(d.appInstance) + num(d.dbConn)
+    alert(
+      `已清理 ${total} 条历史数据：\n` +
+      `压测 ${num(d.stressTask) + num(d.stressSample)} 条、慢SQL ${num(d.slowSql)} 条、` +
+      `监控 ${num(d.jvmMetric) + num(d.traceChain)} 条、问题 ${num(d.performanceIssue) + num(d.fixSuggestion)} 条`
+    )
+    await loadRepos()
+  } catch (e) {
+    alert('清理失败：' + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    cleaningId.value = 0
   }
 }
 

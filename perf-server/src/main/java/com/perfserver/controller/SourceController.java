@@ -6,6 +6,7 @@ import com.perfserver.entity.PerformanceIssue;
 import com.perfserver.entity.SourceFile;
 import com.perfserver.entity.SourceRepo;
 import com.perfserver.mapper.SourceFileMapper;
+import com.perfserver.service.DataCleanupService;
 import com.perfserver.service.SourceIssueService;
 import com.perfserver.source.SourceFileService;
 import com.perfserver.source.SourceManager;
@@ -38,17 +39,20 @@ public class SourceController {
     private final SourceIssueService sourceIssueService;
     private final com.perfserver.mapper.FixSuggestionMapper suggestionMapper;
     private final com.perfserver.source.EndpointScanner endpointScanner;
+    private final DataCleanupService dataCleanupService;
 
     public SourceController(SourceManager sourceManager, SourceFileService sourceFileService,
                             SourceFileMapper sourceFileMapper, SourceIssueService sourceIssueService,
                             com.perfserver.mapper.FixSuggestionMapper suggestionMapper,
-                            com.perfserver.source.EndpointScanner endpointScanner) {
+                            com.perfserver.source.EndpointScanner endpointScanner,
+                            DataCleanupService dataCleanupService) {
         this.sourceManager = sourceManager;
         this.sourceFileService = sourceFileService;
         this.sourceFileMapper = sourceFileMapper;
         this.sourceIssueService = sourceIssueService;
         this.suggestionMapper = suggestionMapper;
         this.endpointScanner = endpointScanner;
+        this.dataCleanupService = dataCleanupService;
     }
 
     /** 仓库列表 */
@@ -68,6 +72,22 @@ public class SourceController {
     public ApiResponse<Map<String, Object>> resync(@PathVariable long repoId) {
         int indexed = sourceManager.resync(repoId);
         return ApiResponse.ok(Map.of("repoId", repoId, "indexed", indexed));
+    }
+
+    /** 清理项目历史数据：删除该项目（按绑定 appName）关联的压测/慢SQL/监控/问题等全部数据，源码与项目本身保留 */
+    @PostMapping("/repos/{repoId}/cleanup-data")
+    public ApiResponse<Map<String, Object>> cleanupData(@PathVariable long repoId) {
+        SourceRepo repo = sourceManager.getRepo(repoId);
+        String appName = repo.getAppName();
+        if (appName == null || appName.isBlank()) {
+            throw new IllegalArgumentException("项目未绑定应用（appName），无法定位历史数据，请先在项目列表绑定应用");
+        }
+        Map<String, Integer> deleted = dataCleanupService.cleanupByAppName(appName);
+        Map<String, Object> result = new HashMap<>();
+        result.put("repoId", repoId);
+        result.put("appName", appName);
+        result.put("deleted", deleted);
+        return ApiResponse.ok(result);
     }
 
     /** 分支列表（git 仓库专用，fetch 远端后枚举） */
