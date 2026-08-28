@@ -1,0 +1,10 @@
+$: 
+  vscode:
+    - docker:
+        image: cnbcool/default-dev-env:latest
+      services:
+        - vscode
+        - docker
+      stages:
+        - name: entrypoint
+          script: rm -rf ~/.codebuddy && ln -s /workspace/.codebuddy ~/.codebuddy
