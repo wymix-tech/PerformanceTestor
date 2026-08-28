@@ -19,6 +19,8 @@ public class StressTaskRequest {
     private String engineType = "http";
     /** 压测目标 URL */
     private String targetUrl;
+    /** 归属应用（agent 上报应用名，随任务落库，供问题关联） */
+    private String appName;
     /** HTTP 方法（GET/POST/...） */
     private String method = "GET";
     /** 并发数（单档模式） */
@@ -89,6 +91,14 @@ public class StressTaskRequest {
 
     public void setTargetUrl(String targetUrl) {
         this.targetUrl = targetUrl;
+    }
+
+    public String getAppName() {
+        return appName;
+    }
+
+    public void setAppName(String appName) {
+        this.appName = appName;
     }
 
     public String getMethod() {

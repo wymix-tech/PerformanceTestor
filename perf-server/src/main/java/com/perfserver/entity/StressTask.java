@@ -12,6 +12,8 @@ public class StressTask {
     private String engineType;
     private String targetUrl;
     private String method;
+    /** 归属应用（agent 上报应用名，供问题关联与按应用分析） */
+    private String appName;
     private Integer concurrency;
     private Integer durationSec;
     private Integer qpsLimit;
@@ -61,6 +63,14 @@ public class StressTask {
 
     public void setMethod(String method) {
         this.method = method;
+    }
+
+    public String getAppName() {
+        return appName;
+    }
+
+    public void setAppName(String appName) {
+        this.appName = appName;
     }
 
     public Integer getConcurrency() {

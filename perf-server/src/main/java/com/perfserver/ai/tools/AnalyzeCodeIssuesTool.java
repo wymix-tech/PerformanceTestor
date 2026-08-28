@@ -50,7 +50,7 @@ public class AnalyzeCodeIssuesTool extends AbstractAiTool {
                 case "hot_method" -> issue = sourceIssueService.createFromHotMethod(
                         str(args, "appName", null), str(args, "className", ""), str(args, "methodName", ""), repoId);
                 case "stress" -> issue = sourceIssueService.createFromStress(
-                        lng(args, "stressTaskId", 0L), repoId);
+                        lng(args, "stressTaskId", 0L), repoId, str(args, "appName", null));
                 default -> {
                     return error("source 仅支持 slow_sql / hot_method / stress");
                 }

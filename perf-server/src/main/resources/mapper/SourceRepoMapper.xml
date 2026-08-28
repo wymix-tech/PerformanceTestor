@@ -2,11 +2,15 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.perfserver.mapper.SourceRepoMapper">
 
+    <!-- 列表用：不返回 git_token（脱敏），git_user 可展示 -->
     <resultMap id="BaseResultMap" type="com.perfserver.entity.SourceRepo">
         <id column="id" property="id"/>
         <result column="repo_name" property="repoName"/>
         <result column="repo_type" property="repoType"/>
         <result column="source_path" property="sourcePath"/>
+        <result column="branch" property="branch"/>
+        <result column="app_name" property="appName"/>
+        <result column="git_user" property="gitUser"/>
         <result column="status" property="status"/>
         <result column="file_count" property="fileCount"/>
         <result column="total_size" property="totalSize"/>
@@ -14,10 +18,19 @@
         <result column="create_time" property="createTime"/>
     </resultMap>
 
+    <!-- 内部详情用（resync 等需要凭据）：含 git_token，仅 findById 使用 -->
+    <resultMap id="DetailResultMap" type="com.perfserver.entity.SourceRepo" extends="BaseResultMap">
+        <result column="git_token" property="gitToken"/>
+    </resultMap>
+
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO source_repo (repo_name, repo_type, source_path, status, file_count, total_size)
-        VALUES (#{repoName}, #{repoType}, #{sourcePath}, 'importing', 0, 0)
+        INSERT INTO source_repo (repo_name, repo_type, source_path, branch, app_name, git_user, git_token, status, file_count, total_size)
+        VALUES (#{repoName}, #{repoType}, #{sourcePath}, #{branch}, #{appName}, #{gitUser}, #{gitToken}, 'importing', 0, 0)
     </insert>
+
+    <update id="updateAppName">
+        UPDATE source_repo SET app_name = #{appName} WHERE id = #{id}
+    </update>
 
     <update id="updateStatus">
         UPDATE source_repo SET status = #{status}, error_msg = #{errorMsg} WHERE id = #{id}
@@ -28,12 +41,20 @@
         WHERE id = #{id}
     </update>
 
+    <update id="updateBranch">
+        UPDATE source_repo SET branch = #{branch} WHERE id = #{id}
+    </update>
+
     <sql id="BaseColumns">
-        id, repo_name, repo_type, source_path, status, file_count, total_size, error_msg, create_time
+        id, repo_name, repo_type, source_path, branch, app_name, git_user, status, file_count, total_size, error_msg, create_time
     </sql>
 
-    <select id="findById" resultMap="BaseResultMap">
-        SELECT <include refid="BaseColumns"/> FROM source_repo WHERE id = #{id} LIMIT 1
+    <select id="findById" resultMap="DetailResultMap">
+        SELECT <include refid="BaseColumns"/>, git_token FROM source_repo WHERE id = #{id} LIMIT 1
+    </select>
+
+    <select id="findByName" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/> FROM source_repo WHERE repo_name = #{repoName} LIMIT 1
     </select>
 
     <select id="query" resultMap="BaseResultMap">

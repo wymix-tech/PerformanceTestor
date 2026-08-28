@@ -15,6 +15,8 @@ public class TraceNode {
     public String method;
     /** 方法耗时 ms */
     public double costMs;
+    /** 相对根节点开始的偏移 ms（0 = 与根节点同时开始，用于前端时间轴/甘特图定位） */
+    public double offsetMs;
     /** 耗时占父节点/根节点比例（0~100，由平台侧计算或本地计算） */
     public double ratio;
     /** 子调用节点 */
@@ -34,15 +36,6 @@ public class TraceNode {
         return node;
     }
 
-    /** 汇总本节点（含子树）总耗时，用于计算占比 */
-    public double totalCost() {
-        double sum = costMs;
-        for (TraceNode child : children) {
-            sum += child.totalCost();
-        }
-        return sum;
-    }
-
     public String getMethod() {
         return method;
     }
@@ -57,6 +50,14 @@ public class TraceNode {
 
     public void setCostMs(double costMs) {
         this.costMs = costMs;
+    }
+
+    public double getOffsetMs() {
+        return offsetMs;
+    }
+
+    public void setOffsetMs(double offsetMs) {
+        this.offsetMs = offsetMs;
     }
 
     public double getRatio() {

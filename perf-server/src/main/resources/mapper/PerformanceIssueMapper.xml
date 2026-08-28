@@ -28,6 +28,19 @@
         UPDATE performance_issue SET root_cause = #{rootCause}, status = 'analyzed' WHERE id = #{id}
     </update>
 
+    <update id="updateEvidenceJson">
+        UPDATE performance_issue SET evidence_json = #{evidenceJson} WHERE id = #{id}
+    </update>
+
+    <update id="updateLocation">
+        UPDATE performance_issue
+        SET source_repo_id = #{sourceRepoId},
+            source_file_id = #{sourceFileId},
+            line_start = #{lineStart},
+            line_end = #{lineEnd}
+        WHERE id = #{id}
+    </update>
+
     <update id="updateStatus">
         UPDATE performance_issue SET status = #{status} WHERE id = #{id}
     </update>
@@ -45,8 +58,11 @@
         SELECT <include refid="BaseColumns"/>
         FROM performance_issue
         <where>
+            <if test="appName != null and appName != ''">
+                app_name = #{appName}
+            </if>
             <if test="issueType != null and issueType != ''">
-                issue_type = #{issueType}
+                AND issue_type = #{issueType}
             </if>
             <if test="status != null and status != ''">
                 AND status = #{status}

@@ -13,10 +13,16 @@ const routes = [
         meta: { title: '总览' }
       },
       {
+        path: 'projects',
+        name: 'ProjectManage',
+        component: () => import('@/views/ProjectManageView.vue'),
+        meta: { title: '项目管理' }
+      },
+      {
         path: 'jvm',
         name: 'JvmMonitor',
         component: () => import('@/views/JvmMonitorView.vue'),
-        meta: { title: 'JVM 监控' }
+        meta: { title: '项目监控' }
       },
       {
         path: 'trace',
@@ -31,10 +37,10 @@ const routes = [
         meta: { title: '压测中心' }
       },
       {
-        path: 'source',
-        name: 'SourceOptimize',
-        component: () => import('@/views/SourceOptimizeView.vue'),
-        meta: { title: '源码与优化' }
+        path: 'optimize',
+        name: 'Optimize',
+        component: () => import('@/views/OptimizeView.vue'),
+        meta: { title: '性能优化' }
       },
       {
         path: 'ai',

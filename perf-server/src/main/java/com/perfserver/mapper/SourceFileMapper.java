@@ -14,6 +14,9 @@ public interface SourceFileMapper {
 
     int batchInsert(List<SourceFile> list);
 
+    /** 删除仓库全部文件索引（重新同步前清空） */
+    int deleteByRepo(@Param("repoId") long repoId);
+
     /** 按仓库与相对路径精确查询 */
     SourceFile findByRepoAndPath(@Param("repoId") long repoId, @Param("relativePath") String relativePath);
 

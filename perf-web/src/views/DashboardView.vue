@@ -108,7 +108,7 @@ const issues = ref<Array<Record<string, any>>>([])
 const jvmData = ref<Array<Record<string, any>>>([])
 
 const metrics = computed(() => [
-  { label: '接入应用', value: apps.value.length, hint: '已注册实例', icon: Users },
+  { label: '接入项目', value: apps.value.length, hint: '已注册实例', icon: Users },
   { label: '压测任务', value: stressTasks.value.length, hint: '最近任务', icon: Gauge },
   { label: '慢 SQL 数', value: slowSqls.value.length, hint: '近 1 小时', icon: Database },
   { label: '待处理问题', value: issues.value.filter((i) => i.status === 'open').length, hint: '未分析', icon: Bug },

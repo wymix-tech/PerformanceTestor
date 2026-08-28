@@ -126,7 +126,7 @@ public class ReportTool extends AbstractAiTool {
             }
 
             // 5. 性能问题
-            List<PerformanceIssue> issues = sourceIssueService.listIssues(null, null, 20);
+            List<PerformanceIssue> issues = sourceIssueService.listIssues(null, null, null, 20);
             sb.append("## 五、性能问题与修复方案（").append(issues.size()).append(" 条）\n\n");
             if (issues.isEmpty()) {
                 sb.append("> 暂无性能问题记录。\n\n");

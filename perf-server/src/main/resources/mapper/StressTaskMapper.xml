@@ -7,6 +7,7 @@
         <result column="task_name" property="taskName"/>
         <result column="engine_type" property="engineType"/>
         <result column="target_url" property="targetUrl"/>
+        <result column="app_name" property="appName"/>
         <result column="method" property="method"/>
         <result column="concurrency" property="concurrency"/>
         <result column="duration_sec" property="durationSec"/>
@@ -19,9 +20,9 @@
     </resultMap>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO stress_task (task_name, engine_type, target_url, method, concurrency, duration_sec,
+        INSERT INTO stress_task (task_name, engine_type, target_url, app_name, method, concurrency, duration_sec,
                                  qps_limit, status)
-        VALUES (#{taskName}, #{engineType}, #{targetUrl}, #{method}, #{concurrency}, #{durationSec},
+        VALUES (#{taskName}, #{engineType}, #{targetUrl}, #{appName}, #{method}, #{concurrency}, #{durationSec},
                 #{qpsLimit}, 'pending')
     </insert>
 
@@ -46,7 +47,7 @@
     </update>
 
     <sql id="BaseColumns">
-        id, task_name, engine_type, target_url, method, concurrency, duration_sec, qps_limit,
+        id, task_name, engine_type, target_url, app_name, method, concurrency, duration_sec, qps_limit,
         status, result_json, error_msg, create_time, finish_time
     </sql>
 

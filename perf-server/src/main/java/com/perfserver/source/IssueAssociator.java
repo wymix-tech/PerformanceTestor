@@ -14,11 +14,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 检测结果与源码关联定位（三级定位）：
+ * 检测结果与源码关联定位（ORM 无关，多级策略）：
  * <ol>
- *   <li>慢 SQL → 在 Mapper XML 中模糊匹配 SQL 片段，定位 DAO 接口方法</li>
- *   <li>热点方法 → 按类名/方法名在 Java 源码中精确匹配</li>
- *   <li>压测瓶颈 → 按 URL 关联 Controller 的 RequestMapping，再沿调用链定位 Service</li>
+ *   <li>调用方法链定位（首选，ORM 无关）：慢 SQL 等事件携带的方法链按类名/方法名精确匹配</li>
+ *   <li>MyBatis：Mapper XML 模糊匹配 SQL 片段 → DAO 接口方法（仅 MyBatis 项目命中）</li>
+ *   <li>JPA / Hibernate / Spring Data JDBC：SQL 表名 → @Table(name) / @Entity 驼峰推断实体类</li>
+ *   <li>热点方法 → 类名/方法名精确匹配</li>
+ *   <li>压测瓶颈 → URL 关联 Controller 的 RequestMapping</li>
  * </ol>
  */
 @Component
@@ -31,6 +33,7 @@ public class IssueAssociator {
     private final SourceFileMapper sourceFileMapper;
     private final SourceFileService sourceFileService;
     private final SourceManager sourceManager;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
 
     public IssueAssociator(SourceFileMapper sourceFileMapper, SourceFileService sourceFileService,
                            SourceManager sourceManager) {
@@ -54,8 +57,100 @@ public class IssueAssociator {
         }
     }
 
-    /** 慢 SQL 关联：提取 SQL 关键词片段，在 Mapper XML 中匹配 */
-    public IssueLocation associateSlowSql(SourceRepo repo, String sqlText) {
+    /**
+     * 慢 SQL 关联统一入口（ORM 无关，多级兜底）：
+     * <ol>
+     *   <li>调用方法链定位（首选，任何 ORM 均有效：类名/方法名精确匹配业务代码）</li>
+     *   <li>MyBatis Mapper XML 匹配（项目使用 MyBatis 时）</li>
+     *   <li>JPA/Hibernate 实体定位：SQL 表名 → @Table(name) / @Entity 驼峰推断（JPA、Hibernate、
+     *       Spring Data JDBC 等注解式 ORM 通用）</li>
+     * </ol>
+     *
+     * @return 定位结果；三级均未命中返回 null
+     */
+    public IssueLocation associateSlowSqlSmart(SourceRepo repo, String sqlText, String methodChainJson) {
+        IssueLocation loc = associateByMethodChain(repo, methodChainJson);
+        if (loc != null) {
+            return loc;
+        }
+        loc = associateMyBatisXml(repo, sqlText);
+        if (loc != null) {
+            return loc;
+        }
+        return associateByTableEntity(repo, sqlText);
+    }
+
+    /**
+     * JPA / Hibernate / Spring Data JDBC 实体定位：从 SQL 提取表名，
+     * 扫描 Java 源码按「@Table(name = "表名")」精确匹配，未命中再按
+     * 「@Entity + 类名驼峰转下划线 == 表名」推断（JPA 默认命名策略）。
+     */
+    public IssueLocation associateByTableEntity(SourceRepo repo, String sqlText) {
+        String table = extractTableName(sqlText);
+        if (table == null || table.isBlank()) {
+            return null;
+        }
+        String shortTable = table.contains(".") ? table.substring(table.lastIndexOf('.') + 1) : table;
+        List<SourceFile> javaFiles = sourceFileMapper.listByRepoContains(repo.getId(), ".java", 5000)
+                .stream().filter(f -> f.getRelativePath().endsWith(".java")).toList();
+        SourceFile entityFallback = null;
+        for (SourceFile sf : javaFiles) {
+            String content = readSafely(repo, sf);
+            if (content == null) {
+                continue;
+            }
+            // 1) 显式 @Table(name = "t_order")（容忍反引号/单双引号/空白）
+            if (content.matches("(?s).*@Table\\s*\\(\\s*name\\s*=\\s*[\"`']" + Pattern.quote(shortTable) + "[\"`'].*")) {
+                return new IssueLocation(repo.getId(), sf.getId(), 1, Math.min(30, lineCount(content)));
+            }
+            // 2) @Entity + 类名推断（JPA 默认命名策略：类名驼峰转下划线 == 表名）
+            if (entityFallback == null && content.contains("@Entity")) {
+                String className = sf.getFileName().replace(".java", "");
+                if (camelToSnake(className).equals(shortTable)) {
+                    entityFallback = sf;
+                }
+            }
+        }
+        if (entityFallback != null) {
+            return new IssueLocation(repo.getId(), entityFallback.getId(), 1,
+                    Math.min(30, lineCount(readSafely(repo, entityFallback))));
+        }
+        return null;
+    }
+
+    /** 从 SQL 提取主表名（FROM/JOIN/INTO/UPDATE 后），无则返回 null */
+    private String extractTableName(String sql) {
+        if (sql == null || sql.isBlank()) {
+            return null;
+        }
+        Matcher m = Pattern.compile("(?:from|join|into|update)\\s+`?([A-Za-z0-9_.]+)`?", Pattern.CASE_INSENSITIVE)
+                .matcher(sanitize(sql));
+        return m.find() ? m.group(1) : null;
+    }
+
+    /** 复用 DbExplainService 同款清理：剥掉驱动 toString 前缀噪音，定位到 SQL 关键字 */
+    private String sanitize(String sql) {
+        String s = sql.trim();
+        Matcher m = Pattern.compile("(select|insert|update|delete|with)\\s", Pattern.CASE_INSENSITIVE).matcher(s);
+        if (m.find() && m.start() > 0) {
+            s = s.substring(m.start());
+        }
+        return s.trim();
+    }
+
+    /** 驼峰转下划线（JPA 默认命名策略）：OrderInfo → order_info */
+    private static String camelToSnake(String name) {
+        return name.replaceAll("([a-z\\d])([A-Z])", "$1_$2").toLowerCase();
+    }
+
+    private static int lineCount(String content) {
+        return content == null ? 1 : content.split("\n", -1).length;
+    }
+
+    /**
+     * MyBatis 专属关联：提取 SQL 关键词片段，在 Mapper XML 中匹配（仅当项目使用 MyBatis 时命中）。
+     */
+    public IssueLocation associateMyBatisXml(SourceRepo repo, String sqlText) {
         if (sqlText == null || sqlText.isBlank()) {
             return null;
         }
@@ -113,6 +208,47 @@ public class IssueAssociator {
             int[] lines = findMethodLine(content, methodName);
             if (lines != null) {
                 return new IssueLocation(repo.getId(), sf.getId(), lines[0], lines[1]);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 方法链关联：慢 SQL 等事件携带的调用方法链（根 → 叶，如 Controller → Service → Mapper），
+     * 从链尾（最靠近 DB 的方法，即 SQL 执行处）向链首逐个尝试精确定位，
+     * 命中即返回（优先定位 SQL 所在的 DAO/Mapper，其次定位业务 Service/Controller）。
+     *
+     * @param methodChainJson 方法链 JSON 数组，如 ["com.a.OrderController#list","com.a.OrderMapper#select"]
+     */
+    public IssueLocation associateByMethodChain(SourceRepo repo, String methodChainJson) {
+        if (methodChainJson == null || methodChainJson.isBlank()) {
+            return null;
+        }
+        List<String[]> chain = new ArrayList<>();
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(methodChainJson);
+            if (!root.isArray()) {
+                return null;
+            }
+            for (com.fasterxml.jackson.databind.JsonNode n : root) {
+                String m = n.asText("");
+                // 兼容两种格式：agent 上报 "包.类.方法"（最后一个 . 前为类）与 "包.类#方法"
+                int hash = m.lastIndexOf('#');
+                int dot = m.lastIndexOf('.');
+                if (hash > 0) {
+                    chain.add(new String[]{m.substring(0, hash), m.substring(hash + 1)});
+                } else if (dot > 0) {
+                    chain.add(new String[]{m.substring(0, dot), m.substring(dot + 1)});
+                }
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        // 链尾优先：SQL 定义在 DAO/Mapper；接口方法声明行同样可被 findMethodLine 匹配
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            IssueLocation loc = associateHotMethod(repo, chain.get(i)[0], chain.get(i)[1]);
+            if (loc != null) {
+                return loc;
             }
         }
         return null;

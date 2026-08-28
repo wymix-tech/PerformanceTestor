@@ -32,6 +32,11 @@ public class ApiResponse<T> {
         return new ApiResponse<>(1, message, null);
     }
 
+    /** 指定业务错误码的失败响应（如 404 = PROJECT_NOT_FOUND） */
+    public static <T> ApiResponse<T> error(int code, String message) {
+        return new ApiResponse<>(code, message, null);
+    }
+
     public int getCode() {
         return code;
     }

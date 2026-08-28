@@ -22,6 +22,8 @@ public final class TraceContext {
     private static final ThreadLocal<Boolean> SAMPLED = new ThreadLocal<>();
     /** 本次链路 ID（根方法生成，全链路共享） */
     private static final ThreadLocal<String> TRACE_ID = new ThreadLocal<>();
+    /** 根方法进入时间（nanoTime，用于计算各节点相对根节点的开始偏移） */
+    private static final ThreadLocal<Long> ROOT_START = new ThreadLocal<>();
 
     /** 链路 ID 序号生成器 */
     private static final AtomicLong TRACE_SEQ = new AtomicLong(0);
@@ -60,16 +62,20 @@ public final class TraceContext {
         }
         String traceId = nextTraceId();
         TRACE_ID.set(traceId);
+        ROOT_START.set(System.nanoTime());
         Deque<TraceNode> stack = new ArrayDeque<>();
         stack.push(new TraceNode(method));
         STACK.set(stack);
         return traceId;
     }
 
-    /** 方法进入（非根）：若已采样则压栈 */
+    /** 方法进入（非根）：若已采样则压栈，并记录相对根节点的开始偏移 */
     public static void begin(String method) {
         if (SAMPLED.get() == Boolean.TRUE) {
-            STACK.get().push(new TraceNode(method));
+            TraceNode node = new TraceNode(method);
+            Long rootStart = ROOT_START.get();
+            node.offsetMs = rootStart == null ? 0.0 : Math.max(0.0, (System.nanoTime() - rootStart) / 1_000_000.0);
+            STACK.get().push(node);
         }
     }
 
@@ -102,6 +108,7 @@ public final class TraceContext {
         STACK.remove();
         SAMPLED.remove();
         TRACE_ID.remove();
+        ROOT_START.remove();
     }
 
     /** 生成链路 ID */
@@ -112,5 +119,21 @@ public final class TraceContext {
     /** 判断当前线程是否处于采样链路中（供 JDBC 拦截等复用采样标志） */
     public static boolean inSampledContext() {
         return SAMPLED.get() == Boolean.TRUE && STACK.get() != null && !STACK.get().isEmpty();
+    }
+
+    /**
+     * 当前调用方法链快照（根 → 叶方法名列表），供慢 SQL 等事件记录触发链路。
+     * 在业务线程内调用（JDBC 拦截处），直接读取 ThreadLocal 栈，无锁无复制开销之外仅一次遍历。
+     */
+    public static java.util.List<String> currentMethodChain() {
+        Deque<TraceNode> stack = STACK.get();
+        if (stack == null || stack.isEmpty()) {
+            return java.util.List.of();
+        }
+        java.util.List<String> chain = new java.util.ArrayList<>(stack.size());
+        for (java.util.Iterator<TraceNode> it = stack.descendingIterator(); it.hasNext(); ) {
+            chain.add(it.next().method);
+        }
+        return chain;
     }
 }

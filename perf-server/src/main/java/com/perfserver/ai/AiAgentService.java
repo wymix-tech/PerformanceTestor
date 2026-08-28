@@ -211,7 +211,7 @@ public class AiAgentService {
                         m.getYoungGcCount(), m.getFullGcCount(), m.getThreadCount(), m.getCpuUsage());
             }
             if (msg.contains("问题") || msg.contains("修复") || msg.contains("方案")) {
-                List<PerformanceIssue> issues = sourceIssueService.listIssues(null, null, 10);
+                List<PerformanceIssue> issues = sourceIssueService.listIssues(null, null, null, 10);
                 StringBuilder sb = new StringBuilder();
                 sb.append("性能问题列表（演示模式，真实数据）：\n");
                 if (issues.isEmpty()) {

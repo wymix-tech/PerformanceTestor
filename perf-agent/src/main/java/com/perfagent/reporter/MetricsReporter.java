@@ -33,6 +33,8 @@ public class MetricsReporter {
 
     private final String reportUrl;
     private final String appName;
+    /** 目标项目名（平台准入校验键：项目不存在则丢弃数据） */
+    private final String targetProjectName;
     private final int batchSize;
     private final int bufferSize;
 
@@ -48,9 +50,13 @@ public class MetricsReporter {
     private long backoffMs = 1000;
     private static final long MAX_BACKOFF_MS = 60_000;
 
+    /** 平台判定项目不存在 → 永久停报（数据全部丢弃后不再发送） */
+    private final AtomicBoolean stoppedByProjectGate = new AtomicBoolean(false);
+
     public MetricsReporter(AgentConfig config, HttpReporter http) {
         this.reportUrl = config.reportUrl;
         this.appName = config.appName;
+        this.targetProjectName = config.targetProjectName;
         this.batchSize = config.batchSize;
         this.bufferSize = config.bufferSize;
         this.http = http;
@@ -83,8 +89,10 @@ public class MetricsReporter {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("traceId", traceId);
         item.put("appName", app);
+        item.put("targetProjectName", targetProjectName);
         item.put("rootMethod", root.method);
-        item.put("totalMs", root.totalCost());
+        // 链路总耗时 = 根节点自身耗时（父节点耗时已包含子调用，不应逐层相加）
+        item.put("totalMs", root.costMs);
         item.put("startTime", startTimeMs);
         item.put("tree", toTreeMap(root));
         enqueue(traceQueue, item);
@@ -95,20 +103,29 @@ public class MetricsReporter {
         if (!running.get()) {
             return;
         }
+        metric.put("targetProjectName", targetProjectName);
         enqueue(jvmQueue, metric);
     }
 
-    /** 上报一条慢 SQL */
-    public void reportSlowSql(String app, String sql, long costMs, long executeTimeMs) {
+    /** 上报一条慢 SQL（携带触发方法链与目标数据库标识，供源码定位与 EXPLAIN 分析） */
+    public void reportSlowSql(String app, String sql, long costMs, long executeTimeMs,
+                              List<String> methodChain, String dbHost) {
         if (!running.get()) {
             return;
         }
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("appName", app);
+        item.put("targetProjectName", targetProjectName);
         item.put("sqlText", sql);
         item.put("costMs", costMs);
         item.put("source", "jdbc");
         item.put("executeTime", executeTimeMs);
+        if (methodChain != null && !methodChain.isEmpty()) {
+            item.put("methodChain", methodChain);
+        }
+        if (dbHost != null && !dbHost.isBlank()) {
+            item.put("dbHost", dbHost);
+        }
         enqueue(slowSqlQueue, item);
     }
 
@@ -132,11 +149,11 @@ public class MetricsReporter {
         return list;
     }
 
-    /** flush 所有类型队列（定时调用） */
+    /** flush 所有类型队列（定时调用）；项目被平台拒绝后整体停报 */
     private void flushAll() {
-        // 退避期间跳过本轮，避免频繁重试加重网络负担
-        if (backoffMs >= MAX_BACKOFF_MS) {
-            // 长时间失败：检测队列是否为空来重置退避
+        // 项目不存在（平台拒绝）：停止上报，避免无效重试与流量
+        if (stoppedByProjectGate.get()) {
+            return;
         }
         boolean okTrace = flush(TYPE_TRACE, traceQueue);
         boolean okJvm = flush(TYPE_JVM, jvmQueue);
@@ -146,9 +163,9 @@ public class MetricsReporter {
         }
     }
 
-    /** 发送单个类型队列，成功返回 true，失败进入退避 */
+    /** 发送单个类型队列，成功返回 true，失败进入退避；平台判定项目不存在则永久停报 */
     private boolean flush(String type, Deque<Map<String, Object>> queue) {
-        if (backoffMs >= MAX_BACKOFF_MS) {
+        if (backoffMs >= MAX_BACKOFF_MS || stoppedByProjectGate.get()) {
             return false;
         }
         List<Map<String, Object>> items;
@@ -164,11 +181,26 @@ public class MetricsReporter {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", type);
         body.put("appName", appName);
+        body.put("targetProjectName", targetProjectName);
         body.put("items", items);
 
-        boolean ok = http.postJson(reportUrl, JsonUtil.serialize(body));
-        if (!ok) {
-            // 失败：数据已取出即丢弃（避免内存无限增长），进入指数退避
+        HttpReporter.PostResult result = http.postJson(reportUrl, JsonUtil.serialize(body));
+        if (!result.ok()) {
+            // 平台明确告知项目不存在（业务拒绝，body 含关键字）：清空队列并永久停报
+            String respBody = result.body() == null ? "" : result.body();
+            if (respBody.contains("项目不存在") || respBody.contains("PROJECT_NOT_FOUND")) {
+                stoppedByProjectGate.set(true);
+                synchronized (this) {
+                    traceQueue.clear();
+                    jvmQueue.clear();
+                    slowSqlQueue.clear();
+                }
+                System.err.println("[perf-agent] 平台不存在项目「" + targetProjectName
+                        + "」，上报数据被全部丢弃，agent 已停止上报。"
+                        + "请核对启动参数 targetProjectName 与平台「源码仓库」中的项目名是否一致。");
+                return false;
+            }
+            // 普通失败：数据已取出即丢弃（避免内存无限增长），进入指数退避
             backoffMs = Math.min(MAX_BACKOFF_MS, backoffMs * 2);
             try {
                 Thread.sleep(Math.min(backoffMs, 2000));
@@ -176,14 +208,15 @@ public class MetricsReporter {
                 Thread.currentThread().interrupt();
             }
         }
-        return ok;
+        return result.ok();
     }
 
-    /** TraceNode 树转 Map（便于 JSON 序列化，含每层耗时占比） */
+    /** TraceNode 树转 Map（便于 JSON 序列化，含每层耗时占比与开始偏移） */
     private static Map<String, Object> toTreeMap(TraceNode node) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("method", node.method);
         map.put("costMs", node.costMs);
+        map.put("offsetMs", round(node.offsetMs));
         map.put("ratio", round(node.ratio));
         if (!node.children.isEmpty()) {
             List<Object> children = new ArrayList<>();

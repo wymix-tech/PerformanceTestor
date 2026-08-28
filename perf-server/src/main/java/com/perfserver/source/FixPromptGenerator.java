@@ -55,6 +55,8 @@ public class FixPromptGenerator {
             throw new IllegalArgumentException("方案不存在或不属于该问题: " + suggestionId);
         }
         String md = buildMarkdown(issue, suggestion);
+        // 先清除该问题下其他方案的选定状态，保证同一问题只能有一个选定方案（单选）
+        suggestionMapper.clearSelectedByIssue(issueId);
         suggestionMapper.updateSelected(suggestionId, 1);
         suggestionMapper.updatePromptMd(suggestionId, md);
         return md;
@@ -87,15 +89,16 @@ public class FixPromptGenerator {
                             .append(snippet).append("```\n\n");
                 }
             } catch (IOException e) {
-                sb.append("（源码片段读取失败）\n\n");
+                sb.append("（源码片段读取失败：仓库路径不存在或文件已被删除，请确认源码仓库仍可访问。原因：")
+                        .append(e.getMessage()).append("）\n\n");
             }
         }
 
         sb.append("## 5. 建议修改\n\n");
         sb.append("目标文件：\n\n");
-        sb.append("- ").append(formatJson(suggestion.getFilesJson())).append("\n\n");
+        sb.append("- ").append(formatList(suggestion.getFilesJson(), "file", "path", "name")).append("\n\n");
         sb.append("修改点：\n\n");
-        sb.append("- ").append(formatJson(suggestion.getChangesJson())).append("\n\n");
+        sb.append("- ").append(formatList(suggestion.getChangesJson(), "point", "change", "desc", "description", "code")).append("\n\n");
         if (suggestion.getCodeChangesJson() != null && !suggestion.getCodeChangesJson().isBlank()
                 && !"[]".equals(suggestion.getCodeChangesJson())) {
             sb.append("关键代码改动：\n\n```json\n")
@@ -114,27 +117,68 @@ public class FixPromptGenerator {
         return sb.toString();
     }
 
-    private String formatJson(String json) {
+    /**
+     * 通用 JSON 数组格式化：兼容对象数组（按 valueKeys 优先级提取文本）与字符串数组。
+     * 含 file 键时输出「`file`（action）」格式，其余取第一个命中的文本字段。
+     */
+    private String formatList(String json, String... valueKeys) {
         if (json == null || json.isBlank()) {
             return "待确认";
         }
         try {
             JsonNode node = objectMapper.readTree(json);
+            StringBuilder sb = new StringBuilder();
             if (node.isArray()) {
-                StringBuilder sb = new StringBuilder();
                 for (JsonNode item : node) {
-                    String file = item.path("file").asText();
-                    String action = item.path("action").asText();
-                    sb.append("`").append(file).append("`（").append(action).append("）；");
+                    String text = itemText(item, valueKeys);
+                    if (!text.isBlank()) {
+                        sb.append(text).append("；");
+                    }
                 }
                 if (sb.length() > 0) {
                     sb.setLength(sb.length() - 1);
                 }
-                return sb.toString();
+                return sb.length() > 0 ? sb.toString() : "待确认";
             }
             return json;
         } catch (Exception e) {
             return json;
         }
+    }
+
+    /** 单个 JSON 元素转可读文本：file+action 组合格式优先，其次按 valueKeys 顺序取值，最后兜底拼接全部字段 */
+    private String itemText(JsonNode item, String... valueKeys) {
+        if (item == null) {
+            return "";
+        }
+        if (item.isTextual()) {
+            return item.asText();
+        }
+        if (!item.isObject()) {
+            return item.asText("");
+        }
+        String file = item.path("file").asText("");
+        String action = item.path("action").asText("");
+        if (!file.isBlank()) {
+            String path = file.lastIndexOf('/') >= 0 ? file.substring(file.lastIndexOf('/') + 1) : file;
+            return action.isBlank() ? "`" + path + "`" : "`" + path + "`（" + action + "）";
+        }
+        for (String key : valueKeys) {
+            JsonNode v = item.path(key);
+            if (v.isTextual() && !v.asText().isBlank()) {
+                return v.asText();
+            }
+        }
+        // 兜底：拼接所有短文本字段值，避免输出空串
+        StringBuilder sb = new StringBuilder();
+        item.fields().forEachRemaining(e -> {
+            if (e.getValue().isTextual() && e.getValue().asText().length() <= 200) {
+                if (sb.length() > 0) {
+                    sb.append("，");
+                }
+                sb.append(e.getValue().asText());
+            }
+        });
+        return sb.toString();
     }
 }

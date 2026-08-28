@@ -15,6 +15,8 @@ public class SlowSql {
     /** 来源：jdbc 拦截 / slowlog 日志 */
     private String source;
     private String dbHost;
+    /** 触发方法链 JSON 数组（根 → 叶，如 Controller → Service → Mapper），用于源码精确定位 */
+    private String methodChain;
     private LocalDateTime executeTime;
 
     public Long getId() {
@@ -63,6 +65,14 @@ public class SlowSql {
 
     public void setDbHost(String dbHost) {
         this.dbHost = dbHost;
+    }
+
+    public String getMethodChain() {
+        return methodChain;
+    }
+
+    public void setMethodChain(String methodChain) {
+        this.methodChain = methodChain;
     }
 
     public LocalDateTime getExecuteTime() {

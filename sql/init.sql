@@ -80,11 +80,27 @@ CREATE TABLE IF NOT EXISTS slow_sql (
     cost_ms       DOUBLE        NOT NULL DEFAULT 0 COMMENT '执行耗时 ms',
     source        VARCHAR(32)   NOT NULL DEFAULT 'jdbc' COMMENT '来源：jdbc 拦截 / slowlog 日志',
     db_host       VARCHAR(255)  NOT NULL DEFAULT '' COMMENT '数据库地址（慢日志解析来源）',
+    method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶，如 Controller → Service → Mapper）',
     execute_time  DATETIME      NOT NULL COMMENT '执行时间',
     PRIMARY KEY (id),
     KEY idx_app_time (app_name, execute_time),
     KEY idx_cost (cost_ms)
 ) ENGINE = InnoDB COMMENT = '慢 SQL 记录';
+
+-- 4.5 db_conn：数据库连接配置（供慢 SQL 分析时执行 EXPLAIN 等检测语句）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS db_conn (
+    id           BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    conn_name    VARCHAR(128) NOT NULL COMMENT '连接名称（如 perf-demo-主库）',
+    host         VARCHAR(255) NOT NULL DEFAULT '' COMMENT '主机标识（host:port/db，与慢 SQL dbHost 匹配）',
+    app_name     VARCHAR(128) NOT NULL DEFAULT '' COMMENT '绑定应用（与慢 SQL appName 匹配，空=不限应用）',
+    db_url       VARCHAR(512) NOT NULL COMMENT 'JDBC URL（仅允许 jdbc:mysql://）',
+    username     VARCHAR(128) NOT NULL COMMENT '用户名',
+    password     VARCHAR(256) NOT NULL DEFAULT '' COMMENT '密码（内网演示明文存储，生产环境应加密）',
+    is_default   TINYINT      NOT NULL DEFAULT 0 COMMENT '是否默认连接：1 是 0 否',
+    create_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id)
+) ENGINE = InnoDB COMMENT = '数据库连接配置';
 
 -- ---------------------------------------------------------------------
 -- 5. stress_task：压测任务
@@ -94,6 +110,7 @@ CREATE TABLE IF NOT EXISTS stress_task (
     task_name     VARCHAR(128)  NOT NULL COMMENT '任务名称',
     engine_type   VARCHAR(32)   NOT NULL DEFAULT 'http' COMMENT '引擎类型：http / jmeter',
     target_url    VARCHAR(512)  NOT NULL COMMENT '压测目标 URL',
+    app_name      VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '归属应用（agent 上报应用名）',
     method        VARCHAR(16)   NOT NULL DEFAULT 'GET' COMMENT 'HTTP 方法',
     concurrency   INT           NOT NULL DEFAULT 1 COMMENT '并发数',
     duration_sec  INT           NOT NULL DEFAULT 60 COMMENT '持续时长秒',
@@ -157,6 +174,10 @@ CREATE TABLE IF NOT EXISTS source_repo (
     repo_name     VARCHAR(128)  NOT NULL COMMENT '仓库名称',
     repo_type     VARCHAR(16)   NOT NULL COMMENT '类型：zip / git / local',
     source_path   VARCHAR(512)  NOT NULL COMMENT '磁盘根路径或 git url 或本地路径',
+    branch        VARCHAR(128)  NOT NULL DEFAULT '' COMMENT 'git 分支（空 = 默认分支）',
+    app_name      VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '绑定应用（项目与应用强绑定，压测/问题自动归属）',
+    git_user      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'git 用户名（私有仓库，可空）',
+    git_token     VARCHAR(512)  NOT NULL DEFAULT '' COMMENT 'git 密码/访问令牌（内网演示明文存储，生产环境应加密）',
     status        VARCHAR(32)   NOT NULL DEFAULT 'importing' COMMENT '状态：importing/ready/failed',
     file_count    INT           NOT NULL DEFAULT 0 COMMENT '文件数（≤5000）',
     total_size    BIGINT        NOT NULL DEFAULT 0 COMMENT '总大小字节（≤200MB）',

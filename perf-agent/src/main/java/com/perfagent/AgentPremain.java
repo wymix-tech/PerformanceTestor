@@ -48,6 +48,9 @@ public class AgentPremain {
 
     private static void start(String agentArgs, Instrumentation instrumentation) {
         AgentConfig config = AgentConfig.fromArgs(agentArgs);
+        // 项目即应用：targetProjectName 未指定时回退 appName（平台按项目名做准入校验）
+        String project = config.targetProjectName.isBlank() ? config.appName : config.targetProjectName;
+        config.targetProjectName = project;
 
         // 1) 初始化上报器与采样器
         HttpReporter http = new HttpReporter();
@@ -73,6 +76,7 @@ public class AgentPremain {
         // 4) 优雅停止：JVM 退出时冲刷剩余数据
         Runtime.getRuntime().addShutdownHook(new Thread(reporter::stop, "perf-agent-shutdown"));
         System.out.println("[perf-agent] 启动完成 appName=" + config.appName
+                + " targetProjectName=" + config.targetProjectName
                 + " reportUrl=" + config.reportUrl
                 + " sampleRate=" + config.sampleRate
                 + " jmxCollector=" + (jvmCollector != null));

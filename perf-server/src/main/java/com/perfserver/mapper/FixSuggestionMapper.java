@@ -21,6 +21,9 @@ public interface FixSuggestionMapper {
     /** 更新选定状态（同一问题仅一个 selected=1） */
     int updateSelected(@Param("id") long id, @Param("selected") int selected);
 
+    /** 清除该问题下所有方案的选定状态（切换选择前调用，保证单选） */
+    int clearSelectedByIssue(@Param("issueId") long issueId);
+
     /** 写入修复提示词 */
     int updatePromptMd(@Param("id") long id, @Param("promptMd") String promptMd);
 }

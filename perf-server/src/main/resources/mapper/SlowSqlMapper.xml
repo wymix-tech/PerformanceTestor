@@ -9,19 +9,20 @@
         <result column="cost_ms" property="costMs"/>
         <result column="source" property="source"/>
         <result column="db_host" property="dbHost"/>
+        <result column="method_chain" property="methodChain"/>
         <result column="execute_time" property="executeTime"/>
     </resultMap>
 
     <insert id="batchInsert">
-        INSERT INTO slow_sql (app_name, sql_text, cost_ms, source, db_host, execute_time)
+        INSERT INTO slow_sql (app_name, sql_text, cost_ms, source, db_host, method_chain, execute_time)
         VALUES
         <foreach collection="list" item="s" separator=",">
-            (#{s.appName}, #{s.sqlText}, #{s.costMs}, #{s.source}, #{s.dbHost}, #{s.executeTime})
+            (#{s.appName}, #{s.sqlText}, #{s.costMs}, #{s.source}, #{s.dbHost}, #{s.methodChain}, #{s.executeTime})
         </foreach>
     </insert>
 
     <sql id="BaseColumns">
-        id, app_name, sql_text, cost_ms, source, db_host, execute_time
+        id, app_name, sql_text, cost_ms, source, db_host, method_chain, execute_time
     </sql>
 
     <select id="query" resultMap="BaseResultMap">
@@ -36,6 +37,13 @@
         </if>
         ORDER BY cost_ms DESC
         LIMIT #{limit}
+    </select>
+
+    <select id="findById" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM slow_sql
+        WHERE id = #{id}
+        LIMIT 1
     </select>
 
 </mapper>

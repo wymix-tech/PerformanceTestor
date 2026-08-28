@@ -7,8 +7,10 @@
     </div>
 
     <div class="glass-card p-4 mb-4 flex flex-wrap items-center gap-4">
-      <label class="text-xs text-fg-sub">应用</label>
-      <input v-model="query.app" class="input-text w-36" placeholder="如 perf-demo" />
+      <label class="text-xs text-fg-sub">项目</label>
+      <select v-model="query.app" class="input-select w-44" @change="loadTraces">
+        <option v-for="name in projectNames" :key="name" :value="name">{{ name }}</option>
+      </select>
       <label class="text-xs text-fg-sub">方法</label>
       <input v-model="query.method" class="input-text w-52" placeholder="如 listUsers" />
       <button class="btn-primary" @click="loadTraces">查询</button>
@@ -48,15 +50,15 @@
         <template v-else>
           <div class="text-sm font-medium mb-3 flex items-center justify-between">
             <span class="truncate font-mono">{{ detail.rootMethod }}</span>
-            <span class="text-xs text-amber-400">总耗时 {{ detail.totalMs }}ms</span>
+            <span class="text-xs text-amber-400">总耗时 {{ rootCostText }}ms</span>
           </div>
-          <div class="text-xs text-fg-sub mb-3">调用树（占比 = 子节点耗时 / 父节点耗时）</div>
+          <div class="text-xs text-fg-sub mb-3">调用树（时间轴 = 根节点总耗时 100% · 条左端 = 调用开始时刻 · 长度 = 耗时占比）</div>
           <div class="max-h-[280px] overflow-y-auto tree-bg rounded-lg p-3">
-            <TraceTree v-if="treeNode" :node="treeNode" :depth="0" />
+            <TraceTree v-if="treeNode" :node="treeNode" :depth="0" :root-cost="rootCost" />
           </div>
-          <div class="text-sm font-medium mt-4 mb-2">火焰图</div>
-          <div v-if="treeNode" class="h-[260px]">
-            <MetricChart :option="flameOption" height="260px" />
+          <div class="text-sm font-medium mt-4 mb-2">火焰图<span class="text-xs font-normal text-fg-sub ml-2">X 轴 = 根节点总耗时 100% · 左端 = 调用开始时刻 · 宽度 = 耗时占比 · 自上而下为调用栈深度</span></div>
+          <div v-if="treeNode">
+            <MetricChart :option="flameOption" :height="flameHeight + 'px'" />
           </div>
         </template>
       </div>
@@ -83,6 +85,10 @@
               :class="Number(s.costMs) > 1000 ? 'text-red-400' : 'text-amber-400'">{{ Number(s.costMs).toFixed(0) }}ms</div>
             <div class="min-w-0 flex-1">
               <div class="text-xs text-fg-main font-mono break-all">{{ s.sqlText }}</div>
+              <div v-if="formatChain(s.methodChain)" class="text-[11px] mt-1.5 truncate" :title="typeof s.methodChain === 'string' ? s.methodChain : JSON.stringify(s.methodChain)">
+                <span class="text-fg-sub">调用链：</span>
+                <span class="text-neon-blue font-mono">{{ formatChain(s.methodChain) }}</span>
+              </div>
               <div class="text-[11px] text-fg-sub mt-1.5 flex flex-wrap gap-3">
                 <span class="px-2 py-0.5 rounded bg-white/5">{{ s.source }}</span>
                 <span v-if="s.appName">应用：{{ s.appName }}</span>
@@ -102,7 +108,7 @@ import { computed, onMounted, ref } from 'vue'
 import { GitBranch } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import TraceTree from '../components/TraceTree.vue'
-import { traceApi, slowSqlApi, appApi } from '../api'
+import { traceApi, slowSqlApi, appApi, sourceApi } from '../api'
 
 const tabs = [
   { key: 'trace', label: '调用链' },
@@ -110,6 +116,8 @@ const tabs = [
 ]
 const activeTab = ref('trace')
 const query = ref<{ app: string; method: string }>({ app: '', method: '' })
+// 项目即应用：项目下拉数据源 = 源码仓库名
+const projectNames = ref<string[]>([])
 const traces = ref<Array<Record<string, any>>>([])
 const detail = ref<Record<string, any> | null>(null)
 const treeNode = ref<Record<string, any> | null>(null)
@@ -117,45 +125,150 @@ const slowSqls = ref<Array<Record<string, any>>>([])
 const minCostMs = ref(0)
 const selectedId = ref<number>()
 
-const flameOption = computed(() => {
-  if (!treeNode.value) return {}
-  return {
-    backgroundColor: 'transparent',
-    tooltip: { formatter: (p: any) => `${p.name}<br/>${p.value}ms` },
-    series: [{
-      type: 'sunburst',
-      radius: ['12%', '95%'],
-      sort: null,
-      emphasis: { focus: 'ancestor' },
-      data: [flameNode(treeNode.value as Record<string, any>)],
-      label: { color: '#E6EDF7', fontSize: 11 },
-      itemStyle: { borderColor: 'rgba(11,18,32,0.8)', borderWidth: 1 },
-      levels: [
-        {},
-        { color: ['#00E5A0', '#0EA5E9', '#34D399', '#FAAD14'] },
-        { color: ['#0EA5E9', '#1677FF', '#00E5A0', '#52C41A'] }
-      ]
-    }]
+// 总耗时 = 根节点（Controller 层）自身耗时；旧数据兜底用后端 totalMs
+const rootCost = computed(() => {
+  const rc = Number(treeNode.value?.costMs)
+  if (Number.isFinite(rc) && rc > 0) return rc
+  return Number(detail.value?.totalMs) || 0
+})
+const rootCostText = computed(() => rootCost.value.toFixed(3).replace(/0+$/, '').replace(/\.$/, ''))
+
+// 火焰图条形色板（与调用树层级色一致）
+const flameColors = ['#00E5A0', '#0EA5E9', '#34D399', '#FAAD14', '#1677FF', '#52C41A', '#F5222D']
+
+// 火焰图数据项：start/width 为相对根总耗时的百分比
+interface FlameItem {
+  name: string
+  depth: number
+  start: number
+  width: number
+  costMs: number
+  offsetMs: number
+  color: string
+}
+
+const flameItems = computed(() => {
+  if (!treeNode.value) return [] as FlameItem[]
+  const total = rootCost.value || Number(treeNode.value.costMs) || 0
+  if (total <= 0) return [] as FlameItem[]
+  const items: FlameItem[] = []
+  const walk = (n: Record<string, any>, depth: number) => {
+    // 与调用树一致的时间轴：起点 = offsetMs 占比，宽度 = costMs 占比（基准为根节点总耗时）
+    const offset = Number(n.offsetMs) || 0
+    const cost = Number(n.costMs) || 0
+    const start = Math.min(Math.max((offset / total) * 100, 0), 99.7)
+    const width = Math.max(Math.min((cost / total) * 100, 100 - start), 0.3)
+    items.push({
+      name: String(n.method || 'root'),
+      depth,
+      start,
+      width,
+      costMs: cost,
+      offsetMs: offset,
+      color: flameColors[depth % flameColors.length]
+    })
+    for (const c of n.children || []) walk(c, depth + 1)
   }
+  walk(treeNode.value, 0)
+  return items
 })
 
-function flameNode(n: Record<string, any>): Record<string, any> {
+// 层高 22px，容器高度随调用栈深度自适应
+const flameHeight = computed(() => {
+  const items = flameItems.value
+  if (!items.length) return 80
+  return Math.max(...items.map(i => i.depth)) * 22 + 42
+})
+
+const flameOption = computed(() => {
+  const items = flameItems.value
+  if (!items.length) return {}
+  const depthCount = Math.max(...items.map(i => i.depth)) + 1
   return {
-    name: n.method || 'root',
-    value: Math.max(Number(n.costMs) || 0, 1),
-    children: (n.children || []).map(flameNode)
+    backgroundColor: 'transparent',
+    grid: { left: 8, right: 8, top: 6, bottom: 6 },
+    xAxis: { type: 'value', min: 0, max: 100, show: false },
+    yAxis: { type: 'value', min: 0, max: depthCount, inverse: true, show: false },
+    tooltip: {
+      confine: true,
+      backgroundColor: '#182238',
+      borderColor: 'rgba(0,229,160,0.3)',
+      textStyle: { color: '#E6EDF7', fontSize: 12 },
+      formatter: (p: any) => {
+        const it = items[p.dataIndex]
+        if (!it) return ''
+        return (
+          `<div style="max-width:460px;white-space:normal;font-family:monospace;margin-bottom:4px">${it.name}</div>` +
+          `耗时 ${it.costMs.toFixed(2)}ms · 开始 +${it.offsetMs.toFixed(2)}ms · 占根节点 ${Math.round(it.width)}%`
+        )
+      }
+    },
+    series: [
+      {
+        type: 'custom',
+        renderItem: (params: any, api: any) => {
+          const it: FlameItem = items[params.dataIndex]
+          if (!it) return null
+          // 坐标系：x=时间轴百分比 0~100，y=栈深度（inverse 根在顶）
+          const p1 = api.coord([it.start, it.depth])
+          const s = api.size([it.width, 1])
+          const x = p1[0]
+          const y = p1[1] + 1
+          const w = Math.max(s[0] - 1, 2)
+          const h = Math.max(s[1] - 4, 14)
+          // 按矩形宽度截断方法名（等宽字体约 6px/字符，留边距）
+          const maxChars = Math.max(Math.floor((w - 8) / 6), 0)
+          const label = maxChars < 4 ? '' : it.name.length > maxChars ? it.name.slice(0, maxChars - 1) + '…' : it.name
+          const children: any[] = [
+            {
+              type: 'rect',
+              shape: { x, y, width: w, height: h, r: 2 },
+              style: { fill: it.color, stroke: 'rgba(11,18,32,0.9)', lineWidth: 1 },
+              cursor: 'pointer'
+            }
+          ]
+          if (label) {
+            children.push({
+              type: 'text',
+              style: {
+                text: label,
+                x: x + 4,
+                y: y + h / 2,
+                fill: '#0B1220',
+                fontSize: 10,
+                fontFamily: 'Menlo, Consolas, monospace',
+                verticalAlign: 'middle'
+              },
+              silent: true
+            })
+          }
+          return { type: 'group', children }
+        },
+        data: items,
+        clip: true
+      }
+    ]
   }
-}
+})
 
 async function loadTraces() {
   const end = Date.now()
   const [t, a] = await Promise.allSettled([
     traceApi.list({ app: query.value.app || undefined, method: query.value.method || undefined, start: end - 86400000, end, limit: 50 }),
-    appApi.list()
+    sourceApi.repos()
   ])
   if (t.status === 'fulfilled') traces.value = t.value.data
-  if (a.status === 'fulfilled' && !query.value.app && a.value.data.length) {
-    query.value.app = a.value.data[0].appName
+  // 项目下拉：首次加载后默认选中第一个项目（项目即应用）
+  if (a.status === 'fulfilled') {
+    const names = (a.value.data || []).map((r: Record<string, any>) => r.repoName).filter(Boolean)
+    if (!projectNames.value.length) {
+      projectNames.value = names
+      if (!query.value.app && names.length) {
+        query.value.app = names[0]
+        await loadTraces()
+        return
+      }
+    }
   }
 }
 
@@ -186,6 +299,27 @@ async function loadSlowSqls() {
 
 function fmtTime(t: number | string) {
   return new Date(Number(t)).toLocaleString('zh-CN', { hour12: false })
+}
+
+// 方法链格式化：methodChain 为 JSON 数组字符串（完整类名#方法），展示为 短类名#方法 → 短类名#方法
+function formatChain(chainJson: unknown): string {
+  if (!chainJson) return ''
+  let arr: any[] = []
+  try {
+    const parsed = typeof chainJson === 'string' ? JSON.parse(chainJson) : chainJson
+    if (Array.isArray(parsed)) arr = parsed
+  } catch {
+    return ''
+  }
+  return arr
+    .map((m) => {
+      const s = String(m)
+      const hash = s.lastIndexOf('#')
+      if (hash < 0) return s
+      const cls = s.slice(0, hash)
+      return cls.slice(cls.lastIndexOf('.') + 1) + '#' + s.slice(hash + 1)
+    })
+    .join(' → ')
 }
 
 onMounted(() => {

@@ -34,7 +34,7 @@
         SELECT <include refid="BaseColumns"/>
         FROM fix_suggestion
         WHERE issue_id = #{issueId}
-        ORDER BY selected DESC, id ASC
+        ORDER BY id ASC
     </select>
 
     <select id="findById" resultMap="BaseResultMap">
@@ -43,6 +43,10 @@
 
     <update id="updateSelected">
         UPDATE fix_suggestion SET selected = #{selected} WHERE id = #{id}
+    </update>
+
+    <update id="clearSelectedByIssue">
+        UPDATE fix_suggestion SET selected = 0 WHERE issue_id = #{issueId}
     </update>
 
     <update id="updatePromptMd">

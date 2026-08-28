@@ -21,11 +21,51 @@
         <div class="text-sm font-medium mb-4">新建压测任务</div>
         <div class="space-y-3">
           <div>
-            <label class="text-xs text-fg-sub">任务名</label>
-            <input v-model="form.taskName" class="input-text w-full" placeholder="如 登录接口压测" />
+            <label class="text-xs text-fg-sub">项目<span class="ml-2 font-normal">项目即应用，归属自动确定</span></label>
+            <select v-model="form.repoId" class="input-select w-full" @change="loadEndpoints">
+              <option :value="0">— 手动填写 URL —</option>
+              <option v-for="r in repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
+            </select>
+          </div>
+          <div v-if="form.repoId > 0">
+            <label class="text-xs text-fg-sub flex items-center justify-between">
+              <span>分支与接口</span>
+              <button class="text-neon-blue hover:underline text-[11px]" :disabled="resyncing" @click="resyncAndScan">
+                {{ resyncing ? '同步中…' : '↻ 与源码重新同步' }}
+              </button>
+            </label>
+            <div class="flex gap-2 mb-2">
+              <select
+                :key="branchOptions.length + '-' + currentRepoBranch"
+                class="input-select flex-1"
+                :value="currentRepoBranch"
+                :disabled="resyncing"
+                @focus="loadBranchOptions"
+                @change="changeBranch(($event.target as HTMLSelectElement).value)"
+              >
+                <!-- 已加载列表：渲染全部远端分支；当前分支不在列表中时补当前项 -->
+                <template v-if="branchOptions.length">
+                  <option v-for="b in branchOptions" :key="b" :value="b">{{ b }}</option>
+                  <option v-if="currentRepoBranch && !branchOptions.includes(currentRepoBranch)" :value="currentRepoBranch">
+                    {{ currentRepoBranch }}（当前）
+                  </option>
+                </template>
+                <option v-else value="">{{ currentRepoBranch || '分支加载中…' }}</option>
+              </select>
+            </div>
+            <select v-model="form.endpointIdx" class="input-select w-full" @change="applyEndpoint">
+              <option :value="-1">— 选择接口（{{ endpoints.length }} 个）—</option>
+              <option v-for="(e, i) in endpoints" :key="i" :value="i">
+                [{{ e.httpMethod }}] {{ e.path }}（{{ e.className }}#{{ e.methodName || '?' }}）
+              </option>
+            </select>
           </div>
           <div>
-            <label class="text-xs text-fg-sub">目标 URL（http/https）</label>
+            <label class="text-xs text-fg-sub">服务地址（host:port，与接口路径拼接）</label>
+            <input v-model="form.baseUrl" class="input-text w-full" placeholder="http://127.0.0.1:8081" @input="composeUrl()" />
+          </div>
+          <div>
+            <label class="text-xs text-fg-sub">目标 URL（{{ form.repoId > 0 ? '自动拼接，可微调' : 'http/https' }}）</label>
             <input v-model="form.targetUrl" class="input-text w-full" placeholder="http://host:port/api/xxx" />
           </div>
           <div class="grid grid-cols-2 gap-3">
@@ -69,7 +109,10 @@
             @click="showReport(t.id)">
             <div class="flex items-center justify-between">
               <div class="text-sm text-fg-main truncate">{{ t.taskName || t.targetUrl }}</div>
-              <span class="text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t.status)">{{ t.status }}</span>
+              <span class="flex items-center gap-2 shrink-0">
+                <span v-if="t.appName" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue">{{ t.appName }}</span>
+                <span class="text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t.status)">{{ t.status }}</span>
+              </span>
             </div>
             <div class="flex items-center justify-between mt-2 text-[11px] text-fg-sub">
               <span>{{ t.concurrency }} 并发 · {{ t.durationSec }}s · {{ t.engineType }}</span>
@@ -166,6 +209,13 @@
         <div class="text-sm font-medium mb-4">自动灌数据</div>
         <div class="space-y-3">
           <div>
+            <label class="text-xs text-fg-sub">连接配置（与「问题与优化」页共用，选中自动填充）</label>
+            <select v-model="gen.connId" class="input-select w-full" @change="applyConn">
+              <option :value="0">— 手动填写连接 —</option>
+              <option v-for="c in conns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.dbUrl }}）</option>
+            </select>
+          </div>
+          <div>
             <label class="text-xs text-fg-sub">JDBC URL（jdbc:mysql://）</label>
             <input v-model="gen.dbUrl" class="input-text w-full" placeholder="jdbc:mysql://host:3306/db" />
           </div>
@@ -213,7 +263,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Gauge } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
-import { stressApi, dataGenApi, capacityApi, slowLogApi } from '../api'
+import { stressApi, dataGenApi, capacityApi, slowLogApi, sourceApi, appApi, dbConnApi } from '../api'
 
 const tabs = [
   { key: 'stress', label: '压测' },
@@ -234,14 +284,105 @@ const columns = ref<Array<{ name: string; type: string }>>([])
 const form = ref({
   taskName: '',
   targetUrl: '',
+  repoId: 0,
+  endpointIdx: -1,
+  baseUrl: '',
   method: 'GET',
   concurrency: 50,
   durationSec: 30,
   engineType: 'http',
   stageConcurrencies: '10,50,100'
 })
+// 项目/应用/接口扫描
+const repos = ref<Array<Record<string, any>>>([])
+const apps = ref<string[]>([])
+const endpoints = ref<Array<Record<string, any>>>([])
+
+// 项目即应用：当前项目的归属应用 = appName（导入时默认=项目名）兜底项目名
+const currentRepoApp = computed(() => {
+  const r = repos.value.find((x) => x.id === form.value.repoId)
+  if (!r) return ''
+  return r.appName || r.repoName || ''
+})
+
+async function loadEndpoints() {
+  endpoints.value = []
+  form.value.endpointIdx = -1
+  if (!form.value.repoId) return
+  try {
+    const r = await sourceApi.endpoints(form.value.repoId)
+    endpoints.value = r.data || []
+  } catch { /* 扫描失败保持空列表 */ }
+  // 选定项目后自动同步分支列表（默认展示，无需点击）
+  loadBranchOptions()
+}
+
+// 与源码重新同步：重新拉取源码 → 重建索引 → 重扫接口（源码更新后点击）
+const resyncing = ref(false)
+async function resyncAndScan() {
+  if (!form.value.repoId || resyncing.value) return
+  resyncing.value = true
+  try {
+    await sourceApi.resync(form.value.repoId)
+    await loadEndpoints()
+  } finally {
+    resyncing.value = false
+  }
+}
+
+// 分支切换：当前仓库分支 + 分支列表缓存 + 切换（重同步 + 重扫接口）
+const currentRepoBranch = computed(() => {
+  const r = repos.value.find((x) => x.id === form.value.repoId)
+  return r ? r.branch || '' : ''
+})
+const branchOptions = ref<string[]>([])
+async function loadBranchOptions() {
+  if (!form.value.repoId) return
+  try {
+    const r = await sourceApi.branches(form.value.repoId)
+    branchOptions.value = r.data || []
+  } catch { /* 拉取失败保持空 */ }
+}
+async function changeBranch(branch: string) {
+  if (!branch || branch === currentRepoBranch.value || resyncing.value) return
+  resyncing.value = true
+  try {
+    await sourceApi.switchBranch(form.value.repoId, branch)
+    await loadRepos()
+    await loadEndpoints()
+  } finally {
+    resyncing.value = false
+  }
+}
+
+// 选中接口：自动填 method 与 URL（baseUrl + path），用户只需提供 host:port
+function applyEndpoint() {
+  const e = endpoints.value[form.value.endpointIdx]
+  if (!e) return
+  form.value.method = e.httpMethod === 'POST' ? 'POST' : 'GET'
+  composeUrl(e.path)
+  if (!form.value.taskName) {
+    form.value.taskName = `${e.className}#${e.methodName || e.path}`
+  }
+}
+
+// 拼接完整目标 URL；显式传入 path（选接口时）优先于当前输入
+function composeUrl(pathOverride?: string) {
+  if (form.value.repoId <= 0) return
+  const base = (form.value.baseUrl || '').replace(/\/+$/, '')
+  const p = pathOverride !== undefined ? pathOverride : currentPath()
+  if (base && p) {
+    form.value.targetUrl = base + p
+  }
+}
+
+function currentPath(): string {
+  const e = endpoints.value[form.value.endpointIdx]
+  return e ? e.path : ''
+}
 const gen = ref({
   taskName: '',
+  connId: 0,
   dbUrl: '',
   dbUser: 'root',
   dbPassword: '',
@@ -316,6 +457,8 @@ async function startStress() {
   const body: Record<string, unknown> = {
     taskName: form.value.taskName || undefined,
     targetUrl: form.value.targetUrl,
+    // 强绑定：压测任务归属应用 = 项目绑定的应用
+    appName: currentRepoApp.value || undefined,
     method: form.value.method,
     concurrency: form.value.concurrency,
     durationSec: form.value.durationSec,
@@ -367,6 +510,7 @@ async function loadColumns() {
 async function startDataGen() {
   await dataGenApi.create({
     taskName: gen.value.taskName || `灌数据-${gen.value.tableName}`,
+    connId: gen.value.connId || undefined,
     dbUrl: gen.value.dbUrl,
     dbUser: gen.value.dbUser,
     dbPassword: gen.value.dbPassword,
@@ -381,6 +525,41 @@ async function startDataGen() {
 onMounted(() => {
   loadTasks()
   loadAdvice()
+  loadRepos()
+  loadApps()
+  loadConns()
   dataGenApi.list().then((r) => { genTasks.value = r.data }).catch(() => {})
 })
+
+// 项目/应用/连接配置（数据准备 Tab 复用连接配置）
+const conns = ref<Array<Record<string, any>>>([])
+
+async function loadRepos() {
+  const r = await sourceApi.repos()
+  repos.value = r.data
+}
+
+async function loadApps() {
+  try {
+    const r = await appApi.list()
+    apps.value = (r.data || []).map((a: Record<string, any>) => a.appName).filter(Boolean)
+  } catch { /* 应用列表失败不阻断 */ }
+}
+
+async function loadConns() {
+  try {
+    const r = await dbConnApi.list()
+    conns.value = r.data || []
+  } catch { /* 连接配置失败不阻断 */ }
+}
+
+// 数据准备：从连接配置选择后自动填连接参数（仍可手改）
+function applyConn() {
+  const c = conns.value.find((x) => x.id === gen.value.connId)
+  if (c) {
+    gen.value.dbUrl = c.dbUrl
+    gen.value.dbUser = c.username
+    gen.value.dbPassword = c.password || ''
+  }
+}
 </script>

@@ -21,6 +21,10 @@
         </foreach>
     </insert>
 
+    <delete id="deleteByRepo">
+        DELETE FROM source_file WHERE repo_id = #{repoId}
+    </delete>
+
     <sql id="BaseColumns">
         id, repo_id, relative_path, file_name, language, size, content_hash, create_time
     </sql>

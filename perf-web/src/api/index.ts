@@ -75,27 +75,45 @@ export const capacityApi = {
 export const sourceApi = {
   // 源码仓库列表
   repos: (limit = 50) => http.get('/source/repos', { params: { limit } }),
-  // zip 上传导入（multipart）
-  importZip: (repoName: string, file: File) => {
+  // 扫描仓库 HTTP 接口清单（压测中心选项目自动出接口）
+  endpoints: (repoId: number) => http.get(`/source/repos/${repoId}/endpoints`),
+  // 重新同步仓库：重新拉取源码并重建索引（源码更新后调用）
+  resync: (repoId: number) => http.post(`/source/repos/${repoId}/resync`),
+  // 分支列表（git 仓库）
+  branches: (repoId: number) => http.get(`/source/repos/${repoId}/branches`),
+  // 切换分支（git 仓库，切换后自动重新同步）
+  switchBranch: (repoId: number, branch: string) => http.post(`/source/repos/${repoId}/branch`, { branch }),
+  // 绑定应用（项目与应用强绑定；appName 空 = 解绑）
+  bindApp: (repoId: number, appName: string) => http.post(`/source/repos/${repoId}/bind-app`, { appName }),
+  // zip 上传导入（multipart；appName 导入即绑定应用）
+  importZip: (repoName: string, file: File, appName?: string) => {
     const fd = new FormData()
     fd.append('repoName', repoName)
+    if (appName) fd.append('appName', appName)
     fd.append('file', file)
     return http.post('/source/repos/zip', fd)
   },
-  // git 地址导入
-  importGit: (data: { repoName?: string; gitUrl: string }) => http.post('/source/repos/git', data),
-  // 本地目录导入
-  importLocal: (data: { repoName?: string; localPath: string }) => http.post('/source/repos/local', data),
+  // git 地址导入（appName 导入即绑定应用）
+  importGit: (data: { repoName?: string; gitUrl: string; branch?: string; gitUser?: string; gitToken?: string; appName?: string }) =>
+    http.post('/source/repos/git', data),
+  // 枚举远端分支（导入前，无需 clone；支持私有仓库凭据）
+  remoteBranches: (gitUrl: string, gitUser?: string, gitToken?: string) =>
+    http.post('/source/repos/git-branches', { gitUrl, gitUser, gitToken }),
+  // 本地目录导入（appName 导入即绑定应用）
+  importLocal: (data: { repoName?: string; localPath: string; appName?: string }) => http.post('/source/repos/local', data),
   // 仓库文件树
   files: (repoId: number, params?: { prefix?: string; limit?: number }) =>
     http.get(`/source/repos/${repoId}/files`, { params }),
   // 文件内容
   fileContent: (fileId: number) => http.get(`/source/files/${fileId}/content`),
   // 性能问题列表
-  issues: (params?: { issueType?: string; status?: string; limit?: number }) =>
+  issues: (params?: { appName?: string; issueType?: string; status?: string; limit?: number }) =>
     http.get('/source/issues', { params }),
   // 问题详情（含方案列表）
   issueDetail: (id: number) => http.get(`/source/issues/${id}`),
+  // 补绑源码仓库并自动定位（压测问题分析前置）
+  bindIssueRepo: (issueId: number, repoId: number) =>
+    http.post(`/source/issues/${issueId}/bind-repo`, null, { params: { repoId } }),
   // 执行大模型分析（生成根因 + 多方案）
   analyze: (id: number) => http.post(`/source/issues/${id}/analyze`),
   // 选定方案并生成修复提示词
@@ -107,8 +125,8 @@ export const sourceApi = {
   // 从热点方法创建问题
   fromHotMethod: (params: { className: string; methodName: string; repoId: number; appName?: string }) =>
     http.post('/source/issues/from-hot-method', null, { params }),
-  // 从压测任务创建问题
-  fromStress: (params: { stressTaskId: number; repoId: number }) =>
+  // 从压测任务创建问题（可指定归属应用）
+  fromStress: (params: { stressTaskId: number; repoId: number; appName?: string }) =>
     http.post('/source/issues/from-stress', null, { params }),
   // 最近慢 SQL（源码页一键建问题用）
   recentSlowSqls: (params?: { app?: string; limit?: number }) =>
@@ -126,4 +144,19 @@ export const aiApi = {
   clearSession: (sessionId: string) => http.delete(`/ai/session/${sessionId}`)
 }
 
-export default { appApi, jvmApi, traceApi, slowSqlApi, slowLogApi, stressApi, dataGenApi, capacityApi, sourceApi, aiApi }
+export const dbConnApi = {
+  // 数据库连接配置列表（慢 SQL 分析 EXPLAIN 用）
+  list: () => http.get('/dbconns'),
+  // 保存连接
+  save: (data: { connName: string; host?: string; appName?: string; dbUrl: string; username: string; password: string; isDefault?: number }) =>
+    http.post('/dbconns', data),
+  // 删除连接
+  remove: (id: number) => http.delete(`/dbconns/${id}`),
+  // 设为默认
+  setDefault: (id: number) => http.post(`/dbconns/${id}/default`),
+  // 测试连接（可选携带 SQL 试跑 EXPLAIN）
+  test: (data: { dbUrl: string; username: string; password: string; sqlText?: string }) =>
+    http.post('/dbconns/test', data)
+}
+
+export default { appApi, jvmApi, traceApi, slowSqlApi, slowLogApi, stressApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }

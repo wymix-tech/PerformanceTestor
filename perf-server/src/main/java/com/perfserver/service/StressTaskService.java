@@ -62,6 +62,8 @@ public class StressTaskService {
                 ? request.getTargetUrl() : request.getTaskName());
         task.setEngineType(request.getEngineType());
         task.setTargetUrl(request.getTargetUrl());
+        task.setAppName(request.getAppName() == null || request.getAppName().isBlank()
+                ? "" : request.getAppName());
         task.setMethod(request.getMethod());
         task.setConcurrency(request.getConcurrency());
         task.setDurationSec(request.getDurationSec());

@@ -2,6 +2,7 @@ package com.perfagent.instrumentation;
 
 import com.perfagent.config.AgentConfig;
 import com.perfagent.reporter.MetricsReporter;
+import com.perfagent.trace.TraceContext;
 import net.bytebuddy.asm.Advice;
 
 /**
@@ -17,14 +18,16 @@ import net.bytebuddy.asm.Advice;
  */
 public class JdbcInterceptor {
 
-    /** OnMethodEnter 返回值：SQL 文本与开始时间 */
+    /** OnMethodEnter 返回值：SQL 文本与开始时间（statement 供退出时反查连接 URL） */
     public static class JdbcEnter {
         public final String sql;
         public final long startNanos;
+        public final Object statement;
 
-        public JdbcEnter(String sql, long startNanos) {
+        public JdbcEnter(String sql, long startNanos, Object statement) {
             this.sql = sql;
             this.startNanos = startNanos;
+            this.statement = statement;
         }
     }
 
@@ -46,7 +49,7 @@ public class JdbcInterceptor {
     public static Object enter(@Advice.Origin("#m") String methodName,
                                @Advice.AllArguments Object[] args,
                                @Advice.This Object self) {
-        return new JdbcEnter(extractSql(methodName, args, self), System.nanoTime());
+        return new JdbcEnter(extractSql(methodName, args, self), System.nanoTime(), self);
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class)
@@ -57,8 +60,34 @@ public class JdbcInterceptor {
         JdbcEnter je = (JdbcEnter) enter;
         long costMs = (System.nanoTime() - je.startNanos) / 1_000_000;
         if (costMs >= slowSqlThresholdMs && reporter != null) {
-            reporter.reportSlowSql(appName, je.sql, costMs, System.currentTimeMillis());
+            // 记录触发该 SQL 的调用方法链与目标数据库标识，便于平台侧精确定位源码与执行 EXPLAIN
+            reporter.reportSlowSql(appName, je.sql, costMs, System.currentTimeMillis(),
+                    TraceContext.currentMethodChain(), extractDbHost(je.statement));
         }
+    }
+
+    /**
+     * 从 Statement 反查 JDBC 连接 URL，提取 host:port/db 数据库标识。
+     * 必须为 public（被 Advice 内联代码调用），内部全量兜底，绝不抛出异常影响业务。
+     */
+    public static String extractDbHost(Object statement) {
+        try {
+            if (statement instanceof java.sql.Statement st) {
+                String url = st.getConnection().getMetaData().getURL();
+                // 形如 jdbc:mysql://host:3306/db?params → host:3306/db
+                if (url != null) {
+                    int idx = url.indexOf("://");
+                    if (idx > 0) {
+                        String rest = url.substring(idx + 3);
+                        int q = rest.indexOf('?');
+                        return q > 0 ? rest.substring(0, q) : rest;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // 驱动代理或连接已关闭等场景，忽略
+        }
+        return "";
     }
 
     /**

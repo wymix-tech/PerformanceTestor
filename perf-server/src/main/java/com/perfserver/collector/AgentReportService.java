@@ -33,21 +33,43 @@ public class AgentReportService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentReportService.class);
 
+    /** 项目是否存在（供 Controller 预检，处理在 handleReport 内还有双保险） */
+    public boolean projectExists(String project) {
+        return projectRegistry.exists(project);
+    }
+
+    /** 未知项目告警限频：项目名 → 上次告警时间（同类每 60s 最多一条） */
+    private final Map<String, Long> unknownProjectWarnAt = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long WARN_INTERVAL_MS = 60_000;
+
+    /** 限频告警：未知项目上报被丢弃 */
+    private void warnUnknownProjectOnce(String project, String type) {
+        long now = System.currentTimeMillis();
+        Long last = unknownProjectWarnAt.get(project);
+        if (last == null || now - last >= WARN_INTERVAL_MS) {
+            unknownProjectWarnAt.put(project, now);
+            log.warn("agent report DROPPED: 项目「{}」不存在于源码仓库（targetProjectName 与平台项目名不一致？）, type={}", project, type);
+        }
+    }
+
     private final AppInstanceMapper appInstanceMapper;
     private final JvmMetricMapper jvmMetricMapper;
     private final TraceChainMapper traceChainMapper;
     private final SlowSqlMapper slowSqlMapper;
+    private final ProjectRegistry projectRegistry;
     private final ObjectMapper objectMapper;
 
     public AgentReportService(AppInstanceMapper appInstanceMapper,
                               JvmMetricMapper jvmMetricMapper,
                               TraceChainMapper traceChainMapper,
                               SlowSqlMapper slowSqlMapper,
+                              ProjectRegistry projectRegistry,
                               ObjectMapper objectMapper) {
         this.appInstanceMapper = appInstanceMapper;
         this.jvmMetricMapper = jvmMetricMapper;
         this.traceChainMapper = traceChainMapper;
         this.slowSqlMapper = slowSqlMapper;
+        this.projectRegistry = projectRegistry;
         this.objectMapper = objectMapper;
     }
 
@@ -62,6 +84,17 @@ public class AgentReportService {
         String appName = strVal(body.get("appName"));
         if (appName == null || appName.isEmpty()) {
             log.warn("agent report ignored: missing appName, type={}", type);
+            return;
+        }
+        // ===== 项目准入校验（数据守门）：项目不存在 → 全部丢弃 =====
+        // targetProjectName 未随报文携带时回退 appName（旧版 agent 兼容）
+        String targetProject = strVal(body.get("targetProjectName"));
+        if (targetProject == null || targetProject.isBlank()) {
+            targetProject = appName;
+        }
+        if (!projectRegistry.exists(targetProject)) {
+            // 限频告警：避免未知项目高频上报刷屏（同类告警每分钟最多一条）
+            warnUnknownProjectOnce(targetProject, type);
             return;
         }
         // 心跳注册应用实例
@@ -176,6 +209,9 @@ public class AgentReportService {
                 slowSql.setSource(strVal(map.get("source")) == null ? "jdbc" : strVal(map.get("source")));
                 String dbHost = strVal(map.get("dbHost"));
                 slowSql.setDbHost(dbHost == null ? "" : dbHost);
+                // 触发方法链（JSON 数组，根 → 叶），供源码精确定位与界面展示
+                Object chain = map.get("methodChain");
+                slowSql.setMethodChain(chain == null ? null : objectMapper.writeValueAsString(chain));
                 slowSql.setExecuteTime(toLocalDateTime(longVal(map.get("executeTime"))));
                 batch.add(slowSql);
             } catch (Exception e) {

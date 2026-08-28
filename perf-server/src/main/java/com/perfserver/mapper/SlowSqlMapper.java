@@ -22,4 +22,7 @@ public interface SlowSqlMapper {
                         @Param("end") LocalDateTime end,
                         @Param("minCostMs") Double minCostMs,
                         @Param("limit") int limit);
+
+    /** 按主键查询（慢 SQL 分析时取 SQL 文本与方法链） */
+    SlowSql findById(@Param("id") long id);
 }

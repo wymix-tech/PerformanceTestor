@@ -30,10 +30,20 @@ public class AgentReportController {
         this.agentReportService = agentReportService;
     }
 
-    /** 接收 agent 批量上报（body：{"type","appName","items"}） */
+    /**
+     * 接收 agent 批量上报（body：{"type","appName","targetProjectName","items"}）。
+     * 项目不存在时返回 code=404 + message 含 PROJECT_NOT_FOUND（agent 识别后自动停报）。
+     */
     @PostMapping("/report")
     public ApiResponse<Void> report(@RequestBody Map<String, Object> body, HttpServletRequest request) {
         String remoteHost = request.getRemoteAddr();
+        String project = String.valueOf(body.getOrDefault("targetProjectName",
+                body.getOrDefault("appName", "")));
+        if (!agentReportService.projectExists(project)) {
+            log.warn("agent report DROPPED: 项目「{}」不存在", project);
+            return ApiResponse.error(404,
+                    "PROJECT_NOT_FOUND: 项目「" + project + "」不存在于平台，数据已全部丢弃");
+        }
         agentReportService.handleReport(body, remoteHost);
         return ApiResponse.ok();
     }

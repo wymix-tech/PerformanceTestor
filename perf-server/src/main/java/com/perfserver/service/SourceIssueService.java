@@ -1,5 +1,6 @@
 package com.perfserver.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.perfserver.entity.FixSuggestion;
@@ -55,11 +56,13 @@ public class SourceIssueService {
         this.promptGenerator = promptGenerator;
     }
 
-    /** 从慢 SQL 创建问题并关联源码 */
+    /** 从慢 SQL 创建问题并关联源码（优先用触发方法链精确定位，退回 SQL 文本模糊匹配） */
     public PerformanceIssue createFromSlowSql(long slowSqlId, long repoId) {
         SlowSql sql = findSlowSql(slowSqlId);
         SourceRepo repo = sourceManager.getRepo(repoId);
-        IssueAssociator.IssueLocation loc = associator.associateSlowSql(repo, sql.getSqlText());
+        // ORM 无关多级定位：方法链（首选）→ MyBatis XML → JPA/Hibernate 实体
+        IssueAssociator.IssueLocation loc =
+                associator.associateSlowSqlSmart(repo, sql.getSqlText(), sql.getMethodChain());
 
         PerformanceIssue issue = new PerformanceIssue();
         issue.setIssueType("slow_sql");
@@ -105,8 +108,11 @@ public class SourceIssueService {
         return issue;
     }
 
-    /** 从压测任务创建问题（URL 关联 Controller） */
-    public PerformanceIssue createFromStress(long stressTaskId, long repoId) {
+    /**
+     * 从压测任务创建问题（URL 关联 Controller）。
+     * 应用继承链：调用方显式指定 → 压测任务自带 appName（压测时已按项目绑定记录）→ 回退 stress。
+     */
+    public PerformanceIssue createFromStress(long stressTaskId, long repoId, String appName) {
         StressTask task = stressTaskMapper.findById(stressTaskId);
         if (task == null) {
             throw new IllegalArgumentException("压测任务不存在: " + stressTaskId);
@@ -114,9 +120,12 @@ public class SourceIssueService {
         SourceRepo repo = sourceManager.getRepo(repoId);
         IssueAssociator.IssueLocation loc = associator.associateUrl(repo, task.getTargetUrl());
 
+        String resolvedApp = appName != null && !appName.isBlank() ? appName
+                : task.getAppName() != null && !task.getAppName().isBlank() ? task.getAppName() : "stress";
+
         PerformanceIssue issue = new PerformanceIssue();
         issue.setIssueType("stress_bottleneck");
-        issue.setAppName("stress");
+        issue.setAppName(resolvedApp);
         issue.setTitle("压测瓶颈: " + task.getTargetUrl() + " (并发 " + task.getConcurrency() + ")");
         ObjectNode evidence = objectMapper.createObjectNode();
         evidence.put("taskId", task.getId());
@@ -137,9 +146,9 @@ public class SourceIssueService {
         return issue;
     }
 
-    /** 查询问题列表 */
-    public List<PerformanceIssue> listIssues(String issueType, String status, int limit) {
-        return issueMapper.query(issueType, status, Math.max(1, Math.min(limit, 200)));
+    /** 查询问题列表（可按应用/类型/状态过滤） */
+    public List<PerformanceIssue> listIssues(String appName, String issueType, String status, int limit) {
+        return issueMapper.query(appName, issueType, status, Math.max(1, Math.min(limit, 200)));
     }
 
     /** 问题详情（含方案列表） */
@@ -154,9 +163,63 @@ public class SourceIssueService {
         return detail;
     }
 
-    /** 执行大模型分析（生成根因与多方案） */
+    /**
+     * 执行大模型分析（生成根因与多方案）。
+     * 压测瓶颈问题必须已关联源码仓库（分析需定位 Controller 源码），否则拒绝。
+     */
     public int analyze(long issueId) {
+        PerformanceIssue issue = issueMapper.findById(issueId);
+        if (issue == null) {
+            throw new IllegalArgumentException("问题不存在: " + issueId);
+        }
+        if ("stress_bottleneck".equals(issue.getIssueType()) && issue.getSourceRepoId() == null) {
+            throw new IllegalArgumentException(
+                    "压测问题必须先关联源码仓库才能分析：请先完成「关联源码仓库」再执行分析");
+        }
         return analyzer.analyze(issueId);
+    }
+
+    /**
+     * 为已存在问题补绑源码仓库并自动定位（压测问题分析的前置操作）。
+     * 按问题类型选择定位策略：压测 → URL 关联；慢 SQL → 方法链/XML/实体；热点方法 → 类名/方法名。
+     *
+     * @return 更新后的问题详情（含定位结果）
+     */
+    public IssueDetail bindRepo(long issueId, long repoId) {
+        PerformanceIssue issue = issueMapper.findById(issueId);
+        if (issue == null) {
+            throw new IllegalArgumentException("问题不存在: " + issueId);
+        }
+        SourceRepo repo = sourceManager.getRepo(repoId);
+        String type = issue.getIssueType();
+        String url = null;
+        String sqlText = null;
+        String chain = null;
+        String className = null;
+        String methodName = null;
+        try {
+            JsonNode ev = objectMapper.readTree(issue.getEvidenceJson() == null ? "{}" : issue.getEvidenceJson());
+            url = ev.path("targetUrl").asText(null);
+            sqlText = ev.path("sqlText").asText(null);
+            chain = ev.path("methodChain").isMissingNode() ? null : ev.path("methodChain").toString();
+            className = ev.path("className").asText(null);
+            methodName = ev.path("methodName").asText(null);
+        } catch (Exception ignored) {
+            // 证据缺失时仅落仓库级关联
+        }
+        IssueAssociator.IssueLocation loc = null;
+        if ("stress_bottleneck".equals(type) && url != null) {
+            loc = associator.associateUrl(repo, url);
+        } else if ("slow_sql".equals(type)) {
+            loc = associator.associateSlowSqlSmart(repo, sqlText, chain);
+        } else if ("hot_method".equals(type) && className != null) {
+            loc = associator.associateHotMethod(repo, className, methodName);
+        }
+        issueMapper.updateLocation(issueId, repoId,
+                loc == null ? null : loc.fileId,
+                loc == null ? null : loc.lineStart,
+                loc == null ? null : loc.lineEnd);
+        return getIssueDetail(issueId);
     }
 
     /** 选定方案并生成修复提示词 */
@@ -185,6 +248,14 @@ public class SourceIssueService {
         node.put("costMs", sql.getCostMs());
         node.put("source", sql.getSource());
         node.put("dbHost", sql.getDbHost());
+        // 触发方法链：让根因分析与提示词都知道"这条 SQL 由哪个业务链路触发"
+        if (sql.getMethodChain() != null && !sql.getMethodChain().isBlank()) {
+            try {
+                node.set("methodChain", objectMapper.readTree(sql.getMethodChain()));
+            } catch (Exception ignored) {
+                node.put("methodChain", sql.getMethodChain());
+            }
+        }
         return node.toString();
     }
 

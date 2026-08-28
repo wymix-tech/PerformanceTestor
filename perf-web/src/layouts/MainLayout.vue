@@ -79,7 +79,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Code, Bot
+  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Bot
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -87,10 +87,11 @@ const now = ref(new Date().toLocaleString('zh-CN'))
 
 const menus = [
   { path: '/dashboard', title: '总览', icon: LayoutDashboard },
-  { path: '/jvm', title: 'JVM 监控', icon: Cpu },
-  { path: '/trace', title: '调用链分析', icon: GitBranch },
+  { path: '/projects', title: '项目管理', icon: FolderGit },
   { path: '/stress', title: '压测中心', icon: Gauge },
-  { path: '/source', title: '源码与优化', icon: Code },
+  { path: '/jvm', title: '项目监控', icon: Cpu },
+  { path: '/trace', title: '调用链分析', icon: GitBranch },
+  { path: '/optimize', title: '性能优化', icon: Target },
   { path: '/ai', title: 'AI 助手', icon: Bot }
 ]
 

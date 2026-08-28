@@ -2,15 +2,14 @@
   <div>
     <div class="page-title">
       <Activity class="w-5 h-5 text-neon-green" />
-      JVM 监控
-      <span class="text-xs font-normal text-fg-sub ml-2">堆 / 非堆 · GC · 线程 · CPU（5s 轮询）</span>
+      项目监控
+      <span class="text-xs font-normal text-fg-sub ml-2">JVM：堆 / 非堆 · GC · 线程 · CPU（5s 轮询）</span>
     </div>
 
     <!-- 过滤条 -->
     <div class="glass-card p-4 mb-4 flex flex-wrap items-center gap-4">
-      <label class="text-xs text-fg-sub">应用</label>
+      <label class="text-xs text-fg-sub">项目</label>
       <select v-model="app" class="input-select" @change="loadData">
-        <option value="">全部</option>
         <option v-for="a in appList" :key="a.appName" :value="a.appName">{{ a.appName }}</option>
       </select>
       <label class="text-xs text-fg-sub">时间范围</label>
@@ -139,7 +138,15 @@ async function loadData() {
     appApi.list()
   ])
   if (j.status === 'fulfilled') rows.value = j.value.data
-  if (a.status === 'fulfilled') appList.value = a.value.data
+  if (a.status === 'fulfilled') {
+    appList.value = a.value.data
+    // 默认选中第一个项目（项目即应用；不显示"全部"）
+    if (!app.value && appList.value.length) {
+      app.value = appList.value[0].appName
+      await loadData()
+      return
+    }
+  }
 }
 
 function toggleAuto() {
