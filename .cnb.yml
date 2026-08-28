@@ -6,5 +6,7 @@ $:
         - vscode
         - docker
       stages:
-        - name: entrypoint
-          script: rm -rf ~/.codebuddy && ln -s /workspace/.codebuddy ~/.codebuddy
+        - name: rm ~/codebuddy
+          script: rm -rf ~/.codebuddy || true
+        - name: ln
+          script: ln -sfn /workspace/.codebuddy ~/.codebuddy
