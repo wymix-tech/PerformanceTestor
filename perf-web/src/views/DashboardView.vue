@@ -130,7 +130,7 @@ const heapOption = computed(() => {
     grid: { left: 40, right: 16, top: 16, bottom: 24 },
     xAxis: {
       type: 'category',
-      data: pts.map((p) => new Date(Number(p.collectTime)).toLocaleTimeString('zh-CN', { hour12: false })),
+      data: pts.map((p) => new Date(p.collectTime).toLocaleTimeString('zh-CN', { hour12: false })),
       axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } },
       axisLabel: { color: '#8A94A6', fontSize: 11 }
     },

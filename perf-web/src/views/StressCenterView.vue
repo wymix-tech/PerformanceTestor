@@ -260,7 +260,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Gauge } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import { stressApi, dataGenApi, capacityApi, slowLogApi, sourceApi, appApi, dbConnApi } from '../api'
@@ -441,13 +441,30 @@ function riskClass(r: string) {
       : 'border-neon-green/30 bg-neon-green/5 text-neon-green'
 }
 
-function fmtTime(t: string | number) {
-  return new Date(Number(t)).toLocaleString('zh-CN', { hour12: false })
+function fmtTime(t: string | number | Date | undefined | null) {
+  if (!t && t !== 0) return ''
+  const d = typeof t === 'object' ? t : new Date(typeof t === 'number' ? t : String(t))
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString('zh-CN', { hour12: false })
 }
 
 async function loadTasks() {
   const r = await stressApi.list({ limit: 20 })
   tasks.value = r.data
+}
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(() => {
+    loadTasks()
+  }, 3000)
+}
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
 }
 
 async function startStress() {
@@ -524,12 +541,15 @@ async function startDataGen() {
 
 onMounted(() => {
   loadTasks()
+  startPolling()
   loadAdvice()
   loadRepos()
   loadApps()
   loadConns()
   dataGenApi.list().then((r) => { genTasks.value = r.data }).catch(() => {})
 })
+
+onUnmounted(stopPolling)
 
 // 项目/应用/连接配置（数据准备 Tab 复用连接配置）
 const conns = ref<Array<Record<string, any>>>([])

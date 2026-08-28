@@ -29,3 +29,6 @@ Thumbs.db
 
 # 注意：docs/ 目录为项目中间产出物归档，必须纳入 git 管理，严禁加入忽略列表
 .Trash-0/
+
+# ===== IDE 本地数据 =====
+.codebuddy/

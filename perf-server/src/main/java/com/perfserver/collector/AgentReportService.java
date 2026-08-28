@@ -2,10 +2,12 @@ package com.perfserver.collector;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.perfserver.entity.AppInstance;
+import com.perfserver.entity.DbConn;
 import com.perfserver.entity.JvmMetric;
 import com.perfserver.entity.SlowSql;
 import com.perfserver.entity.TraceChain;
 import com.perfserver.mapper.AppInstanceMapper;
+import com.perfserver.mapper.DbConnMapper;
 import com.perfserver.mapper.JvmMetricMapper;
 import com.perfserver.mapper.SlowSqlMapper;
 import com.perfserver.mapper.TraceChainMapper;
@@ -17,8 +19,10 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Agent 上报采集服务：接收远程探针批量上报（trace / jvm / slowSql）并落库。
@@ -56,6 +60,7 @@ public class AgentReportService {
     private final JvmMetricMapper jvmMetricMapper;
     private final TraceChainMapper traceChainMapper;
     private final SlowSqlMapper slowSqlMapper;
+    private final DbConnMapper dbConnMapper;
     private final ProjectRegistry projectRegistry;
     private final ObjectMapper objectMapper;
 
@@ -63,12 +68,14 @@ public class AgentReportService {
                               JvmMetricMapper jvmMetricMapper,
                               TraceChainMapper traceChainMapper,
                               SlowSqlMapper slowSqlMapper,
+                              DbConnMapper dbConnMapper,
                               ProjectRegistry projectRegistry,
                               ObjectMapper objectMapper) {
         this.appInstanceMapper = appInstanceMapper;
         this.jvmMetricMapper = jvmMetricMapper;
         this.traceChainMapper = traceChainMapper;
         this.slowSqlMapper = slowSqlMapper;
+        this.dbConnMapper = dbConnMapper;
         this.projectRegistry = projectRegistry;
         this.objectMapper = objectMapper;
     }
@@ -195,6 +202,8 @@ public class AgentReportService {
     /** 慢 SQL 批量入库 */
     private void saveSlowSqls(String appName, List<?> items) {
         List<SlowSql> batch = new ArrayList<>(items.size());
+        // 本批已处理过的数据库地址，避免同一批重复自动注册
+        Set<String> autoRegged = new HashSet<>();
         for (Object item : items) {
             if (!(item instanceof Map<?, ?> m)) {
                 continue;
@@ -209,6 +218,10 @@ public class AgentReportService {
                 slowSql.setSource(strVal(map.get("source")) == null ? "jdbc" : strVal(map.get("source")));
                 String dbHost = strVal(map.get("dbHost"));
                 slowSql.setDbHost(dbHost == null ? "" : dbHost);
+                // agent 上报了库地址且该应用尚未关联连接 → 自动注册（仅注册一次）
+                if (dbHost != null && !dbHost.isBlank() && autoRegged.add(dbHost)) {
+                    ensureAutoDbConn(appName, dbHost);
+                }
                 // 触发方法链（JSON 数组，根 → 叶），供源码精确定位与界面展示
                 Object chain = map.get("methodChain");
                 slowSql.setMethodChain(chain == null ? null : objectMapper.writeValueAsString(chain));
@@ -222,6 +235,43 @@ public class AgentReportService {
             slowSqlMapper.batchInsert(batch);
         }
         log.info("agent report: saved {} slow sqls, app={}", batch.size(), appName);
+    }
+
+    /**
+     * 自动注册数据库连接：agent 上报慢 SQL 携带库地址（dbHost）时，
+     * 若该应用尚未关联任何连接（appName 绑定或 host 匹配），自动插入一条，
+     * 便于后续 EXPLAIN 分析直接命中；已关联过则不重复插入。
+     * 凭据（用户名/密码）agent 不上报，留空由用户在界面补充。
+     */
+    private void ensureAutoDbConn(String appName, String dbHost) {
+        if (dbHost == null || dbHost.isBlank()) {
+            return;
+        }
+        try {
+            List<DbConn> exists = dbConnMapper.findByAppOrHost(appName, dbHost);
+            for (DbConn c : exists) {
+                boolean appBound = appName.equals(c.getAppName());
+                boolean hostMatch = c.getHost() != null && !c.getHost().isBlank()
+                        && (dbHost.contains(c.getHost()) || c.getHost().contains(dbHost));
+                if (appBound || hostMatch) {
+                    // 已有关联，不重复自动插入
+                    return;
+                }
+            }
+            DbConn conn = new DbConn();
+            conn.setConnName("自动关联-" + appName);
+            conn.setHost(dbHost);
+            conn.setAppName(appName);
+            conn.setDbUrl("jdbc:mysql://" + dbHost
+                    + "?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true");
+            conn.setUsername("");   // agent 不携带凭据，由用户后补
+            conn.setPassword("");
+            conn.setIsDefault(0);
+            dbConnMapper.insert(conn);
+            log.info("agent report: 自动注册数据库连接, app={}, host={}", appName, dbHost);
+        } catch (Exception e) {
+            log.warn("auto register db conn failed, app={}, host={}", appName, dbHost, e);
+        }
     }
 
     // ===================== 类型安全取值工具 =====================

@@ -78,10 +78,12 @@ const metricCards = computed(() => {
 })
 
 function seriesData(key: string) {
-  return [...rows.value].reverse().map((r) => ({
-    t: new Date(Number(r.collectTime)).toLocaleTimeString('zh-CN', { hour12: false }),
-    v: Number(r[key])
-  }))
+  return [...rows.value]
+    .sort((a, b) => new Date(a.collectTime).getTime() - new Date(b.collectTime).getTime())
+    .map((r) => ({
+      t: new Date(r.collectTime).toLocaleTimeString('zh-CN', { hour12: false }),
+      v: Number(r[key])
+    }))
 }
 
 function buildOption(datas: Array<{ name: string; key: string; color: string; area?: boolean }>, yName: string) {

@@ -88,7 +88,7 @@
           <div v-for="i in filteredIssues" :key="i.id" class="px-3 py-2.5 rounded-lg cursor-pointer border transition-all"
             :class="detail?.issue?.id === i.id ? 'bg-neon-green/10 border-neon-green/40' : 'bg-white/5 border-white/10 hover:border-neon-green/30'"
             @click="showIssueDetail(i.id)">
-            <div class="text-xs text-fg-main truncate">{{ i.title }}</div>
+            <div class="text-xs text-fg-main truncate" :title="i.title">{{ i.title }}</div>
             <div class="flex justify-between mt-1 text-[11px] text-fg-sub">
               <span class="flex items-center gap-1.5 min-w-0">
                 <span v-if="i.appName" class="px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue shrink-0">{{ i.appName }}</span>
@@ -134,8 +134,13 @@
               </button>
             </div>
           </div>
-          <div class="text-xs text-fg-sub mb-4">{{ detail.issue.issueType }} · 严重度 {{ detail.issue.severity }}
+          <div class="text-xs text-fg-sub mb-2">{{ detail.issue.issueType }} · 严重度 {{ detail.issue.severity }}
             <span v-if="detail.issue.sourceFile"> · {{ detail.issue.sourceFile.relativePath }}:{{ detail.issue.lineStart }}-{{ detail.issue.lineEnd }}</span>
+          </div>
+
+          <div v-if="evidenceSqlText" class="p-3 rounded-lg bg-black/30 border border-white/10 mb-4">
+            <div class="text-xs text-fg-sub mb-1">完整 SQL</div>
+            <pre class="text-[11px] text-fg-main whitespace-pre-wrap break-all leading-relaxed max-h-[180px] overflow-y-auto font-mono">{{ evidenceSqlText }}</pre>
           </div>
 
           <div v-if="detail.issue.rootCause" class="p-3 rounded-lg bg-white/5 mb-4">
@@ -199,9 +204,9 @@
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div class="p-3 rounded-lg bg-white/5">
           <div class="text-xs text-fg-sub mb-2">慢 SQL → 调用链 / 实体定位（MyBatis・JPA・Hibernate 通用）</div>
-          <select v-model="fastSlowSql" class="input-select w-full mb-2">
+          <select v-model="fastSlowSql" class="input-select w-full mb-2" title="">
             <option :value="0">— 最近慢 SQL —</option>
-            <option v-for="s in recentSlow" :key="s.id" :value="s.id">{{ s.sqlText?.slice(0, 40) }}（{{ Number(s.costMs).toFixed(0) }}ms）</option>
+            <option v-for="s in recentSlow" :key="s.id" :value="s.id" :title="s.sqlText">{{ s.sqlText?.slice(0, 80) }}（{{ Number(s.costMs).toFixed(0) }}ms）</option>
           </select>
           <button class="btn-primary w-full justify-center text-xs" :disabled="!fastSlowSql || !currentRepo" @click="createFromSlowSql">创建问题</button>
         </div>
@@ -379,6 +384,15 @@ const issueConn = computed<{ conn: Record<string, any>; reason: string } | null>
   const def = sorted.find((c) => Number(c.isDefault) === 1)
   if (def) return { conn: def, reason: '默认兜底（注意核对实际库）' }
   return { conn: sorted[0], reason: '兜底（注意核对实际库）' }
+})
+
+// 慢 SQL 完整 SQL 文本（标题被截断时，在下方完整展示）
+const evidenceSqlText = computed(() => {
+  try {
+    const ev = detail.value?.issue?.evidenceJson
+    const parsed = ev ? (typeof ev === 'string' ? JSON.parse(ev) : ev) : {}
+    return parsed?.sqlText || parsed?.sql || ''
+  } catch { return '' }
 })
 
 // EXPLAIN 目标库与一致性（证据中的 target/actualDb/consistent 由后端分析时写入）

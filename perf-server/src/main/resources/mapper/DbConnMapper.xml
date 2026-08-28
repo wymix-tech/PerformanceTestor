@@ -41,6 +41,19 @@
         LIMIT 10
     </select>
 
+    <select id="findByAppOrHost" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM db_conn
+        WHERE app_name = #{appName}
+           OR (host IS NOT NULL AND host != '' AND (
+               host = #{host}
+               OR host LIKE CONCAT('%', #{host}, '%')
+               OR #{host} LIKE CONCAT('%', host, '%')
+           ))
+        ORDER BY is_default DESC, id ASC
+        LIMIT 20
+    </select>
+
     <delete id="deleteById">
         DELETE FROM db_conn WHERE id = #{id}
     </delete>

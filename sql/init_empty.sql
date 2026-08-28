@@ -1,0 +1,271 @@
+-- =====================================================================
+-- PerformanceTestor 数据库初始化脚本（幂等，可重复执行）
+-- 说明：
+--   1. 全部使用 CREATE TABLE IF NOT EXISTS，可重复执行；
+--   2. 时序表（jvm_metric / stress_sample）使用 RANGE COLUMNS 按天分区，
+--      末尾保留 MAXVALUE 兜底分区，保证任意时间数据可写入；
+--   3. 末尾插入演示数据，便于前端首屏展示与端到端联调。
+-- =====================================================================
+
+CREATE DATABASE IF NOT EXISTS performance_testor DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+USE performance_testor;
+
+-- ---------------------------------------------------------------------
+-- 1. app_instance：被测应用实例（agent 首次上报自动注册）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_instance (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name      VARCHAR(128)  NOT NULL COMMENT '应用名称',
+    app_host      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT '应用所在主机（agent 上报来源）',
+    agent_version VARCHAR(32)   NOT NULL DEFAULT '' COMMENT 'agent 版本',
+    status        TINYINT       NOT NULL DEFAULT 1 COMMENT '状态：1 在线 0 离线',
+    last_report_time DATETIME   NULL COMMENT '最近上报时间',
+    create_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_app_name (app_name)
+) ENGINE = InnoDB COMMENT = '被测应用实例';
+
+-- ---------------------------------------------------------------------
+-- 2. jvm_metric：JVM 指标时序数据（按天分区）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS jvm_metric (
+    id               BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name         VARCHAR(128)  NOT NULL COMMENT '应用名称',
+    collect_time     DATETIME      NOT NULL COMMENT '采集时间',
+    heap_used_mb     DOUBLE        NOT NULL DEFAULT 0 COMMENT '堆已用 MB',
+    heap_max_mb      DOUBLE        NOT NULL DEFAULT 0 COMMENT '堆最大值 MB',
+    non_heap_used_mb DOUBLE        NOT NULL DEFAULT 0 COMMENT '非堆已用 MB',
+    young_gc_count   BIGINT        NOT NULL DEFAULT 0 COMMENT 'Young GC 次数',
+    young_gc_ms      BIGINT        NOT NULL DEFAULT 0 COMMENT 'Young GC 累计耗时 ms',
+    full_gc_count    BIGINT        NOT NULL DEFAULT 0 COMMENT 'Full GC 次数',
+    full_gc_ms       BIGINT        NOT NULL DEFAULT 0 COMMENT 'Full GC 累计耗时 ms',
+    thread_count     INT           NOT NULL DEFAULT 0 COMMENT '线程数',
+    cpu_usage        DOUBLE        NOT NULL DEFAULT 0 COMMENT '进程 CPU 使用率 %',
+    system_cpu       DOUBLE        NOT NULL DEFAULT 0 COMMENT '系统 CPU 使用率 %',
+    PRIMARY KEY (id, collect_time),
+    KEY idx_app_time (app_name, collect_time)
+) ENGINE = InnoDB COMMENT = 'JVM 指标时序数据'
+PARTITION BY RANGE COLUMNS (collect_time) (
+    PARTITION p20260801 VALUES LESS THAN ('2026-08-02 00:00:00'),
+    PARTITION p20260827 VALUES LESS THAN ('2026-08-28 00:00:00'),
+    PARTITION p20260828 VALUES LESS THAN ('2026-08-29 00:00:00'),
+    PARTITION p20260829 VALUES LESS THAN ('2026-08-30 00:00:00'),
+    PARTITION p20260830 VALUES LESS THAN ('2026-08-31 00:00:00'),
+    PARTITION p_max VALUES LESS THAN (MAXVALUE)
+);
+
+-- ---------------------------------------------------------------------
+-- 3. trace_chain：业务方法调用链
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS trace_chain (
+    id           BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    trace_id     VARCHAR(64)   NOT NULL COMMENT '链路 ID',
+    app_name     VARCHAR(128)  NOT NULL COMMENT '应用名称',
+    root_method  VARCHAR(512)  NOT NULL DEFAULT '' COMMENT '根方法（类#方法）',
+    trace_json   MEDIUMTEXT    NOT NULL COMMENT '调用树 JSON（TraceNode 树，含每层耗时与占比）',
+    total_ms     DOUBLE        NOT NULL DEFAULT 0 COMMENT '总耗时 ms',
+    start_time   DATETIME      NOT NULL COMMENT '链路开始时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_trace (trace_id),
+    KEY idx_app_time (app_name, start_time)
+) ENGINE = InnoDB COMMENT = '业务方法调用链';
+
+-- ---------------------------------------------------------------------
+-- 4. slow_sql：慢 SQL 记录（JDBC 拦截 + 慢查询日志解析双通道）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS slow_sql (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name      VARCHAR(128)  NOT NULL COMMENT '应用名称',
+    sql_text      MEDIUMTEXT    NOT NULL COMMENT 'SQL 文本（已脱敏，参数以 ? 占位）',
+    cost_ms       DOUBLE        NOT NULL DEFAULT 0 COMMENT '执行耗时 ms',
+    source        VARCHAR(32)   NOT NULL DEFAULT 'jdbc' COMMENT '来源：jdbc 拦截 / slowlog 日志',
+    db_host       VARCHAR(255)  NOT NULL DEFAULT '' COMMENT '数据库地址（慢日志解析来源）',
+    method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶，如 Controller → Service → Mapper）',
+    execute_time  DATETIME      NOT NULL COMMENT '执行时间',
+    PRIMARY KEY (id),
+    KEY idx_app_time (app_name, execute_time),
+    KEY idx_cost (cost_ms)
+) ENGINE = InnoDB COMMENT = '慢 SQL 记录';
+
+-- 4.5 db_conn：数据库连接配置（供慢 SQL 分析时执行 EXPLAIN 等检测语句）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS db_conn (
+    id           BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    conn_name    VARCHAR(128) NOT NULL COMMENT '连接名称（如 perf-demo-主库）',
+    host         VARCHAR(255) NOT NULL DEFAULT '' COMMENT '主机标识（host:port/db，与慢 SQL dbHost 匹配）',
+    app_name     VARCHAR(128) NOT NULL DEFAULT '' COMMENT '绑定应用（与慢 SQL appName 匹配，空=不限应用）',
+    db_url       VARCHAR(512) NOT NULL COMMENT 'JDBC URL（仅允许 jdbc:mysql://）',
+    username     VARCHAR(128) NOT NULL COMMENT '用户名',
+    password     VARCHAR(256) NOT NULL DEFAULT '' COMMENT '密码（内网演示明文存储，生产环境应加密）',
+    is_default   TINYINT      NOT NULL DEFAULT 0 COMMENT '是否默认连接：1 是 0 否',
+    create_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id)
+) ENGINE = InnoDB COMMENT = '数据库连接配置';
+
+-- ---------------------------------------------------------------------
+-- 5. stress_task：压测任务
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stress_task (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    task_name     VARCHAR(128)  NOT NULL COMMENT '任务名称',
+    engine_type   VARCHAR(32)   NOT NULL DEFAULT 'http' COMMENT '引擎类型：http / jmeter',
+    target_url    VARCHAR(512)  NOT NULL COMMENT '压测目标 URL',
+    app_name      VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '归属应用（agent 上报应用名）',
+    method        VARCHAR(16)   NOT NULL DEFAULT 'GET' COMMENT 'HTTP 方法',
+    concurrency   INT           NOT NULL DEFAULT 1 COMMENT '并发数',
+    duration_sec  INT           NOT NULL DEFAULT 60 COMMENT '持续时长秒',
+    qps_limit     INT           NOT NULL DEFAULT 0 COMMENT 'QPS 上限（0 不限制）',
+    status        VARCHAR(32)   NOT NULL DEFAULT 'pending' COMMENT '状态：pending/running/finished/failed',
+    result_json   MEDIUMTEXT    NULL COMMENT '结果 JSON（含统计、容量评估、扩容建议）',
+    error_msg     TEXT          NULL COMMENT '失败信息',
+    create_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    finish_time   DATETIME      NULL COMMENT '完成时间',
+    PRIMARY KEY (id),
+    KEY idx_status_time (status, create_time)
+) ENGINE = InnoDB COMMENT = '压测任务';
+
+-- ---------------------------------------------------------------------
+-- 6. stress_sample：压测周期采样（按天分区）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stress_sample (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    task_id       BIGINT UNSIGNED NOT NULL COMMENT '压测任务 ID',
+    sample_time   DATETIME      NOT NULL COMMENT '采样时间',
+    concurrency   INT           NOT NULL DEFAULT 0 COMMENT '当前并发',
+    qps           DOUBLE        NOT NULL DEFAULT 0 COMMENT '周期内 QPS',
+    p50_ms        DOUBLE        NOT NULL DEFAULT 0 COMMENT 'P50 RT ms',
+    p95_ms        DOUBLE        NOT NULL DEFAULT 0 COMMENT 'P95 RT ms',
+    p99_ms        DOUBLE        NOT NULL DEFAULT 0 COMMENT 'P99 RT ms',
+    error_count   BIGINT        NOT NULL DEFAULT 0 COMMENT '周期内错误数',
+    PRIMARY KEY (id, sample_time),
+    KEY idx_task_time (task_id, sample_time)
+) ENGINE = InnoDB COMMENT = '压测周期采样'
+PARTITION BY RANGE COLUMNS (sample_time) (
+    PARTITION p20260827 VALUES LESS THAN ('2026-08-28 00:00:00'),
+    PARTITION p20260828 VALUES LESS THAN ('2026-08-29 00:00:00'),
+    PARTITION p20260829 VALUES LESS THAN ('2026-08-30 00:00:00'),
+    PARTITION p20260830 VALUES LESS THAN ('2026-08-31 00:00:00'),
+    PARTITION p_max VALUES LESS THAN (MAXVALUE)
+);
+
+-- ---------------------------------------------------------------------
+-- 7. data_gen_task：灌数据任务记录
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS data_gen_task (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    task_name     VARCHAR(128)  NOT NULL COMMENT '任务名称',
+    db_url        VARCHAR(255)  NOT NULL COMMENT '目标库 JDBC URL',
+    table_name    VARCHAR(128)  NOT NULL COMMENT '目标表名',
+    row_count     INT           NOT NULL DEFAULT 1000 COMMENT '目标行数',
+    rule_json     TEXT          NULL COMMENT '字段生成规则 JSON',
+    status        VARCHAR(32)   NOT NULL DEFAULT 'pending' COMMENT '状态：pending/running/finished/failed',
+    inserted      INT           NOT NULL DEFAULT 0 COMMENT '已插入行数',
+    cost_ms       BIGINT        NOT NULL DEFAULT 0 COMMENT '总耗时 ms',
+    error_msg     TEXT          NULL COMMENT '失败信息',
+    create_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id)
+) ENGINE = InnoDB COMMENT = '灌数据任务记录';
+
+-- ---------------------------------------------------------------------
+-- 8. source_repo：源码仓库（zip / git / 本地路径导入记录）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS source_repo (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    repo_name     VARCHAR(128)  NOT NULL COMMENT '仓库名称',
+    repo_type     VARCHAR(16)   NOT NULL COMMENT '类型：zip / git / local',
+    source_path   VARCHAR(512)  NOT NULL COMMENT '磁盘根路径或 git url 或本地路径',
+    branch        VARCHAR(128)  NOT NULL DEFAULT '' COMMENT 'git 分支（空 = 默认分支）',
+    app_name      VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '绑定应用（项目与应用强绑定，压测/问题自动归属）',
+    git_user      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'git 用户名（私有仓库，可空）',
+    git_token     VARCHAR(512)  NOT NULL DEFAULT '' COMMENT 'git 密码/访问令牌（内网演示明文存储，生产环境应加密）',
+    status        VARCHAR(32)   NOT NULL DEFAULT 'importing' COMMENT '状态：importing/ready/failed',
+    file_count    INT           NOT NULL DEFAULT 0 COMMENT '文件数（≤5000）',
+    total_size    BIGINT        NOT NULL DEFAULT 0 COMMENT '总大小字节（≤200MB）',
+    error_msg     TEXT          NULL COMMENT '失败信息',
+    create_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id)
+) ENGINE = InnoDB COMMENT = '源码仓库';
+
+-- ---------------------------------------------------------------------
+-- 9. source_file：源码文件索引（文件内容存磁盘，表内仅存元数据）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS source_file (
+    id             BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    repo_id        BIGINT UNSIGNED NOT NULL COMMENT '仓库 ID',
+    relative_path  VARCHAR(512)  NOT NULL COMMENT '相对路径',
+    file_name      VARCHAR(256)  NOT NULL COMMENT '文件名',
+    language       VARCHAR(32)   NOT NULL DEFAULT '' COMMENT '语言类型',
+    size           BIGINT        NOT NULL DEFAULT 0 COMMENT '文件大小字节（≤1MB）',
+    content_hash   VARCHAR(64)   NOT NULL DEFAULT '' COMMENT '内容哈希',
+    create_time    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_repo_path (repo_id, relative_path)
+) ENGINE = InnoDB COMMENT = '源码文件索引';
+
+-- ---------------------------------------------------------------------
+-- 10. performance_issue：性能问题（关联检测证据与源码位置）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS performance_issue (
+    id             BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    issue_type     VARCHAR(32)   NOT NULL COMMENT '类型：slow_sql/hot_method/stress_bottleneck/jvm_alert',
+    app_name       VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '关联应用',
+    title          VARCHAR(512)  NOT NULL COMMENT '问题标题',
+    evidence_json  MEDIUMTEXT    NULL COMMENT '检测证据 JSON（慢 SQL/热点方法/压测数据等）',
+    source_repo_id BIGINT UNSIGNED NULL COMMENT '关联源码仓库',
+    source_file_id BIGINT UNSIGNED NULL COMMENT '关联源码文件',
+    line_start     INT           NULL COMMENT '问题起始行',
+    line_end       INT           NULL COMMENT '问题结束行',
+    root_cause     TEXT          NULL COMMENT '大模型根因分析',
+    status         VARCHAR(32)   NOT NULL DEFAULT 'pending' COMMENT '状态：pending/analyzed/fixed',
+    create_time    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_type_status (issue_type, status)
+) ENGINE = InnoDB COMMENT = '性能问题';
+
+-- ---------------------------------------------------------------------
+-- 11. fix_suggestion：修复方案（每个问题 2-3 条）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fix_suggestion (
+    id               BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    issue_id         BIGINT UNSIGNED NOT NULL COMMENT '问题 ID',
+    title            VARCHAR(512)  NOT NULL COMMENT '方案标题',
+    files_json       MEDIUMTEXT    NULL COMMENT '涉及文件 JSON',
+    changes_json     MEDIUMTEXT    NULL COMMENT '修改点 JSON',
+    code_changes_json MEDIUMTEXT   NULL COMMENT '代码改动要点 JSON',
+    benefit          TEXT          NULL COMMENT '预期收益',
+    risk             TEXT          NULL COMMENT '风险',
+    prompt_md        MEDIUMTEXT    NULL COMMENT '修复提示词 Markdown（选定后生成）',
+    selected         TINYINT       NOT NULL DEFAULT 0 COMMENT '是否被用户选定：1 是 0 否',
+    create_time      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_issue (issue_id)
+) ENGINE = InnoDB COMMENT = '修复方案';
+
+-- ---------------------------------------------------------------------
+-- 12. chat_message：AI 对话消息记录
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS chat_message (
+    id          BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    session_id  VARCHAR(64)   NOT NULL COMMENT '会话 ID',
+    role        VARCHAR(16)   NOT NULL COMMENT '角色：user/assistant/tool',
+    content     MEDIUMTEXT    NULL COMMENT '消息内容',
+    tool_calls  MEDIUMTEXT    NULL COMMENT '工具调用 JSON',
+    create_time DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_session (session_id, create_time)
+) ENGINE = InnoDB COMMENT = 'AI 对话消息记录';
+
+-- =====================================================================
+-- 自动新增日分区存储过程（可选：生产环境按需调用）
+-- 用法：CALL create_daily_partition('jvm_metric', 'p20260828', '2026-08-29 00:00:00');
+-- =====================================================================
+DELIMITER $$
+CREATE PROCEDURE IF NOT EXISTS create_daily_partition(IN tbl VARCHAR(64), IN part_name VARCHAR(64), IN less_than DATETIME)
+BEGIN
+    SET @sql = CONCAT('ALTER TABLE `', tbl, '` ADD PARTITION (PARTITION `', part_name,
+                      '` VALUES LESS THAN (''', DATE_FORMAT(less_than, '%Y-%m-%d %H:%i:%s'), '''))');
+    PREPARE stmt FROM @sql;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END$$
+DELIMITER ;

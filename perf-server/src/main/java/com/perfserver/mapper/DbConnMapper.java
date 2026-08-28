@@ -27,4 +27,7 @@ public interface DbConnMapper {
 
     /** 匹配连接：host 精确优先，其次默认，再次第一条 */
     List<DbConn> matchOrder();
+
+    /** 按应用名或主机标识查找已有连接（agent 上报时判断是否已关联，避免重复自动注册） */
+    List<DbConn> findByAppOrHost(@Param("appName") String appName, @Param("host") String host);
 }
