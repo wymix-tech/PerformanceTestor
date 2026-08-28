@@ -6,14 +6,14 @@
       <span class="text-xs font-normal text-fg-sub ml-2">问题关联 · 大模型多方案 · 修复提示词</span>
     </div>
 
-    <!-- 页面级项目筛选（项目即应用；控制问题列表与一键创建） -->
+    <!-- 页面级项目筛选（控制问题列表与一键创建） -->
     <div class="glass-card p-3 mb-4 flex items-center gap-3">
       <span class="text-sm font-medium">项目</span>
       <select v-model="issueApp" class="input-select w-44 text-xs">
         <option value="">全部项目（{{ issues.length }}）</option>
         <option v-for="a in issueApps" :key="a" :value="a">{{ a }}（{{ issues.filter(x => x.appName === a).length }}）</option>
       </select>
-      <span class="text-[11px] text-fg-sub">项目即应用：筛选对问题列表与「一键创建」全局生效，创建的问题自动归属当前项目</span>
+      <span class="text-[11px] text-fg-sub">筛选对问题列表与「一键创建」全局生效，创建的问题自动归属当前项目</span>
     </div>
 
     <!-- 数据库连接配置 -->
@@ -29,7 +29,7 @@
               <input v-model="connForm.connName" class="input-text w-full" placeholder="perf-demo-主库" /></div>
             <div><label class="text-xs text-fg-sub">主机标识（匹配慢 SQL dbHost）</label>
               <input v-model="connForm.host" class="input-text w-full" placeholder="127.0.0.1:3306/demo" /></div>
-            <div><label class="text-xs text-fg-sub">绑定项目（项目即应用，选后自动接管 EXPLAIN）</label>
+            <div><label class="text-xs text-fg-sub">绑定项目（选后自动接管 EXPLAIN）</label>
               <select v-model="connForm.appName" class="input-select w-full">
                 <option value="">不绑定（按主机标识匹配）</option>
                 <option v-for="name in projectNames" :key="name" :value="name">{{ name }}</option>
@@ -236,7 +236,7 @@ import { sourceApi, slowSqlApi, stressApi, dbConnApi } from '../api'
 
 const repos = ref<Array<Record<string, any>>>([])
 const currentRepo = ref<Record<string, any> | null>(null)
-// 项目即应用：项目名集合（仓库名），连接绑定的可选值
+// 项目名集合（仓库名），连接绑定的可选值
 const projectNames = computed(() => (repos.value || []).map((r: Record<string, any>) => r.repoName).filter(Boolean))
 
 const issues = ref<Array<Record<string, any>>>([])
@@ -540,7 +540,7 @@ async function createFromHot() {
 
 async function createFromStress() {
   if (!fastStress.value || !currentRepo.value) return
-  // 应用优先级：项目绑定（强绑定）→ 页面筛选 → 不传（后端继承任务应用）
+  // 应用优先级：项目绑定 → 页面筛选 → 不传（后端继承任务应用）
   const app = currentRepo.value.appName || issueApp.value || undefined
   const r = await sourceApi.fromStress({ stressTaskId: fastStress.value, repoId: currentRepo.value.id, appName: app })
   await showIssueDetail(r.data.id)

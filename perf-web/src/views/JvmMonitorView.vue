@@ -142,7 +142,7 @@ async function loadData() {
   if (j.status === 'fulfilled') rows.value = j.value.data
   if (a.status === 'fulfilled') {
     appList.value = a.value.data
-    // 默认选中第一个项目（项目即应用；不显示"全部"）
+    // 默认选中第一个项目
     if (!app.value && appList.value.length) {
       app.value = appList.value[0].appName
       await loadData()

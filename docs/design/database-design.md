@@ -14,10 +14,11 @@
 
 | 表名 | 用途 | 备注 |
 | ---- | ---- | ---- |
-| `app_instance` | 被测应用实例（agent 注册） | agent 首次上报自动注册 |
+| `app_instance` | 被测应用实例（agent 注册） | agent 首次上报自动注册；含 app_host / app_port（压测表单服务地址自动预填） |
 | `jvm_metric` | JVM 指标时序数据（堆/非堆/GC/线程/CPU） | 按天分区（collect_time） |
 | `trace_chain` | 业务方法调用链 | trace_json 存储调用树 |
 | `slow_sql` | 慢 SQL 记录（JDBC 拦截 + 慢日志解析双通道） | source 字段区分来源 |
+| `db_conn` | 数据库连接配置（慢 SQL 分析 EXPLAIN / 灌数据复用） | 新增 |
 | `stress_task` | 压测任务 | 含配置、状态、结果 JSON |
 | `stress_sample` | 压测周期采样（QPS/RT/错误率） | 按天分区（sample_time） |
 | `data_gen_task` | 灌数据任务记录 | 含目标表、行数、状态 |
@@ -27,7 +28,7 @@
 | `fix_suggestion` | 修复方案（每个问题 2-3 条） | 含 prompt 文本，新增 |
 | `chat_message` | AI 对话消息记录 | 可选，用于对话历史 |
 
-## 3. 新增四张表设计要点
+## 3. 新增五张表设计要点
 
 ### source_repo（源码仓库）
 - 字段：id、name、type（zip/git/local）、source_path（磁盘路径或 git url）、status、file_count、total_size、create_time；
@@ -45,6 +46,11 @@
 ### fix_suggestion（修复方案）
 - 字段：id、issue_id、title、files_json（涉及文件）、changes_json（修改点）、code_changes_json（代码改动要点）、benefit、risk、prompt_md（修复提示词）、selected（是否被用户选定）、create_time；
 - 每个问题 2-3 条方案，用户选定后生成 prompt_md。
+
+### db_conn（数据库连接配置）
+- 字段：id、conn_name、host（host:port/db，与慢 SQL dbHost 匹配）、app_name（绑定应用，空=不限）、db_url（仅允许 jdbc:mysql://）、username、password、is_default（默认连接）、create_time；
+- 用途：慢 SQL 分析时对执行计划跑 EXPLAIN、灌数据任务复用连接配置；
+- 安全：内网演示明文存储，生产环境应加密；agent 上报自动按 host/appName 关联匹配连接。
 
 ## 4. 分区策略
 

@@ -13,7 +13,8 @@ export default {
         neon: {
           green: '#00E5A0',
           blue: '#0EA5E9',
-          teal: '#34D399'
+          teal: '#34D399',
+          purple: '#A78BFA'
         },
         fg: {
           main: '#E6EDF7',

@@ -20,8 +20,9 @@
 ├── perf-server/                   # 后端服务（Spring Boot 3.x + MyBatis）
 ├── perf-web/                      # 前端（Vue3 + TS + tdesign + ECharts）
 ├── perf-demo/                     # 示例 Spring Boot 应用（含 N+1 问题示例代码）
-├── sql/init.sql                   # 全量建表脚本（分区表 + 四张新表 + 演示数据）
-├── scripts/                       # build.sh / start-all.sh(单机) / start-server.sh / start-agent.sh(多机)
+├── sql/init.sql                   # 全量建表脚本（分区表 + 新增五张表 + 演示数据）
+├── sql/init_empty.sql              # 全量建表脚本（无演示数据，一键初始化空库）
+├── scripts/                       # build.sh / start-all.sh(单机) / start-server.sh / start-agent.sh(多机) / link-codebuddy.sh
 └── docs/                          # 中间产出物统一归档目录（全部纳入 git 管理）
     ├── README.md
     ├── design/                    # 设计文档/架构图/技术方案/数据库设计说明
@@ -75,7 +76,13 @@ public interface StressEngine {
 - JVM 指标与压测采样按天分区表；
 - 调用链存 JSON 树；
 - 容量评估结果存压测任务 JSON 字段；
-- 新增 source_repo / source_file / performance_issue / fix_suggestion 四张表（详见 database-design.md）。
+- 新增 source_repo / source_file / performance_issue / fix_suggestion / db_conn 五张表（详见 database-design.md）。
+
+### 3.8 数据库连接管理
+- db_conn 表维护连接配置（JDBC URL / 用户名密码 / 绑定应用 / 默认连接），仅允许 jdbc:mysql://；
+- 慢 SQL 分析时按 host / appName 匹配连接并试跑 EXPLAIN，给出执行计划证据；
+- 灌数据任务复用连接配置，无需前端重复填写；
+- agent 上报自动按 host / appName 关联匹配连接。
 
 ## 4. 关键代码结构
 

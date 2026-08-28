@@ -2,8 +2,10 @@ package com.perfserver.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.perfserver.entity.AppInstance;
 import com.perfserver.entity.StressSample;
 import com.perfserver.entity.StressTask;
+import com.perfserver.mapper.AppInstanceMapper;
 import com.perfserver.mapper.StressSampleMapper;
 import com.perfserver.mapper.StressTaskMapper;
 import com.perfserver.stress.StressEngine;
@@ -42,15 +44,18 @@ public class StressTaskService {
     private final StressSampleMapper sampleMapper;
     private final StressEngineRegistry engineRegistry;
     private final ObjectMapper objectMapper;
+    private final AppInstanceMapper appInstanceMapper;
 
     public StressTaskService(StressTaskMapper taskMapper,
                              StressSampleMapper sampleMapper,
                              StressEngineRegistry engineRegistry,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             AppInstanceMapper appInstanceMapper) {
         this.taskMapper = taskMapper;
         this.sampleMapper = sampleMapper;
         this.engineRegistry = engineRegistry;
         this.objectMapper = objectMapper;
+        this.appInstanceMapper = appInstanceMapper;
     }
 
     /** 创建任务并异步启动压测 */
@@ -64,6 +69,8 @@ public class StressTaskService {
         task.setTargetUrl(request.getTargetUrl());
         task.setAppName(request.getAppName() == null || request.getAppName().isBlank()
                 ? "" : request.getAppName());
+        // 版本快照：发起压测时记录应用当前版本（agent 上报），供不同版本性能比对
+        task.setAppVersion(resolveCurrentVersion(task.getAppName()));
         task.setMethod(request.getMethod());
         task.setConcurrency(request.getConcurrency());
         task.setDurationSec(request.getDurationSec());
@@ -74,6 +81,20 @@ public class StressTaskService {
         final long taskId = task.getId();
         STRESS_EXECUTOR.submit(() -> runInternal(taskId, request));
         return task;
+    }
+
+    /** 查询应用当前上报版本（agent 心跳维护；查询失败/无版本返回空串） */
+    private String resolveCurrentVersion(String appName) {
+        if (appName == null || appName.isBlank()) {
+            return "";
+        }
+        try {
+            AppInstance inst = appInstanceMapper.findByAppName(appName);
+            return inst == null || inst.getAppVersion() == null ? "" : inst.getAppVersion();
+        } catch (Exception e) {
+            log.warn("resolve app version failed, app={}", appName, e);
+            return "";
+        }
     }
 
     private void runInternal(long taskId, StressTaskRequest request) {

@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS app_instance (
     id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
     app_name      VARCHAR(128)  NOT NULL COMMENT '应用名称',
     app_host      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT '应用所在主机（agent 上报来源）',
+    app_port      INT           NULL COMMENT '应用 HTTP 端口（agent 上报，压测表单服务地址自动预填用）',
+    app_version   VARCHAR(64)   NOT NULL DEFAULT '' COMMENT '应用版本号（agent 上报或探测 jar MANIFEST，压测任务快照记录）',
     agent_version VARCHAR(32)   NOT NULL DEFAULT '' COMMENT 'agent 版本',
     status        TINYINT       NOT NULL DEFAULT 1 COMMENT '状态：1 在线 0 离线',
     last_report_time DATETIME   NULL COMMENT '最近上报时间',
@@ -24,6 +26,20 @@ CREATE TABLE IF NOT EXISTS app_instance (
     PRIMARY KEY (id),
     UNIQUE KEY uk_app_name (app_name)
 ) ENGINE = InnoDB COMMENT = '被测应用实例';
+
+-- 兼容旧库：app_port / app_version 列不存在时补充（幂等，MySQL/MariaDB 通用）
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_instance' AND COLUMN_NAME = 'app_port');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE app_instance ADD COLUMN app_port INT NULL COMMENT ''应用 HTTP 端口（agent 上报，压测表单服务地址自动预填用）'' AFTER app_host',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_instance' AND COLUMN_NAME = 'app_version');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE app_instance ADD COLUMN app_version VARCHAR(64) NOT NULL DEFAULT '''' COMMENT ''应用版本号（agent 上报或探测 jar MANIFEST，压测任务快照记录）'' AFTER app_port',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ---------------------------------------------------------------------
 -- 2. jvm_metric：JVM 指标时序数据（按天分区）
@@ -111,6 +127,7 @@ CREATE TABLE IF NOT EXISTS stress_task (
     engine_type   VARCHAR(32)   NOT NULL DEFAULT 'http' COMMENT '引擎类型：http / jmeter',
     target_url    VARCHAR(512)  NOT NULL COMMENT '压测目标 URL',
     app_name      VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '归属应用（agent 上报应用名）',
+    app_version   VARCHAR(64)   NOT NULL DEFAULT '' COMMENT '发起压测时的应用版本快照（agent 上报，版本间比对）',
     method        VARCHAR(16)   NOT NULL DEFAULT 'GET' COMMENT 'HTTP 方法',
     concurrency   INT           NOT NULL DEFAULT 1 COMMENT '并发数',
     duration_sec  INT           NOT NULL DEFAULT 60 COMMENT '持续时长秒',
@@ -123,6 +140,14 @@ CREATE TABLE IF NOT EXISTS stress_task (
     PRIMARY KEY (id),
     KEY idx_status_time (status, create_time)
 ) ENGINE = InnoDB COMMENT = '压测任务';
+
+-- 兼容旧库：stress_task.app_version 列不存在时补充（幂等）
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stress_task' AND COLUMN_NAME = 'app_version');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE stress_task ADD COLUMN app_version VARCHAR(64) NOT NULL DEFAULT '''' COMMENT ''发起压测时的应用版本快照（agent 上报，版本间比对）'' AFTER app_name',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ---------------------------------------------------------------------
 -- 6. stress_sample：压测周期采样（按天分区）
@@ -175,7 +200,7 @@ CREATE TABLE IF NOT EXISTS source_repo (
     repo_type     VARCHAR(16)   NOT NULL COMMENT '类型：zip / git / local',
     source_path   VARCHAR(512)  NOT NULL COMMENT '磁盘根路径或 git url 或本地路径',
     branch        VARCHAR(128)  NOT NULL DEFAULT '' COMMENT 'git 分支（空 = 默认分支）',
-    app_name      VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '绑定应用（项目与应用强绑定，压测/问题自动归属）',
+    app_name      VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '绑定应用（压测/问题自动归属）',
     git_user      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'git 用户名（私有仓库，可空）',
     git_token     VARCHAR(512)  NOT NULL DEFAULT '' COMMENT 'git 密码/访问令牌（内网演示明文存储，生产环境应加密）',
     status        VARCHAR(32)   NOT NULL DEFAULT 'importing' COMMENT '状态：importing/ready/failed',

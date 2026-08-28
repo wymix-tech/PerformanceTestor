@@ -38,6 +38,18 @@
     <build>
         <finalName>perf-demo</finalName>
         <plugins>
+            <!-- MANIFEST 写入 Implementation-Version（=pom version），供 perf-agent 自动探测应用版本上报平台 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

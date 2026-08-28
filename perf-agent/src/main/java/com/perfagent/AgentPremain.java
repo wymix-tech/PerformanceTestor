@@ -48,7 +48,7 @@ public class AgentPremain {
 
     private static void start(String agentArgs, Instrumentation instrumentation) {
         AgentConfig config = AgentConfig.fromArgs(agentArgs);
-        // 项目即应用：targetProjectName 未指定时回退 appName（平台按项目名做准入校验）
+        // targetProjectName 未指定时回退 appName（平台按项目名做准入校验）
         String project = config.targetProjectName.isBlank() ? config.appName : config.targetProjectName;
         config.targetProjectName = project;
 

@@ -23,7 +23,7 @@ public interface SourceRepoMapper {
     /** 更新分支配置（切换分支） */
     int updateBranch(@Param("id") long id, @Param("branch") String branch);
 
-    /** 更新绑定应用（项目与应用强绑定，空 = 解绑） */
+    /** 更新绑定应用（空 = 解绑） */
     int updateAppName(@Param("id") long id, @Param("appName") String appName);
 
     /** 按项目名查询（agent 上报准入校验用），不存在返回 null */

@@ -30,8 +30,8 @@ if [ ! -f perf-agent/target/perf-agent.jar ] || [ ! -f perf-demo/target/perf-dem
   echo "==> 未找到 jar，先构建 ..." && mvn -q package -DskipTests
 fi
 
-# agent 参数（逗号分隔 k=v）
-AGENT_ARGS="reportUrl=${REPORT_URL},appName=perf-demo,sampleRate=${SAMPLE_RATE},slowSqlThresholdMs=${SLOW_SQL_THRESHOLD_MS}"
+# agent 参数（逗号分隔 k=v）；appPort 供平台压测表单自动预填服务地址
+AGENT_ARGS="reportUrl=${REPORT_URL},appName=perf-demo,appPort=${DEMO_PORT},sampleRate=${SAMPLE_RATE},slowSqlThresholdMs=${SLOW_SQL_THRESHOLD_MS}"
 
 nohup java \
   -javaagent:perf-agent/target/perf-agent.jar=${AGENT_ARGS} \

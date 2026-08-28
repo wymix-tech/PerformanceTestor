@@ -116,7 +116,7 @@ const tabs = [
 ]
 const activeTab = ref('trace')
 const query = ref<{ app: string; method: string }>({ app: '', method: '' })
-// 项目即应用：项目下拉数据源 = 源码仓库名
+// 项目下拉数据源 = 源码仓库名
 const projectNames = ref<string[]>([])
 const traces = ref<Array<Record<string, any>>>([])
 const detail = ref<Record<string, any> | null>(null)
@@ -258,7 +258,7 @@ async function loadTraces() {
     sourceApi.repos()
   ])
   if (t.status === 'fulfilled') traces.value = t.value.data
-  // 项目下拉：首次加载后默认选中第一个项目（项目即应用）
+  // 项目下拉：首次加载后默认选中第一个项目
   if (a.status === 'fulfilled') {
     const names = (a.value.data || []).map((r: Record<string, any>) => r.repoName).filter(Boolean)
     if (!projectNames.value.length) {

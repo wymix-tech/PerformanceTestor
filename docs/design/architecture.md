@@ -36,8 +36,8 @@ flowchart LR
 | 组件 | 职责 | 部署位置 |
 | ---- | ---- | -------- |
 | perf-agent | 字节码增强埋点（方法耗时 / JDBC）、JMX 采集、批量上报 | 被测服务器（`-javaagent` 挂载） |
-| perf-server | 采集 API、压测引擎、灌数据、慢日志解析、源码管理、容量分析、AI 编排 | 平台服务器 |
-| perf-web | 六屏可视化（Vue3 + tdesign + ECharts） | 平台服务器 |
+| perf-server | 采集 API、压测引擎、灌数据、慢日志解析、数据库连接管理、源码管理、容量分析、AI 编排 | 平台服务器 |
+| perf-web | 七屏可视化（Vue3 + tdesign + ECharts） | 平台服务器 |
 | MySQL | 元数据 / 时序指标（分区表）/ 任务与报告 / 源码索引 / 问题与方案 | 平台服务器 |
 | 被测应用 | 被检测的 Spring Boot 业务系统 | 被测服务器 |
 

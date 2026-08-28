@@ -14,6 +14,8 @@ public class StressTask {
     private String method;
     /** 归属应用（agent 上报应用名，供问题关联与按应用分析） */
     private String appName;
+    /** 发起压测时的应用版本快照（agent 上报，用于版本间性能比对） */
+    private String appVersion;
     private Integer concurrency;
     private Integer durationSec;
     private Integer qpsLimit;
@@ -71,6 +73,14 @@ public class StressTask {
 
     public void setAppName(String appName) {
         this.appName = appName;
+    }
+
+    public String getAppVersion() {
+        return appVersion;
+    }
+
+    public void setAppVersion(String appVersion) {
+        this.appVersion = appVersion;
     }
 
     public Integer getConcurrency() {

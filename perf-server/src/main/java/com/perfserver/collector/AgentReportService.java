@@ -104,8 +104,8 @@ public class AgentReportService {
             warnUnknownProjectOnce(targetProject, type);
             return;
         }
-        // 心跳注册应用实例
-        registerInstance(appName, remoteHost);
+        // 心跳注册应用实例（携带 appPort 供压测地址自动预填）
+        registerInstance(appName, remoteHost, body);
 
         Object rawItems = body.get("items");
         if (!(rawItems instanceof List<?> items) || items.isEmpty()) {
@@ -124,12 +124,16 @@ public class AgentReportService {
         }
     }
 
-    /** 应用注册（upsert 心跳） */
-    private void registerInstance(String appName, String remoteHost) {
+    /** 应用注册（upsert 心跳；appPort/appVersion 可选，未携带时保留库中已有值） */
+    private void registerInstance(String appName, String remoteHost, Map<String, Object> body) {
         try {
             AppInstance instance = new AppInstance();
             instance.setAppName(appName);
             instance.setAppHost(remoteHost == null ? "" : remoteHost);
+            int port = intVal(body.get("appPort"));
+            instance.setAppPort(port > 0 ? port : null);
+            Object version = body.get("appVersion");
+            instance.setAppVersion(version == null ? "" : String.valueOf(version));
             instance.setAgentVersion("1.0.0");
             instance.setLastReportTime(LocalDateTime.now());
             appInstanceMapper.upsertByAppName(instance);

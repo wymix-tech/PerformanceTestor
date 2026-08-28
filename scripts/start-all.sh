@@ -50,7 +50,7 @@ echo "==> [3/5] 启动 perf-demo 示例应用（端口 ${DEMO_PORT}，挂载 per
 if [ ! -f perf-demo/target/perf-demo.jar ]; then
   echo "    未找到 jar，先构建后端..." && mvn -q package -DskipTests
 fi
-nohup java -javaagent:perf-agent/target/perf-agent.jar=reportUrl=${AGENT_REPORT_URL},appName=perf-demo,sampleRate=1.0 \
+nohup java -javaagent:perf-agent/target/perf-agent.jar=reportUrl=${AGENT_REPORT_URL},appName=perf-demo,appPort=${DEMO_PORT},sampleRate=1.0 \
   -jar perf-demo/target/perf-demo.jar \
   --server.port=${DEMO_PORT} \
   --spring.datasource.url="jdbc:mysql://${MYSQL_HOST}:${MYSQL_PORT}/demo?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true" \

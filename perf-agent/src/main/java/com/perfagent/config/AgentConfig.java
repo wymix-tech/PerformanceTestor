@@ -22,6 +22,16 @@ public class AgentConfig {
     public String targetProjectName = "";
     /** 调用链采样率（0~1，默认 0.1） */
     public double sampleRate = 0.1;
+    /**
+     * 被测应用 HTTP 端口（上报给平台，压测表单服务地址自动预填用）。
+     * 0 = 未知；未配置时运行期尝试读 server.port 系统属性兜底。
+     */
+    public int appPort = 0;
+    /**
+     * 被测应用版本号（上报给平台，压测任务记录版本，支持不同版本性能比对）。
+     * 留空时运行期自动从被测应用 jar 的 MANIFEST.MF 读 Implementation-Version。
+     */
+    public String appVersion = "";
     /** 慢 SQL 阈值 ms（默认 500） */
     public long slowSqlThresholdMs = 500;
     /** JMX 采集周期秒（默认 5） */
@@ -56,6 +66,8 @@ public class AgentConfig {
         if (kv.containsKey("targetProjectName")) cfg.targetProjectName = kv.get("targetProjectName");
         if (kv.containsKey("target-project-name")) cfg.targetProjectName = kv.get("target-project-name");
         if (kv.containsKey("sampleRate")) cfg.sampleRate = Double.parseDouble(kv.get("sampleRate"));
+        if (kv.containsKey("appPort")) cfg.appPort = Integer.parseInt(kv.get("appPort"));
+        if (kv.containsKey("appVersion")) cfg.appVersion = kv.get("appVersion");
         if (kv.containsKey("slowSqlThresholdMs")) cfg.slowSqlThresholdMs = Long.parseLong(kv.get("slowSqlThresholdMs"));
         if (kv.containsKey("jmxCollectIntervalSec")) cfg.jmxCollectIntervalSec = Long.parseLong(kv.get("jmxCollectIntervalSec"));
         if (kv.containsKey("batchSize")) cfg.batchSize = Integer.parseInt(kv.get("batchSize"));

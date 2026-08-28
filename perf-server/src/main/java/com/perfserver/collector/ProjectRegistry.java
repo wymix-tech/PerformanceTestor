@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 项目注册表：agent 上报准入校验（项目不存在 → 数据全部丢弃）。
  *
- * <p>项目即应用：项目名 = 源码仓库名（source_repo.repo_name）。
+ * <p>项目名 = 源码仓库名（source_repo.repo_name）。
  * 启发式缓存 30s，避免每批上报都查库；缓存空集也算"有缓存"，防止未知项目穿透。
  */
 @Service

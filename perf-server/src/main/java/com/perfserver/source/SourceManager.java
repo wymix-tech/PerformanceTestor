@@ -75,7 +75,7 @@ public class SourceManager {
         repo.setRepoType(type);
         repo.setSourcePath(payload);
         repo.setBranch(branch == null ? "" : branch.trim());
-        // 项目即应用：应用名 = 项目（仓库）名，agent 上报 appName 应与项目名一致
+        // 应用名 = 项目（仓库）名，agent 上报 appName 应与项目名一致
         repo.setAppName(appName == null || appName.isBlank() ? repoName.trim() : appName.trim());
         repo.setGitUser(gitUser == null ? "" : gitUser.trim());
         repo.setGitToken(gitToken == null ? "" : gitToken.trim());
@@ -429,7 +429,7 @@ public class SourceManager {
     }
 
     /**
-     * 绑定应用（项目与应用强绑定）：绑定后压测/问题/源码分析自动归属该应用；空串 = 解绑。
+     * 绑定应用：绑定后压测/问题/源码分析自动归属该应用；空串 = 解绑。
      *
      * @return 绑定的应用名
      */

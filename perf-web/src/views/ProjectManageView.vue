@@ -3,7 +3,7 @@
     <div class="page-title">
       <FolderGit class="w-5 h-5 text-neon-green" />
       项目管理
-      <span class="text-xs font-normal text-fg-sub ml-2">项目即应用 · 源码采集 · 分支与同步管理</span>
+      <span class="text-xs font-normal text-fg-sub ml-2">源码采集 · 分支与同步管理</span>
     </div>
 
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -11,8 +11,8 @@
         <div class="text-sm font-medium mb-4">导入项目源码</div>
         <div class="space-y-3">
           <div>
-            <label class="text-xs text-fg-sub">项目 / 应用名<span class="ml-2 font-normal">项目即应用：agent 上报的 appName 与此一致，压测/问题/分析自动归属</span></label>
-            <input v-model="importForm.repoName" class="input-text w-full" placeholder="如 perf-demo（同时也是应用名）" />
+            <label class="text-xs text-fg-sub">项目名<span class="ml-2 font-normal">agent 上报的名称与此一致时数据自动归属该项目</span></label>
+            <input v-model="importForm.repoName" class="input-text w-full" placeholder="如 perf-demo" />
           </div>
           <div>
             <label class="text-xs text-fg-sub">zip 上传（≤200MB，防路径穿越）</label>
@@ -79,8 +79,6 @@
               </div>
               <div class="text-[11px] text-fg-sub mt-1 flex items-center gap-2">
                 <span>{{ r.repoType }} · {{ r.fileCount }} 文件 · {{ formatSize(r.totalSize) }}</span>
-                <!-- 项目即应用：展示归属（= 仓库名或导入时指定的应用名） -->
-                <span v-if="r.appName" class="px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue">{{ r.appName }}</span>
               </div>
               <div v-if="r.status === 'failed' && r.errorMsg" class="text-[11px] text-red-400 mt-1 break-all max-w-md">{{ r.errorMsg }}</div>
             </div>
@@ -279,7 +277,7 @@ async function resyncRepo(r: Record<string, any>) {
 const cleaningId = ref<number>(0)
 async function cleanupData(r: Record<string, any>) {
   if (!r.appName) {
-    alert('该项目未绑定应用（appName），无法定位历史数据，请先在项目列表绑定应用')
+    alert('该项目未绑定应用，无法定位历史数据，请先绑定应用')
     return
   }
   const ok = window.confirm(

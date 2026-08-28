@@ -112,7 +112,7 @@ public class SourceController {
         return ApiResponse.ok(Map.of("repoId", repoId, "branch", branch == null ? "" : branch, "indexed", indexed));
     }
 
-    /** 绑定应用（项目与应用强绑定；空串 = 解绑） */
+    /** 绑定应用（空串 = 解绑） */
     @PostMapping("/repos/{repoId}/bind-app")
     public ApiResponse<Map<String, Object>> bindApp(@PathVariable long repoId, @RequestBody Map<String, String> body) {
         String app = sourceManager.bindApp(repoId, body.get("appName"));

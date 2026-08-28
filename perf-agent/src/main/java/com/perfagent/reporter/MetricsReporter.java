@@ -14,6 +14,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.jar.Attributes;
+import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 
 /**
  * 指标上报器：本地队列缓冲 + 单线程定时 flush + 失败指数退避重试 + 超时丢弃。
@@ -35,8 +38,17 @@ public class MetricsReporter {
     private final String appName;
     /** 目标项目名（平台准入校验键：项目不存在则丢弃数据） */
     private final String targetProjectName;
+    /** 被测应用 HTTP 端口（显式配置；0=未知，运行期懒探测 server.port 系统属性） */
+    private final int configuredAppPort;
+    /** 被测应用版本号（显式配置；空=未知，运行期懒探测被测 jar MANIFEST） */
+    private final String configuredAppVersion;
     private final int batchSize;
     private final int bufferSize;
+
+    /** 运行期懒探测缓存的应用端口（-1 未探测） */
+    private int resolvedAppPort = -1;
+    /** 运行期懒探测缓存的应用版本（null 未探测；探测结果可能为空串） */
+    private String resolvedAppVersion;
 
     private final Deque<Map<String, Object>> traceQueue = new ArrayDeque<>();
     private final Deque<Map<String, Object>> jvmQueue = new ArrayDeque<>();
@@ -57,6 +69,8 @@ public class MetricsReporter {
         this.reportUrl = config.reportUrl;
         this.appName = config.appName;
         this.targetProjectName = config.targetProjectName;
+        this.configuredAppPort = config.appPort;
+        this.configuredAppVersion = config.appVersion == null ? "" : config.appVersion.trim();
         this.batchSize = config.batchSize;
         this.bufferSize = config.bufferSize;
         this.http = http;
@@ -182,6 +196,14 @@ public class MetricsReporter {
         body.put("type", type);
         body.put("appName", appName);
         body.put("targetProjectName", targetProjectName);
+        int port = resolveAppPort();
+        if (port > 0) {
+            body.put("appPort", port);
+        }
+        String version = resolveAppVersion();
+        if (!version.isEmpty()) {
+            body.put("appVersion", version);
+        }
         body.put("items", items);
 
         HttpReporter.PostResult result = http.postJson(reportUrl, JsonUtil.serialize(body));
@@ -209,6 +231,82 @@ public class MetricsReporter {
             }
         }
         return result.ok();
+    }
+
+    /** 解析被测应用 HTTP 端口：显式配置优先，其次懒读 server.port 系统属性（premain 期未设置，运行期可读） */
+    private int resolveAppPort() {
+        if (configuredAppPort > 0) {
+            return configuredAppPort;
+        }
+        if (resolvedAppPort > 0) {
+            return resolvedAppPort;
+        }
+        try {
+            String p = System.getProperty("server.port");
+            if (p != null && p.matches("\\d+")) {
+                resolvedAppPort = Integer.parseInt(p);
+            }
+        } catch (Throwable ignored) {
+            // 系统属性读取异常按未知处理
+        }
+        return resolvedAppPort;
+    }
+
+    /** 解析被测应用版本：显式配置优先，否则从被测应用 jar 的 MANIFEST 读 Implementation-Version（懒探测一次缓存） */
+    private String resolveAppVersion() {
+        if (!configuredAppVersion.isEmpty()) {
+            return configuredAppVersion;
+        }
+        if (resolvedAppVersion != null) {
+            return resolvedAppVersion;
+        }
+        resolvedAppVersion = detectVersionFromManifest();
+        return resolvedAppVersion;
+    }
+
+    /**
+     * 从被测应用 jar 解析版本（仅当未配置 appVersion 参数时执行）：
+     * 1) sun.java.command 形如 "-jar /path/app.jar --spring..." —— java -jar 启动，最精确；
+     * 2) 兜底 java.class.path 中的 jar（排除 agent 自身；IDE exploded 运行时可能取到依赖 jar，返回空串更保守）。
+     * 读取其 META-INF/MANIFEST.MF 的 Implementation-Version（Spring Boot repackage 默认写入 pom 版本）。
+     */
+    private String detectVersionFromManifest() {
+        try {
+            String jarPath = null;
+            // 1) -jar 启动：命令行第二个参数即应用 jar
+            String cmd = System.getProperty("sun.java.command", "");
+            if (cmd.startsWith("-jar ")) {
+                String[] parts = cmd.split("\\s+");
+                if (parts.length > 1 && parts[1].endsWith(".jar")) {
+                    jarPath = parts[1];
+                }
+            }
+            // 2) 兜底：classpath 中的 jar（排除 -javaagent 自身的 jar）
+            if (jarPath == null) {
+                for (String p : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
+                    if (p.endsWith(".jar") && !p.toLowerCase().contains("perf-agent")) {
+                        jarPath = p;
+                        break;
+                    }
+                }
+            }
+            if (jarPath == null) {
+                return "";
+            }
+            try (JarFile jf = new JarFile(jarPath)) {
+                Manifest mf = jf.getManifest();
+                if (mf == null) {
+                    return "";
+                }
+                String v = mf.getMainAttributes().getValue(Attributes.Name.IMPLEMENTATION_VERSION);
+                if (v == null || v.isBlank()) {
+                    v = mf.getMainAttributes().getValue("Build-Version");
+                }
+                return v == null ? "" : v.trim();
+            }
+        } catch (Throwable ignored) {
+            return "";
+        }
     }
 
     /** TraceNode 树转 Map（便于 JSON 序列化，含每层耗时占比与开始偏移） */

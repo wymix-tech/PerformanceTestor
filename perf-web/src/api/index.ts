@@ -85,7 +85,7 @@ export const sourceApi = {
   branches: (repoId: number) => http.get(`/source/repos/${repoId}/branches`),
   // 切换分支（git 仓库，切换后自动重新同步）
   switchBranch: (repoId: number, branch: string) => http.post(`/source/repos/${repoId}/branch`, { branch }),
-  // 绑定应用（项目与应用强绑定；appName 空 = 解绑）
+  // 绑定应用（appName 空 = 解绑）
   bindApp: (repoId: number, appName: string) => http.post(`/source/repos/${repoId}/bind-app`, { appName }),
   // zip 上传导入（multipart；appName 导入即绑定应用）
   importZip: (repoName: string, file: File, appName?: string) => {

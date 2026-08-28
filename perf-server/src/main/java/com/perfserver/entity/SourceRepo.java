@@ -15,7 +15,7 @@ public class SourceRepo {
     private String sourcePath;
     /** git 分支（仅 git 仓库；空 = 默认分支） */
     private String branch;
-    /** 绑定应用（项目与应用强绑定：压测/问题/接口扫描自动归属该应用） */
+    /** 绑定应用（压测/问题/接口扫描自动归属该应用） */
     private String appName;
     /** git 用户名（私有仓库，可空；列表接口不脱敏展示） */
     private String gitUser;

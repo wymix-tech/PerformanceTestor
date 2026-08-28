@@ -6,6 +6,8 @@
         <id column="id" property="id"/>
         <result column="app_name" property="appName"/>
         <result column="app_host" property="appHost"/>
+        <result column="app_port" property="appPort"/>
+        <result column="app_version" property="appVersion"/>
         <result column="agent_version" property="agentVersion"/>
         <result column="status" property="status"/>
         <result column="last_report_time" property="lastReportTime"/>
@@ -13,23 +15,26 @@
     </resultMap>
 
     <insert id="upsertByAppName">
-        INSERT INTO app_instance (app_name, app_host, agent_version, status, last_report_time)
-        VALUES (#{appName}, #{appHost}, #{agentVersion}, 1, #{lastReportTime})
+        INSERT INTO app_instance (app_name, app_host, app_port, app_version, agent_version, status, last_report_time)
+        VALUES (#{appName}, #{appHost}, #{appPort}, #{appVersion}, #{agentVersion}, 1, #{lastReportTime})
         ON DUPLICATE KEY UPDATE
             app_host        = VALUES(app_host),
+            <!-- 本批未带端口/版本时不覆盖已有值 -->
+            app_port        = IF(VALUES(app_port) IS NULL, app_port, VALUES(app_port)),
+            app_version     = IF(VALUES(app_version) = '', app_version, VALUES(app_version)),
             agent_version   = VALUES(agent_version),
             status          = 1,
             last_report_time = VALUES(last_report_time)
     </insert>
 
     <select id="findAll" resultMap="BaseResultMap">
-        SELECT id, app_name, app_host, agent_version, status, last_report_time, create_time
+        SELECT id, app_name, app_host, app_port, app_version, agent_version, status, last_report_time, create_time
         FROM app_instance
         ORDER BY status DESC, last_report_time DESC
     </select>
 
     <select id="findByAppName" resultMap="BaseResultMap">
-        SELECT id, app_name, app_host, agent_version, status, last_report_time, create_time
+        SELECT id, app_name, app_host, app_port, app_version, agent_version, status, last_report_time, create_time
         FROM app_instance
         WHERE app_name = #{appName}
         LIMIT 1

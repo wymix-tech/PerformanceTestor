@@ -19,9 +19,12 @@
     <div v-if="activeTab === 'stress'" class="grid grid-cols-1 xl:grid-cols-3 gap-4">
       <div class="glass-card p-5">
         <div class="text-sm font-medium mb-4">新建压测任务</div>
+        <div v-if="rerunFilled" class="text-xs text-neon-green bg-neon-green/10 border border-neon-green/20 rounded px-3 py-2 mb-3">
+          已填入上次压测配置，可调整后点击「开始压测」重新发起
+        </div>
         <div class="space-y-3">
           <div>
-            <label class="text-xs text-fg-sub">项目<span class="ml-2 font-normal">项目即应用，归属自动确定</span></label>
+            <label class="text-xs text-fg-sub">项目</label>
             <select v-model="form.repoId" class="input-select w-full" @change="loadEndpoints">
               <option :value="0">— 手动填写 URL —</option>
               <option v-for="r in repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
@@ -29,12 +32,12 @@
           </div>
           <div v-if="form.repoId > 0">
             <label class="text-xs text-fg-sub flex items-center justify-between">
-              <span>分支与接口</span>
+              <span>{{ currentRepoType === 'git' ? '分支与接口' : '接口' }}</span>
               <button class="text-neon-blue hover:underline text-[11px]" :disabled="resyncing" @click="resyncAndScan">
                 {{ resyncing ? '同步中…' : '↻ 与源码重新同步' }}
               </button>
             </label>
-            <div class="flex gap-2 mb-2">
+            <div v-if="currentRepoType === 'git'" class="flex gap-2 mb-2">
               <select
                 :key="branchOptions.length + '-' + currentRepoBranch"
                 class="input-select flex-1"
@@ -61,7 +64,7 @@
             </select>
           </div>
           <div>
-            <label class="text-xs text-fg-sub">服务地址（host:port，与接口路径拼接）</label>
+            <label class="text-xs text-fg-sub">服务地址（选项目后按 agent 上报自动带出，可修改）</label>
             <input v-model="form.baseUrl" class="input-text w-full" placeholder="http://127.0.0.1:8081" @input="composeUrl()" />
           </div>
           <div>
@@ -111,6 +114,7 @@
               <div class="text-sm text-fg-main truncate">{{ t.taskName || t.targetUrl }}</div>
               <span class="flex items-center gap-2 shrink-0">
                 <span v-if="t.appName" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue">{{ t.appName }}</span>
+                <span v-if="t.appVersion" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-purple/10 text-neon-purple">v{{ t.appVersion }}</span>
                 <span class="text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t.status)">{{ t.status }}</span>
               </span>
             </div>
@@ -126,8 +130,14 @@
     <!-- 压测报告 -->
     <div v-if="activeTab === 'stress' && report" class="glass-card p-5 mt-4">
       <div class="text-sm font-medium mb-4 flex items-center justify-between">
-        <span>压测报告 — {{ report.task.taskName || report.task.targetUrl }}</span>
-        <button class="text-xs text-neon-blue hover:underline" @click="runCapacity">容量评估 →</button>
+        <span class="flex items-center gap-2">
+          压测报告 — {{ report.task.taskName || report.task.targetUrl }}
+          <span v-if="report.task.appVersion" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-purple/10 text-neon-purple">v{{ report.task.appVersion }}</span>
+        </span>
+        <span class="flex items-center gap-3">
+          <button v-if="taskFinished" class="text-xs text-neon-green hover:underline" @click="rerunTask">↻ 再来一次</button>
+          <button class="text-xs text-neon-blue hover:underline" @click="runCapacity">容量评估 →</button>
+        </span>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-4">
         <div class="metric-card"><div class="text-xs text-fg-sub">总请求</div><div class="text-lg font-bold">{{ report.result?.totalRequests ?? '—' }}</div></div>
@@ -136,6 +146,40 @@
         <div class="metric-card"><div class="text-xs text-fg-sub">P95</div><div class="text-lg font-bold">{{ report.result?.p95Ms ?? '—' }}ms</div></div>
         <div class="metric-card"><div class="text-xs text-fg-sub">P99</div><div class="text-lg font-bold">{{ report.result?.p99Ms ?? '—' }}ms</div></div>
         <div class="metric-card"><div class="text-xs text-fg-sub">错误率</div><div class="text-lg font-bold" :class="(report.result?.errorRate ?? 0) > 5 ? 'text-red-400' : 'text-neon-green'">{{ report.result?.errorRate ?? 0 }}%</div></div>
+      </div>
+
+      <!-- 版本对比：选择同应用历史任务，比对核心指标（版本间性能回归/提升一目了然） -->
+      <div v-if="compareCandidates.length" class="mb-4 p-4 rounded-lg bg-white/5 border border-white/10">
+        <div class="flex items-center gap-3 mb-3">
+          <span class="text-xs text-fg-sub shrink-0">版本对比</span>
+          <select v-model.number="compareTaskId" class="input-select flex-1" @change="loadCompare(compareTaskId)">
+            <option :value="0">选择要对比的历史任务…</option>
+            <option v-for="t in compareCandidates" :key="t.id" :value="t.id">
+              {{ compareLabel(t) }}
+            </option>
+          </select>
+          <span v-if="compareLoading" class="text-[11px] text-fg-sub">加载中…</span>
+        </div>
+        <div v-if="compareReport" class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-fg-sub border-b border-white/10">
+                <th class="text-left py-1.5 font-normal">指标</th>
+                <th class="text-right py-1.5 font-normal">基线 {{ compareReport.task.appVersion ? 'v' + compareReport.task.appVersion : '未知版本' }}</th>
+                <th class="text-right py-1.5 font-normal">当前 {{ report.task.appVersion ? 'v' + report.task.appVersion : '未知版本' }}</th>
+                <th class="text-right py-1.5 font-normal">变化</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in compareRows" :key="row.label" class="border-b border-white/5">
+                <td class="py-1.5 text-fg-dim">{{ row.label }}</td>
+                <td class="text-right text-fg-sub">{{ row.base }}</td>
+                <td class="text-right text-fg-main font-medium">{{ row.cur }}</td>
+                <td class="text-right font-medium" :class="row.cls || 'text-fg-sub'">{{ row.delta || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div>
@@ -295,26 +339,52 @@ const form = ref({
 })
 // 项目/应用/接口扫描
 const repos = ref<Array<Record<string, any>>>([])
-const apps = ref<string[]>([])
+const appInstances = ref<Array<Record<string, any>>>([])
 const endpoints = ref<Array<Record<string, any>>>([])
 
-// 项目即应用：当前项目的归属应用 = appName（导入时默认=项目名）兜底项目名
+// 当前项目归属应用（压测任务 appName 取值）
 const currentRepoApp = computed(() => {
   const r = repos.value.find((x) => x.id === form.value.repoId)
   if (!r) return ''
   return r.appName || r.repoName || ''
 })
 
+// 当前项目类型：分支切换框仅对 git 项目展示（zip/local 无分支概念）
+const currentRepoType = computed(() => {
+  const r = repos.value.find((x) => x.id === form.value.repoId)
+  return r ? (r.repoType || '') : ''
+})
+
 async function loadEndpoints() {
   endpoints.value = []
   form.value.endpointIdx = -1
+  branchOptions.value = []
   if (!form.value.repoId) return
   try {
     const r = await sourceApi.endpoints(form.value.repoId)
     endpoints.value = r.data || []
   } catch { /* 扫描失败保持空列表 */ }
-  // 选定项目后自动同步分支列表（默认展示，无需点击）
-  loadBranchOptions()
+  // 选定 git 项目后自动同步分支列表（zip/local 项目无分支，不请求）
+  if (currentRepoType.value === 'git') {
+    loadBranchOptions()
+  }
+  // 选定项目后按 agent 上报的应用实例自动预填服务地址
+  prefillBaseUrl()
+}
+
+// 服务地址自动预填：agent 上报注册的应用实例（host + 可选端口），
+// 用户手动修改过后不再覆盖（仅空值或上次自动值时刷新）
+let autoBaseUrl = ''
+function prefillBaseUrl() {
+  const app = currentRepoApp.value
+  const inst = appInstances.value.find((x) => x.appName === app)
+  if (!inst || !inst.appHost) return
+  const url = 'http://' + inst.appHost + (inst.appPort ? ':' + inst.appPort : '')
+  if (!form.value.baseUrl || form.value.baseUrl === autoBaseUrl) {
+    form.value.baseUrl = url
+    autoBaseUrl = url
+    composeUrl()
+  }
 }
 
 // 与源码重新同步：重新拉取源码 → 重建索引 → 重扫接口（源码更新后点击）
@@ -474,7 +544,7 @@ async function startStress() {
   const body: Record<string, unknown> = {
     taskName: form.value.taskName || undefined,
     targetUrl: form.value.targetUrl,
-    // 强绑定：压测任务归属应用 = 项目绑定的应用
+    // 压测任务归属应用 = 项目的应用
     appName: currentRepoApp.value || undefined,
     method: form.value.method,
     concurrency: form.value.concurrency,
@@ -496,8 +566,117 @@ async function showReport(id: number) {
   const r = await stressApi.report(id)
   report.value = r.data
   capacity.value = r.data.result?.capacity || null
+  // 切换报告时重置版本对比状态
+  compareTaskId.value = 0
+  compareReport.value = null
   const s = await stressApi.samples(id)
   samples.value = s.data
+}
+
+// 报告任务是否已执行完（完成或失败均可"再来一次"）
+const taskFinished = computed(() => {
+  const s = report.value?.task?.status
+  return s === 'finished' || s === 'failed'
+})
+
+// ---------- 版本对比 ----------
+// 可对比候选：同应用（或双方均无应用）的其他已完成任务
+const compareCandidates = computed(() => {
+  const cur = report.value?.task
+  if (!cur) return []
+  return tasks.value.filter((t: any) =>
+    t.id !== cur.id && t.status === 'finished' &&
+    (!cur.appName || !t.appName || t.appName === cur.appName))
+})
+
+const compareTaskId = ref(0)
+const compareReport = ref<any>(null)
+const compareLoading = ref(false)
+
+// 候选项文案：版本 + 时间 + 并发
+function compareLabel(t: any) {
+  const v = t.appVersion ? 'v' + t.appVersion : '未带版本'
+  const time = t.finishTime ? fmtTime(t.finishTime) : fmtTime(t.createTime)
+  return `${v} · ${time} · ${t.concurrency}并发（${t.taskName || t.targetUrl}）`
+}
+
+async function loadCompare(id: number) {
+  compareReport.value = null
+  if (!id) return
+  compareLoading.value = true
+  try {
+    const r = await stressApi.report(id)
+    compareReport.value = r.data
+  } catch { /* 拉取失败保持空 */ } finally {
+    compareLoading.value = false
+  }
+}
+
+// 相对变化百分比（基线 → 当前）
+function pct(cur: number | null | undefined, base: number | null | undefined): string {
+  if (cur == null || base == null || base === 0) return ''
+  const v = ((cur - base) / base) * 100
+  return (v > 0 ? '+' : '') + v.toFixed(1) + '%'
+}
+
+// 对比行：QPS 越高越好，延迟/错误率越低越好
+const compareRows = computed(() => {
+  const cur = report.value?.result
+  const base = compareReport.value?.result
+  if (!cur || !base) return []
+  const defs = [
+    { label: 'QPS', cur: cur.qps, base: base.qps, higherBetter: true },
+    { label: 'P50 (ms)', cur: cur.p50Ms, base: base.p50Ms, higherBetter: false },
+    { label: 'P95 (ms)', cur: cur.p95Ms, base: base.p95Ms, higherBetter: false },
+    { label: 'P99 (ms)', cur: cur.p99Ms, base: base.p99Ms, higherBetter: false },
+    { label: '错误率 (%)', cur: cur.errorRate, base: base.errorRate, higherBetter: false },
+  ]
+  return defs.map((d) => {
+    const delta = pct(d.cur, d.base)
+    const improved = delta !== '' && (d.higherBetter === delta.startsWith('+'))
+    const cls = delta === '' ? '' : (improved ? 'text-neon-green' : 'text-red-400')
+    return { label: d.label, cur: d.cur ?? '—', base: d.base ?? '—', delta: improved ? delta + ' ↑' : (delta ? delta + ' ↓' : ''), cls }
+  })
+})
+
+// "再来一次"回填提示（短暂展示）
+const rerunFilled = ref(false)
+
+// 再来一次：把已完成任务的配置回填到左侧表单，由用户点击「开始压测」重新发起
+function rerunTask() {
+  const t = report.value?.task
+  if (!t) return
+  // 基本配置回填
+  form.value.taskName = t.taskName || ''
+  form.value.targetUrl = t.targetUrl || ''
+  form.value.method = t.method || 'GET'
+  form.value.concurrency = t.concurrency ?? 50
+  form.value.durationSec = t.durationSec ?? 30
+  form.value.engineType = t.engineType || 'http'
+  // 服务地址：取 URL origin（http://host:port），便于后续选接口重新拼接
+  try {
+    form.value.baseUrl = new URL(t.targetUrl).origin
+  } catch { /* 非标准 URL 保持原样 */ }
+  // 分档并发：从报告分档采样点还原
+  const pts = report.value?.result?.stagePoints || []
+  if (pts.length) {
+    form.value.stageConcurrencies = pts.map((p: any) => p.concurrency).join(',')
+  }
+  // 项目联动：按任务应用匹配项目（恢复接口列表；无匹配则手动 URL 模式）
+  const repo = repos.value.find((r) => t.appName && r.appName === t.appName)
+  if (repo) {
+    form.value.repoId = repo.id
+    loadEndpoints()
+  } else {
+    // 无匹配项目：退回手动 URL 模式（targetUrl 已完整填入，可直接压测）
+    form.value.repoId = 0
+    form.value.endpointIdx = -1
+    endpoints.value = []
+    branchOptions.value = []
+  }
+  activeTab.value = 'stress'
+  rerunFilled.value = true
+  setTimeout(() => { rerunFilled.value = false }, 6000)
 }
 
 async function runCapacity() {
@@ -562,7 +741,7 @@ async function loadRepos() {
 async function loadApps() {
   try {
     const r = await appApi.list()
-    apps.value = (r.data || []).map((a: Record<string, any>) => a.appName).filter(Boolean)
+    appInstances.value = r.data || []
   } catch { /* 应用列表失败不阻断 */ }
 }
 
