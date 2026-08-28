@@ -1,40 +1,122 @@
-# PerformanceTestor — 中间产出物归档
+# PerformanceTestor — 性能检测智能体平台
 
-> 本目录统一归档 PerformanceTestor 项目开发过程中产生的**全部中间产出物**，并纳入 git 版本管理（不入 .gitignore），作为项目交付基线的一部分。
+面向 Java 应用的**性能检测智能体平台**：平台（perf-server、MySQL、源码存储）与被测应用**分离部署**在不同服务器，避免压测与监控互相干扰。通过 Java Agent 无侵入采集 JVM 指标、业务方法调用链耗时与慢 SQL；提供自研压测引擎与自动灌数据能力；支持 AI 自然语言对话自动执行检测任务；采集项目源代码，将检测结果关联到源码位置，由大模型分析根因并给出多种修改方案，选定方案后生成修复提示词供 AI 辅助编码工具直接修复。
 
-## 项目简介
-
-PerformanceTestor 是一个面向 Java 应用的**性能检测智能体平台**：
-
-- 平台（perf-server、MySQL、源码存储）与被测应用**分离部署**在不同服务器，避免压测与监控互相干扰；
-- 通过自研 Java Agent（ByteBuddy 字节码增强 + JMX）**无侵入**采集 JVM 指标、业务方法调用链耗时与慢 SQL；
-- 提供自研压测引擎与自动灌数据能力；
-- 支持 AI 自然语言对话自动执行检测任务；
-- 采集项目源代码，将检测结果关联到源码位置，由大模型分析根因并给出多种修改方案，用户选定方案后生成**修复提示词**供 AI 辅助编码工具直接修复；
-- 基于检测结果提供**容量评估**（可承受并发）、**扩容时机**与 **JVM 配置**优化建议。
-
-## 目录结构
+## 模块总览
 
 ```
-docs/
-├── README.md               # 本文件：归档总览与索引
-├── design/                 # 设计文档、架构图、技术方案、数据库设计说明
-│   ├── requirements.md     # 需求文档（功能需求与边界说明）
-│   ├── architecture.md     # 整体架构（分离部署）与网络拓扑
-│   ├── tech-solution.md    # 技术方案与关键设计决策
-│   └── database-design.md  # 数据库设计说明（表结构与分区策略）
-├── reports/                # 性能检测报告（压测报告 / JVM 分析 / 容量评估）
-├── issues/                 # 性能问题分析结果与修复提示词归档
-└── artifacts/              # 其他中间产物（SQL 脚本导出、数据字典、联调记录等）
+/workspace/
+├── perf-agent/     # 监控探针（Java 17 + ByteBuddy）：方法埋点 / JDBC 拦截 / JMX 采集 / HTTP 批量上报
+├── perf-server/    # 后端平台（Spring Boot 3.x + MyBatis + MySQL）：采集存储 / 压测引擎 / 灌数据 /
+│                   #   容量评估 / 扩容建议 / 源码管理 / AI Function Calling 编排
+├── perf-web/       # 前端（Vue3 + TS + Vite + ECharts）：六屏可视化
+├── perf-demo/      # 示例被测应用（Spring Boot 3.x + MyBatis）：含 N+1 / 慢 SQL 等可分析问题代码
+├── sql/init.sql    # 平台库全量建表脚本（幂等，含演示数据）
+├── scripts/        # build.sh / start-all.sh(单机) / start-server.sh / start-agent.sh(多机)
+└── docs/           # 本文档 + design / reports / issues / artifacts 归档
+```
+
+## 快速开始（单机演示模式）
+
+前置条件：JDK 17+、Maven、Node 18+、MySQL 8（root/root123，可改环境变量）。
+
+```bash
+# 1. 全量构建（后端 + 前端）
+cd /workspace && scripts/build.sh
+
+# 2. 一键启动（MySQL + perf-server + perf-demo(挂 agent) + perf-web）
+scripts/start-all.sh
+#    Web 后台: http://localhost:5173
+#    被测应用: http://localhost:8081/api/user/list?limit=200   （N+1 热点接口）
+
+# 3. 也可以在已有 MySQL 上手动启动：
+#    mvn -q -pl perf-server,perf-demo package -DskipTests
+#    java -jar perf-server/target/perf-server.jar &
+#    java -javaagent:perf-agent/target/perf-agent.jar=reportUrl=http://127.0.0.1:8080/api/agent/report,appName=perf-demo,sampleRate=1.0 \
+#         -jar perf-demo/target/perf-demo.jar &
+#    (cd perf-web && npm run dev)
+```
+
+单机模式下平台库 `performance_testor` 与被测库 `demo` 隔离在同一 MySQL 实例，仅用于演示。
+
+## 多机分离部署
+
+平台服务器与被测服务器分离，仅需网络白名单互通两处：**平台 → 被测**（发起压测、灌数据），**被测 → 平台**（agent 上报）。
+
+```
+[平台服务器]  perf-server:8080 + MySQL + 源码存储 + OpenAI 兼容 API
+    ↑ agent 上报（被测→平台）        ↓ 压测/灌数据（平台→被测）
+[被测服务器]  perf-demo:8081 + MySQL(demo库) + -javaagent 探针
+```
+
+### 平台服务器
+
+```bash
+scripts/start-server.sh    # 端口 8080；源码上传目录默认 ./data/source
+```
+
+### 被测服务器
+
+```bash
+# REPORT_URL 必须改为平台服务器真实地址，如 http://<平台IP>:8080/api/agent/report
+REPORT_URL=http://<平台IP>:8080/api/agent/report scripts/start-agent.sh
+```
+
+网络要求：被测服务器可访问平台 `8080` 端口（上报）；平台服务器可访问被测服务器 `8081` 端口（压测）与被测库 `3306` 端口（灌数据）。agent 上报采用本地队列 + 1s 批量 flush，失败指数退避重试、超时丢弃，网络抖动不影响被测业务。
+
+## perf-demo 示例应用（可分析问题点）
+
+| 问题类型 | 位置 | 表现 |
+| -------- | ---- | ---- |
+| N+1 查询（最典型） | `UserService.listUsersWithOrderCount`（循环内逐条 `countOrders`） | `GET /api/user/list?limit=N`，N 个用户产生 N+1 次 SQL |
+| 慢 SQL：无索引全表扫描 | `OrderMapper.selectByStatus`（`status` 列刻意无索引） | `GET /api/order/list?status=PAID` |
+| 慢 SQL：大表 GROUP BY | `OrderMapper.selectStats`（5 万行聚合） | `GET /api/order/stats` |
+| 慢 SQL：无覆盖索引排序 | `OrderMapper.selectRecent`（`created_at` filesort） | `GET /api/order/recent` |
+
+启动时自动建表并灌入 1 万用户 / 5 万订单（`DemoDataInitializer`，幂等）。压测 `GET /api/user/list?limit=200`（20 并发）可稳定复现：QPS ≈ 300、P95 ≈ 135ms、错误率 > 0.5%，同时产生 N+1 热点调用链与慢 SQL 上报。
+
+## 六屏 Web 后台
+
+1. **总览 Dashboard**：关键指标卡 + JVM 堆趋势 + 最近压测/慢 SQL/性能问题 + AI 快捷入口
+2. **JVM 监控**：内存 / GC / 线程 / CPU 四类图表，5s 轮询可暂停
+3. **调用链分析**（含慢 SQL Tab）：调用链列表 + 调用树 + 火焰图 + 慢 SQL 明细
+4. **压测中心**（含数据准备与容量建议 Tab）：压测表单 + 实时 QPS 曲线 + 容量评估（目标 RT 下最大并发/QPS）+ 扩容建议 + JVM 配置建议 + 灌数据
+5. **源码与优化**：zip/git/本地导入源码 → 性能问题列表 → 多方案对比 → 修复提示词（复制/下载）
+6. **AI 助手**：对话流 + 工具调用卡片 + 无 Key 降级规则模式演示
+
+## AI 修复闭环演示（无 Key 降级模式）
+
+未配置 `ai.api-key` 时平台以**降级规则模板**演示完整闭环（基于真实库数据）：
+
+1. 在 **压测中心** 对 `http://<被测>:8081/api/user/list?limit=200` 发起压测（如 20 并发 × 10s）；
+2. 在 **源码与优化** 导入被测项目源码（zip 或 git）；
+3. 在 **AI 助手** 输入：
+   - 「分析最近慢 SQL 的根因并给出修复方案」
+   - 「当前性能能承受多少并发、何时扩容」
+   - 「生成一份性能检测报告」
+   - 「列出待处理的性能问题」
+4. 在 **源码与优化** 的问题详情中查看多方案对比，选定方案后生成**修复提示词**，复制到 AI 辅助编码工具即可落地修复。
+
+配置 `ai.api-key` 与 `ai.base-url`（OpenAI 兼容 API）后，AI 助手升级为 Function Calling 多轮编排：工具清单 `stress_test / jvm_metrics / trace / slow_sql / data_gen / analyze_code_issues / generate_fix_prompt / capacity_advice / generate_report`，模型自主选工具执行并汇总报告。
+
+## 关键 API
+
+```
+POST /api/agent/report             # agent 批量上报（JVM/调用链/慢SQL）
+GET  /api/jvm/metrics              # JVM 指标查询
+GET  /api/traces                   # 调用链查询（含 traceJson 调用树）
+GET  /api/slow-sqls                # 慢 SQL 查询
+POST /api/stress/tasks             # 启动压测（引擎 http/jmeter）
+GET  /api/stress/tasks/{id}/report # 压测报告
+POST /api/datagen/tasks            # 启动灌数据
+POST /api/source/repos             # 源码导入（zip/git/本地）
+POST /api/ai/chat                  # AI 对话（降级/Function Calling）
+GET  /api/capacity/advice          # 容量与扩容建议
 ```
 
 ## 归档约定
 
-1. 开发过程中产生的**全部中间产出物**统一归档至本目录，并按 `design / reports / issues / artifacts` 子目录归类；
-2. `docs/` 全目录纳入 git 版本管理，不写入 `.gitignore`；
-3. 各子目录需在文件头部注明：生成日期、对应模块、状态（草稿/评审中/已定稿）。
-
-## 文档索引
+开发过程中的全部中间产出物归档于 `docs/`（纳入 git 管理，不写入 `.gitignore`）：
 
 | 文档 | 说明 | 状态 |
 | ---- | ---- | ---- |
@@ -42,5 +124,3 @@ docs/
 | [design/architecture.md](design/architecture.md) | 整体架构：平台与被测应用分离部署拓扑 | 已定稿 |
 | [design/tech-solution.md](design/tech-solution.md) | 技术方案：技术栈、关键设计决策、代码结构 | 已定稿 |
 | [design/database-design.md](design/database-design.md) | 数据库设计说明：核心表、四张新表、分区策略 | 已定稿 |
-
-> 状态说明：`已定稿` 表示该产出物已评审通过并作为后续开发基线；`进行中` 表示仍在迭代。
