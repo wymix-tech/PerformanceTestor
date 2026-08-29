@@ -220,19 +220,18 @@ const issues = ref<Array<Record<string, any>>>([])
 const appInstances = ref<Array<Record<string, any>>>([])
 let pollTimer: any = null
 
+/** 本轮向导会话完成标记：只认用户在本轮亲自完成的动作，与平台历史数据无关 */
+const sessionDone = ref<boolean[]>([false, false, false, false, false, false])
+
 const repoName = computed(() => repos.value.find((r) => r.id === repoId.value)?.repoName || '')
 const appName = computed(() => repos.value.find((r) => r.id === repoId.value)?.appName || repoName.value)
 const targetUrl = computed(() => endpointIdx.value >= 0
   ? String(endpoints.value[endpointIdx.value].url || endpoints.value[endpointIdx.value].path || '')
   : manualUrl.value.trim())
 
+/** 打勾只认本轮向导内亲自完成的动作（浏览型步骤以到达为完成） */
 function done(i: number) {
-  if (i === 0) return repoId.value > 0
-  if (i === 1) return !!genTask.value && ['finished', 'running'].includes(genTask.value.status)
-  if (i === 2) return !!stressTask.value
-  if (i === 3) return !!report.value
-  if (i === 4) return traces.value.length > 0
-  return issues.value.length > 0
+  return sessionDone.value[i]
 }
 
 function badgeClass(i: number) {
@@ -243,6 +242,8 @@ function badgeClass(i: number) {
 
 function goStep(i: number) {
   step.value = Math.max(0, Math.min(stepDefs.length - 1, i))
+  // 浏览型步骤（分析调用链/问题优化）以到达为完成
+  if (i >= 4) sessionDone.value[i] = true
   router.replace({ query: { step: String(step.value) } })
   onEnterStep()
 }
@@ -254,6 +255,7 @@ function advance() {
 
 function selectRepo(r: any) {
   repoId.value = r.id
+  sessionDone.value[0] = true // 本轮亲自选择项目
   loadEndpoints()
   loadTracesAndIssues()
 }
@@ -290,7 +292,8 @@ async function runGen(dryRun: boolean) {
       // 轮询一次结果后放行正式灌数
       setTimeout(checkGen, 2500)
     } else {
-      // 正式灌数已发起 → 自动进入压测步骤（任务异步执行，进度在数据准备 Tab 可查）
+      sessionDone.value[1] = true // 本轮正式灌数已发起
+      // 自动进入压测步骤（任务异步执行，进度在数据准备 Tab 可查）
       setTimeout(advance, 1200)
     }
   } finally {
@@ -321,6 +324,7 @@ async function startStress() {
       appName: appName.value || undefined
     })
     stressTask.value = r.data
+    sessionDone.value[2] = true // 本轮压测已发起
     startPolling()
     // 压测已发起 → 自动进入结果步骤（轮询拉取报告）
     setTimeout(advance, 1200)
@@ -341,6 +345,7 @@ function startPolling() {
       const rep = await stressApi.report(stressTask.value.id)
       const stat = rep.data?.statistics || rep.data?.result?.statistics || {}
       report.value = stat
+      sessionDone.value[3] = true // 本轮报告已获取
       const cap = rep.data?.result?.capacity || rep.data?.capacity
       if (cap) capacityText.value = `容量评估：最大可承受并发 ${cap.maxConcurrency ?? '—'}，最大 QPS ${cap.maxQps ?? '—'}`
       loadTracesAndIssues()
@@ -377,26 +382,14 @@ function onEnterStep() {
 }
 
 onMounted(async () => {
-  // 快速开始 = 每次全新流程，固定从第 1 步开始
+  // 快速开始 = 每次全新流程：固定第 1 步，不预选项目、不载入历史任务（打勾只认本轮操作）
   step.value = 0
-  const [r, c, g, a] = await Promise.allSettled([
-    sourceApi.repos(50), dbConnApi.list(), dataGenApi.list(5), appApi.list()
+  const [r, c, a] = await Promise.allSettled([
+    sourceApi.repos(50), dbConnApi.list(), appApi.list()
   ])
   if (r.status === 'fulfilled') repos.value = r.value.data || []
   if (c.status === 'fulfilled') conns.value = c.value.data || []
-  if (g.status === 'fulfilled') {
-    const finished = (g.value.data || []).find((x: any) => x.status === 'finished')
-    if (finished) { genTask.value = finished; genDryPassed.value = true }
-  }
   if (a.status === 'fulfilled') appInstances.value = a.value.data || []
-  // 已有项目时默认选中第一个，定位到第一个未完成步骤
-  if (repos.value.length && !repoId.value) {
-    selectRepo(repos.value[0])
-  }
-  const t = await stressApi.list({ limit: 1 }).catch(() => ({ data: [] }))
-  if (t.data?.length && ['running', 'finished'].includes(t.data[0].status)) stressTask.value = t.data[0]
-  if (stressTask.value) startPolling()
-  loadTracesAndIssues()
 })
 
 onUnmounted(stopPolling)
