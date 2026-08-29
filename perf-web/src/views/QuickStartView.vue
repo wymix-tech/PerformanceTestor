@@ -34,11 +34,42 @@
     <!-- Step 1 项目 -->
     <div v-if="step === 0" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">选择被测项目</div>
-      <div class="text-[11px] text-fg-sub mb-4">项目贯穿后续所有步骤（接口清单 / 源码分析 / 数据归属）。没有项目？<router-link class="text-neon-blue hover:underline" to="/projects">去项目管理导入</router-link></div>
-      <div v-if="!repos.length" class="text-xs text-fg-sub py-8 text-center">
-        还没有项目，<router-link class="text-neon-blue hover:underline" to="/projects">去导入</router-link>（zip / git / 本地路径）
+      <div class="text-[11px] text-fg-sub mb-4">项目贯穿后续所有步骤（接口清单 / 源码分析 / 数据归属）。</div>
+
+      <!-- 无项目：内联导入（不打断流程） -->
+      <div v-if="!repos.length" class="rounded-xl border border-neon-blue/30 bg-neon-blue/5 p-4 mb-4">
+        <div class="text-sm font-medium mb-1">还没有项目 — 直接在这里导入</div>
+        <div class="text-[11px] text-fg-sub mb-3">支持 zip 上传 / Git 地址 / 本地目录三种方式，导入完成后自动选中新项目</div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="space-y-2">
+            <label class="text-xs text-fg-sub font-medium">① Zip 上传</label>
+            <input type="file" accept=".zip" class="input-text w-full text-xs" @change="(e: any) => zipFile = e.target.files?.[0] ?? null" />
+            <button class="btn-primary w-full justify-center text-xs" :disabled="!zipFile || importing" @click="doImportZip">
+              {{ importing ? '上传中…' : '上传导入' }}
+            </button>
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs text-fg-sub font-medium">② Git 地址</label>
+            <input v-model="gitUrl" class="input-text w-full text-xs" placeholder="https://github.com/x/demo.git" />
+            <button class="btn-secondary w-full justify-center text-xs" :disabled="!gitUrl.trim() || importing" @click="doImportGit">
+              {{ importing ? '提交中…' : '提交导入' }}
+            </button>
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs text-fg-sub font-medium">③ 本地目录</label>
+            <input v-model="localPath" class="input-text w-full text-xs" placeholder="/workspace/perf-demo" />
+            <button class="btn-secondary w-full justify-center text-xs" :disabled="!localPath.trim() || importing" @click="doImportLocal">
+              {{ importing ? '提交中…' : '导入' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="importMsg" class="text-xs mt-3" :class="importMsg.ok ? 'text-neon-green' : 'text-red-400'">
+          {{ importMsg.text }}
+        </div>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+
+      <!-- 项目列表 -->
+      <div v-if="repos.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
         <button
           v-for="r in repos" :key="r.id"
           class="text-left p-4 rounded-xl border transition-all"
@@ -49,6 +80,13 @@
           <div class="text-[11px] text-fg-sub mt-1">{{ r.appName || '未绑定应用' }} · {{ r.fileCount }} 文件</div>
           <div v-if="repoId === r.id" class="text-[11px] text-neon-green mt-1">✓ 已选</div>
         </button>
+      </div>
+      <div v-else-if="!importMsg" class="text-xs text-fg-sub py-6 text-center">选择上方任一方式导入项目</div>
+
+      <!-- 已选择提示下一步 -->
+      <div v-if="repoId" class="mt-4 flex items-center justify-between rounded-xl border border-neon-green/30 bg-neon-green/5 px-4 py-3">
+        <div class="text-xs text-neon-green">✓ 已选择「{{ repoName }}」，可以进入下一步</div>
+        <button class="btn-primary text-xs" @click="goStep(1)">下一步：灌注数据<ArrowRight class="w-3.5 h-3.5 ml-1" /></button>
       </div>
     </div>
 
@@ -253,11 +291,100 @@ function advance() {
   if (step.value < stepDefs.length - 1) goStep(step.value + 1)
 }
 
+// ===== Step1 内联项目导入（无项目时不离开向导） =====
+const zipFile = ref<File | null>(null)
+const gitUrl = ref('')
+const localPath = ref('')
+const importing = ref(false)
+const importMsg = ref<{ ok: boolean; text: string } | null>(null)
+let importPoll: ReturnType<typeof setInterval> | null = null
+
 function selectRepo(r: any) {
   repoId.value = r.id
   sessionDone.value[0] = true // 本轮亲自选择项目
   loadEndpoints()
   loadTracesAndIssues()
+}
+
+/** zip 同步导入：刷新列表并自动选中新项目 */
+async function reloadReposAndSelect(text: string) {
+  const r = await sourceApi.repos(50)
+  repos.value = r.data || []
+  const newest = repos.value[0]
+  if (newest) {
+    selectRepo(newest)
+    importMsg.value = { ok: true, text: `「${newest.repoName}」${text}，已自动选中，可进入下一步` }
+  }
+}
+
+async function doImportZip() {
+  if (!zipFile.value) return
+  importing.value = true
+  try {
+    await sourceApi.importZip(zipFile.value.name.replace(/\.zip$/, ''), zipFile.value)
+    zipFile.value = null
+    await reloadReposAndSelect('导入成功')
+  } catch (e: any) {
+    importMsg.value = { ok: false, text: '导入失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
+  } finally {
+    importing.value = false
+  }
+}
+
+async function doImportGit() {
+  if (!gitUrl.value.trim()) return
+  importing.value = true
+  try {
+    await sourceApi.importGit({ gitUrl: gitUrl.value.trim() })
+    gitUrl.value = ''
+    afterImportStarted('git 项目')
+  } catch (e: any) {
+    importMsg.value = { ok: false, text: '导入失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
+  } finally {
+    importing.value = false
+  }
+}
+
+async function doImportLocal() {
+  if (!localPath.value.trim()) return
+  importing.value = true
+  try {
+    await sourceApi.importLocal({ localPath: localPath.value.trim() })
+    localPath.value = ''
+    afterImportStarted('本地项目')
+  } catch (e: any) {
+    importMsg.value = { ok: false, text: '导入失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
+  } finally {
+    importing.value = false
+  }
+}
+
+/** git/local 异步导入轮询：出现新仓库即自动选中，最长 120s */
+function afterImportStarted(fallbackName: string) {
+  importMsg.value = { ok: true, text: `${fallbackName}导入请求已提交，正在拉取源码并建立索引（完成后自动选中）…` }
+  stopImportPoll()
+  const known = new Set(repos.value.map((r) => r.id))
+  let waited = 0
+  importPoll = setInterval(async () => {
+    waited += 2000
+    try {
+      const r = await sourceApi.repos(50)
+      const fresh = (r.data || []).find((x: any) => !known.has(x.id))
+      if (fresh) {
+        repos.value = r.data || []
+        selectRepo(fresh)
+        importMsg.value = { ok: true, text: `「${fresh.repoName}」导入完成，已自动选中，可进入下一步` }
+        stopImportPoll()
+      } else if (waited > 120000) {
+        importMsg.value = { ok: false, text: '导入超时（>120s），请到项目管理页查看状态' }
+        stopImportPoll()
+      }
+    } catch { /* 忽略单次失败 */ }
+  }, 2000)
+}
+
+function stopImportPoll() {
+  if (importPoll) { clearInterval(importPoll); importPoll = null }
 }
 
 async function loadEndpoints() {
