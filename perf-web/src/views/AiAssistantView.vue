@@ -98,7 +98,6 @@ const input = ref('')
 const loading = ref(false)
 
 const quickActions = [
-  '自动执行性能检测闭环',
   '编译被测项目并部署到服务器启动（需告知 repoId 与 SSH 连接）',
   '分析最近慢 SQL 的根因并给出修复方案',
   '当前性能能承受多少并发、何时扩容',
