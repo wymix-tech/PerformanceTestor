@@ -58,7 +58,16 @@
           </div>
           <div class="space-y-2">
             <label class="text-xs text-fg-sub font-medium">② Git 地址</label>
-            <input v-model="gitUrl" class="input-text w-full text-xs" placeholder="https://github.com/x/demo.git" />
+            <input v-model="gitUrl" class="input-text w-full text-xs" placeholder="https://git.xxx.com/group/repo.git" @change="fetchRemoteBranches" />
+            <div class="flex gap-2">
+              <select v-model="gitBranch" class="input-select w-28 text-xs" :disabled="!gitUrl || remoteBranchLoading">
+                <option value="">{{ remoteBranchLoading ? '分支获取中…' : remoteBranches.length ? '选择分支' : '默认分支' }}</option>
+                <option v-for="b in remoteBranches" :key="b" :value="b">{{ b }}</option>
+              </select>
+              <button class="btn-secondary px-2 text-xs" :disabled="remoteBranchLoading || !gitUrl" title="重新获取分支列表" @click="fetchRemoteBranches">↻</button>
+            </div>
+            <input v-model="gitUser" class="input-text w-full text-xs" placeholder="用户名（私有仓库，可空）" />
+            <input v-model="gitToken" type="password" class="input-text w-full text-xs" placeholder="访问令牌 / 密码（公有仓库留空）" autocomplete="new-password" />
             <button class="btn-secondary w-full justify-center text-xs" :disabled="!gitUrl.trim() || importing" @click="doImportGit">
               {{ importing ? '提交中…' : '提交导入' }}
             </button>
@@ -301,12 +310,33 @@ function advance() {
 // ===== Step1 内联项目导入（无项目时不离开向导） =====
 const zipFile = ref<File | null>(null)
 const gitUrl = ref('')
+const gitBranch = ref('')
+const gitUser = ref('')
+const gitToken = ref('')
+const remoteBranches = ref<string[]>([])
+const remoteBranchLoading = ref(false)
 const localPath = ref('')
 const importing = ref(false)
 const importMsg = ref<{ ok: boolean; text: string } | null>(null)
 /** 导入面板开关：无项目时默认展开，否则点「+ 导入新项目」展开 */
 const importPanelOpen = ref(false)
 let importPoll: ReturnType<typeof setInterval> | null = null
+
+/** 拉取远端分支列表（凭据可空，失败回落默认分支） */
+async function fetchRemoteBranches() {
+  const url = gitUrl.value.trim()
+  remoteBranches.value = []
+  gitBranch.value = ''
+  if (!url) return
+  remoteBranchLoading.value = true
+  try {
+    const r = await sourceApi.remoteBranches(url, gitUser.value || undefined, gitToken.value || undefined)
+    remoteBranches.value = r.data || []
+  } catch { /* 失败仍可用默认分支导入 */ }
+  finally {
+    remoteBranchLoading.value = false
+  }
+}
 
 function selectRepo(r: any) {
   repoId.value = r.id
@@ -344,8 +374,15 @@ async function doImportGit() {
   if (!gitUrl.value.trim()) return
   importing.value = true
   try {
-    await sourceApi.importGit({ gitUrl: gitUrl.value.trim() })
+    await sourceApi.importGit({
+      gitUrl: gitUrl.value.trim(),
+      branch: gitBranch.value || undefined,
+      gitUser: gitUser.value || undefined,
+      gitToken: gitToken.value || undefined
+    })
     gitUrl.value = ''
+    gitBranch.value = ''
+    remoteBranches.value = []
     afterImportStarted('git 项目')
   } catch (e: any) {
     importMsg.value = { ok: false, text: '导入失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
