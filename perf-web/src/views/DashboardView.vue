@@ -42,18 +42,15 @@
         </div>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        <button
-          v-for="(s, idx) in steps" :key="s.title"
-          class="text-left p-4 rounded-xl border border-white/10 bg-white/[0.03] hover:border-neon-green/40 hover:bg-neon-green/5 transition-all"
-          @click="router.push(`/quick-start?step=${idx}`)"
-        >
+        <div v-for="(s, idx) in steps" :key="s.title"
+             class="text-left p-4 rounded-xl border border-white/10 bg-white/[0.03]">
           <span class="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold bg-white/10 text-fg-sub mb-2">{{ idx + 1 }}</span>
           <div class="text-sm font-medium text-fg-main">{{ s.title }}</div>
           <div class="text-[11px] mt-1 text-fg-sub">{{ s.desc }}</div>
-        </button>
+        </div>
       </div>
       <div class="text-[11px] text-fg-sub mt-3">
-        「快速开始」打开分步向导（带着所选项目逐步执行，灌数据支持 Dry-Run 试运行防呆）；「AI 开始」由 AI 助手自动串联全流程。
+        点击「快速开始」开启全新流程：选择项目 → 灌数据（Dry-Run 试运行防呆）→ 压测 → 看报告 → 析链路 → 优化；「AI 开始」由 AI 助手自动串联全流程。
       </div>
     </div>
 

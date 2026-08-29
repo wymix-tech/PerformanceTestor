@@ -377,13 +377,8 @@ function onEnterStep() {
 }
 
 onMounted(async () => {
-  const urlStep = route.query.step
-  if (urlStep !== undefined) {
-    step.value = Math.max(0, Math.min(5, parseInt(String(urlStep)) || 0))
-  } else {
-    // 每次进入均为全新流程：从第 1 步开始（不再恢复历史进度）
-    step.value = 0
-  }
+  // 快速开始 = 每次全新流程，固定从第 1 步开始
+  step.value = 0
   const [r, c, g, a] = await Promise.allSettled([
     sourceApi.repos(50), dbConnApi.list(), dataGenApi.list(5), appApi.list()
   ])
