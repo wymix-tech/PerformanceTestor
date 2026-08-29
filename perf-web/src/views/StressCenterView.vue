@@ -371,18 +371,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Gauge } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import { taskStatusClass as statusClass, fmtTime } from '../utils/format'
 import { stressApi, dataGenApi, capacityApi, sourceApi, appApi, dbConnApi } from '../api'
+import { useRoute } from 'vue-router'
+
+const route = useRoute()
 
 const tabs = [
   { key: 'stress', label: '压测' },
   { key: 'capacity', label: '容量建议' },
   { key: 'datagen', label: '数据准备' }
 ]
-const activeTab = ref('stress')
+const activeTab = ref(['stress', 'capacity', 'datagen'].includes(String(route.query.tab))
+  ? String(route.query.tab) : 'stress')
+// 支持外部（总览快速开始引导等）通过 /stress?tab=datagen 直达指定 Tab
+watch(() => route.query.tab, (t) => {
+  if (t && ['stress', 'capacity', 'datagen'].includes(String(t))) activeTab.value = String(t)
+})
 const running = ref(false)
 const tasks = ref<Array<Record<string, any>>>([])
 const report = ref<Record<string, any> | null>(null)
@@ -391,7 +399,7 @@ const capacity = ref<Record<string, any> | null>(null)
 const advice = ref<Record<string, any> | null>(null)
 const genTasks = ref<Array<Record<string, any>>>([])
 const tables = ref<string[]>([])
-const columns = ref<Array<{ name: string; type: string }>>([])
+const columns = ref<Array<{ name: string; type: string; suggestedValues?: any[]; suspectEnum?: boolean }>>([])
 
 const form = ref({
   taskName: '',
