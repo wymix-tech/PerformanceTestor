@@ -16,8 +16,12 @@ public interface DataGenTaskMapper {
 
     int updateStatus(@Param("id") long id, @Param("status") String status);
 
-    /** 进度更新（已插入行数） */
+    /** 进度更新（已插入行数 + 当前表详情） */
     int updateProgress(@Param("id") long id, @Param("inserted") int inserted);
+
+    /** 详情更新（逐表统计/警告 JSON） */
+    int updateDetail(@Param("id") long id, @Param("detailJson") String detailJson,
+                     @Param("totalRows") int totalRows);
 
     /** 完成/失败收尾 */
     int updateFinished(@Param("id") long id, @Param("status") String status,

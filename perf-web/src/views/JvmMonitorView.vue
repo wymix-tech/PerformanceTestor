@@ -15,7 +15,7 @@
       <label class="text-xs text-fg-sub">时间范围</label>
       <select v-model="range" class="input-select" @change="loadData">
         <option value="3600000">近 1 小时</option>
-        <option value="3600000 * 6">近 6 小时</option>
+        <option value="21600000">近 6 小时</option>
         <option value="86400000">近 24 小时</option>
       </select>
       <button class="btn-primary" @click="toggleAuto">{{ auto ? '暂停轮询' : '开始轮询' }}</button>

@@ -48,7 +48,7 @@ public class JvmCollector {
         }
     }
 
-    /** 停止采集（预留） */
+    /** 停止采集（JVM 退出钩子调用） */
     public void stop() {
         running.set(false);
         scheduler.shutdownNow();

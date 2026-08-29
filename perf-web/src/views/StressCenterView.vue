@@ -78,7 +78,10 @@
             </div>
             <div>
               <label class="text-xs text-fg-sub">引擎</label>
-              <select v-model="form.engineType" class="input-select w-full"><option>http</option><option>jmeter</option></select>
+              <select v-model="form.engineType" class="input-select w-full">
+                <option value="http">http（内置）</option>
+                <option value="jmeter" disabled title="jmeter 引擎尚未实现，敬请期待">jmeter（未实现）</option>
+              </select>
             </div>
           </div>
           <div class="grid grid-cols-2 gap-3">
@@ -267,20 +270,71 @@
             <div><label class="text-xs text-fg-sub">用户</label><input v-model="gen.dbUser" class="input-text w-full" /></div>
             <div><label class="text-xs text-fg-sub">密码</label><input v-model="gen.dbPassword" type="password" class="input-text w-full" /></div>
           </div>
-          <div>
-            <label class="text-xs text-fg-sub">目标表</label>
-            <select v-model="gen.tableName" class="input-select w-full" @change="loadColumns">
-              <option value="">— 先读取表清单 —</option>
-              <option v-for="t in tables" :key="t" :value="t">{{ t }}</option>
-            </select>
-            <button class="text-xs text-neon-blue hover:underline mt-1" @click="loadTables">读取表清单</button>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-fg-sub">目标表</label>
+              <select v-model="gen.tableName" class="input-select w-full" @change="loadColumns">
+                <option value="">— 先读取表清单 —</option>
+                <option v-for="t in tables" :key="t" :value="t">{{ t }}</option>
+              </select>
+              <button class="text-xs text-neon-blue hover:underline mt-1" @click="loadTables">读取表清单</button>
+            </div>
+            <div>
+              <label class="text-xs text-fg-sub">源码项目（魔法值/关联识别，可选）</label>
+              <select v-model="gen.repoId" class="input-select w-full">
+                <option :value="0">— 不使用源码分析 —</option>
+                <option v-for="r in repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
+              </select>
+            </div>
           </div>
           <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-fg-sub">行数</label><input v-model.number="gen.rowCount" type="number" class="input-text w-full" min="1" max="100000" /></div>
-            <div><label class="text-xs text-fg-sub">字段规则(JSON)</label><input v-model="gen.ruleJson" class="input-text w-full" placeholder='{"fields":{"age":{"type":"range","min":18,"max":60}}}' /></div>
+            <div><label class="text-xs text-fg-sub">行数</label><input v-model.number="gen.rowCount" type="number" class="input-text w-full" min="1" max="1000000" /></div>
+            <div><label class="text-xs text-fg-sub">孤儿率 orphanRate（0~1，可选）</label><input v-model.number="gen.orphanRate" type="number" step="0.01" min="0" max="1" class="input-text w-full" /></div>
           </div>
-          <div v-if="columns.length" class="text-xs text-fg-sub">列：{{ columns.map((c: any) => c.name).join(', ') }}</div>
-          <button class="btn-primary w-full justify-center" @click="startDataGen">开始灌数据</button>
+          <div>
+            <label class="text-xs text-fg-sub">字段规则(JSON) — 支持 enum+weights / range+overThreshold / ref / refSkew</label>
+            <textarea v-model="gen.ruleJson" rows="3" class="input-text w-full font-mono text-xs"
+              placeholder='{"fields":{"user_id":{"type":"refSkew","table":"user","column":"id","hotPercent":20,"hotShare":80},"status":{"type":"enum","values":["PENDING","PAID"],"weights":[20,80]}}}'></textarea>
+            <div v-if="skewWarn" class="text-[11px] text-amber-400 mt-1">⚠ 检测到高热点倾斜（refSkew 热行承载过大）：建议降低批量或为子表分区，否则高并发下行锁冲突会抵消批量写入收益</div>
+          </div>
+          <div>
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-fg-sub">联表表组(JSON，可选 — 填写后按表组拓扑排序灌数)</label>
+              <button class="text-xs text-neon-blue hover:underline" @click="fillTableGroupExample">填入示例</button>
+            </div>
+            <textarea v-model="gen.tablesJson" rows="3" class="input-text w-full font-mono text-xs"
+              placeholder='[{"tableName":"user","rowCount":10000},{"tableName":"order","rowCount":100000,"fields":{"user_id":{"type":"ref","table":"user","column":"id"}}}]'></textarea>
+          </div>
+          <div v-if="columns.length" class="text-xs text-fg-sub space-y-0.5">
+            <div v-for="c in columns" :key="c.name">
+              {{ c.name }}（{{ c.type }}）
+              <span v-if="c.suggestedValues && c.suggestedValues.length" class="text-neon-green">建议值: {{ c.suggestedValues.join(' / ') }}</span>
+              <span v-else-if="c.suspectEnum" class="text-amber-400">疑似枚举列，建议人工配置规则</span>
+            </div>
+          </div>
+          <div v-if="suggestions.length" class="space-y-1.5">
+            <div class="text-xs text-fg-sub font-medium">语义建议（低置信关联需确认采纳）</div>
+            <div v-for="s in suggestions" :key="s.id" class="flex items-center justify-between px-3 py-2 rounded-lg bg-white/5">
+              <div class="text-[11px] text-fg-sub">
+                <template v-if="s.hintType === 'relation'">
+                  {{ s.tableName }}.{{ s.columnName }} → {{ s.parentTable }}.{{ s.parentColumn }}
+                  <span class="text-neon-blue ml-1">[{{ s.source }}] {{ (s.confidence * 100).toFixed(0) }}%</span>
+                </template>
+                <template v-else>
+                  {{ s.tableName }}.{{ s.columnName }} 候选值 {{ s.valuesJson }}
+                </template>
+              </div>
+              <div class="flex gap-2">
+                <button class="text-[11px] text-neon-green hover:underline" @click="adoptHint(s.id, true)">采纳</button>
+                <button class="text-[11px] text-fg-sub hover:underline" @click="adoptHint(s.id, false)">忽略</button>
+              </div>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <button class="btn-secondary w-full justify-center" :disabled="running" @click="startDataGen(true)">试运行（校验预检）</button>
+            <button class="btn-primary w-full justify-center" :disabled="running || !dryRunPassed" @click="startDataGen(false)">开始灌数据</button>
+          </div>
+          <div v-if="!dryRunPassed" class="text-[11px] text-fg-sub">建议先执行试运行：校验表存在/规则解析/关联识别/环检测与外键池预检，通过后开启正式执行</div>
         </div>
       </div>
       <div class="glass-card p-5">
@@ -290,11 +344,24 @@
           <div v-for="t in genTasks" :key="t.id" class="px-4 py-3 rounded-lg bg-white/5">
             <div class="flex items-center justify-between">
               <div class="text-sm text-fg-main">{{ t.taskName }}</div>
-              <span class="text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t.status)">{{ t.status }}</span>
+              <div class="flex items-center gap-2">
+                <span v-if="t.tablesJson" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue">联表</span>
+                <span class="text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t.status)">{{ t.status }}</span>
+              </div>
             </div>
-            <div class="text-[11px] text-fg-sub mt-1">{{ t.tableName }} · {{ t.inserted }}/{{ t.rowCount }} 行 · {{ t.costMs }}ms</div>
+            <div class="text-[11px] text-fg-sub mt-1">
+              {{ t.tableName }} · {{ t.inserted }}/{{ (t.totalRows || t.rowCount) }} 行 · {{ t.costMs }}ms
+            </div>
             <div class="h-1.5 rounded bg-white/5 mt-2 overflow-hidden">
-              <div class="h-full bg-neon-green rounded transition-all" :style="{ width: (t.inserted / Math.max(t.rowCount, 1)) * 100 + '%' }"></div>
+              <div class="h-full bg-neon-green rounded transition-all" :style="{ width: (t.inserted / Math.max(t.totalRows || t.rowCount, 1)) * 100 + '%' }"></div>
+            </div>
+            <div v-if="t.detailJson" class="text-[11px] mt-1.5 space-y-0.5">
+              <div v-if="parseDetail(t.detailJson).dryRunReport" class="text-neon-green">✓ 试运行通过 · 预计 {{ parseDetail(t.detailJson).dryRunReport.totalRows }} 行 · 单表事务估算 {{ parseDetail(t.detailJson).dryRunReport.estimatedMaxTxnMs }}ms</div>
+              <div v-for="(w, wi) in parseDetail(t.detailJson).warnings || []" :key="wi" class="text-amber-400">⚠ {{ w }}</div>
+              <div v-if="parseDetail(t.detailJson).selfCheck" class="text-fg-sub">
+                自检：非空率 {{ ((parseDetail(t.detailJson).selfCheck.nonEmptyRate || 0) * 100).toFixed(0) }}%
+                <span v-if="parseDetail(t.detailJson).selfCheck.warning" class="text-amber-400">（{{ parseDetail(t.detailJson).selfCheck.warning }}）</span>
+              </div>
             </div>
           </div>
         </div>
@@ -307,7 +374,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Gauge } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
-import { stressApi, dataGenApi, capacityApi, slowLogApi, sourceApi, appApi, dbConnApi } from '../api'
+import { taskStatusClass as statusClass, fmtTime } from '../utils/format'
+import { stressApi, dataGenApi, capacityApi, sourceApi, appApi, dbConnApi } from '../api'
 
 const tabs = [
   { key: 'stress', label: '压测' },
@@ -451,15 +519,62 @@ function currentPath(): string {
   return e ? e.path : ''
 }
 const gen = ref({
-  taskName: '',
   connId: 0,
   dbUrl: '',
   dbUser: 'root',
   dbPassword: '',
   tableName: '',
   rowCount: 1000,
-  ruleJson: ''
+  ruleJson: '',
+  tablesJson: '',
+  orphanRate: 0,
+  repoId: 0
 })
+const suggestions = ref<Array<Record<string, any>>>([])
+const dryRunPassed = ref(false)
+
+// refSkew 高倾斜警告：hotShare/hotPercent 比值 > 2.5 视为热行承载过大
+const skewWarn = computed(() => {
+  try {
+    const root = JSON.parse(gen.value.ruleJson || '{}')
+    const fields = root.fields || root || {}
+    return Object.values(fields).some((r: any) =>
+      r?.type === 'refSkew' && (r.hotShare || 80) / Math.max(r.hotPercent || 20, 1) > 2.5)
+  } catch {
+    return false
+  }
+})
+
+function parseDetail(json: string): any {
+  try {
+    return typeof json === 'string' ? JSON.parse(json) : json
+  } catch {
+    return {}
+  }
+}
+
+function fillTableGroupExample() {
+  gen.value.tablesJson = JSON.stringify([
+    { tableName: gen.value.tableName || 'user', rowCount: 10000 },
+    { tableName: 'order', rowCount: 50000, fields: { user_id: { type: 'ref', table: 'user', column: 'id' } } }
+  ], null, 0)
+}
+
+async function loadSuggestions() {
+  try {
+    const r = await dataGenApi.suggestions({
+      repoId: gen.value.repoId || undefined,
+      tableName: gen.value.tableName || undefined,
+      status: 'pending'
+    })
+    suggestions.value = r.data || []
+  } catch { /* 建议查询失败不阻断 */ }
+}
+
+async function adoptHint(id: number, adopt: boolean) {
+  await dataGenApi.adopt(id, adopt)
+  await loadSuggestions()
+}
 
 const sampleOption = computed(() => ({
   backgroundColor: 'transparent',
@@ -492,30 +607,12 @@ const stageOption = computed(() => {
   }
 })
 
-function statusClass(s: string) {
-  const map: Record<string, string> = {
-    running: 'text-neon-green bg-neon-green/10',
-    success: 'text-neon-green bg-neon-green/10',
-    failed: 'text-red-400 bg-red-400/10',
-    done: 'text-neon-green bg-neon-green/10',
-    executing: 'text-neon-blue bg-neon-blue/10'
-  }
-  return map[s] || 'text-fg-sub bg-white/5'
-}
-
 function riskClass(r: string) {
   return r === 'high'
     ? 'border-red-400/30 bg-red-400/5 text-red-300'
     : r === 'medium'
       ? 'border-amber-400/30 bg-amber-400/5 text-amber-300'
       : 'border-neon-green/30 bg-neon-green/5 text-neon-green'
-}
-
-function fmtTime(t: string | number | Date | undefined | null) {
-  if (!t && t !== 0) return ''
-  const d = typeof t === 'object' ? t : new Date(typeof t === 'number' ? t : String(t))
-  if (isNaN(d.getTime())) return ''
-  return d.toLocaleString('zh-CN', { hour12: false })
 }
 
 async function loadTasks() {
@@ -701,19 +798,36 @@ async function loadColumns() {
   if (!gen.value.tableName) return
   const r = await dataGenApi.columns({ dbUrl: gen.value.dbUrl, dbUser: gen.value.dbUser, dbPassword: gen.value.dbPassword, tableName: gen.value.tableName })
   columns.value = r.data
+  loadSuggestions()
 }
 
-async function startDataGen() {
+async function startDataGen(dryRun: boolean) {
+  let tables
+  if (gen.value.tablesJson && gen.value.tablesJson.trim()) {
+    try {
+      tables = JSON.parse(gen.value.tablesJson)
+    } catch {
+      alert('表组 JSON 解析失败，请检查格式')
+      return
+    }
+  }
   await dataGenApi.create({
-    taskName: gen.value.taskName || `灌数据-${gen.value.tableName}`,
+    taskName: `${dryRun ? '试运行' : '灌数据'}-${tables ? tables[0].tableName : gen.value.tableName}`,
     connId: gen.value.connId || undefined,
     dbUrl: gen.value.dbUrl,
     dbUser: gen.value.dbUser,
     dbPassword: gen.value.dbPassword,
     tableName: gen.value.tableName,
     rowCount: gen.value.rowCount,
-    ruleJson: gen.value.ruleJson || undefined
+    ruleJson: gen.value.ruleJson || undefined,
+    tables,
+    orphanRate: gen.value.orphanRate || undefined,
+    repoId: gen.value.repoId || undefined,
+    dryRun
   })
+  if (dryRun) {
+    dryRunPassed.value = true
+  }
   const r = await dataGenApi.list()
   genTasks.value = r.data
 }

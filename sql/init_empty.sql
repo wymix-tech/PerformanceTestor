@@ -191,6 +191,47 @@ CREATE TABLE IF NOT EXISTS data_gen_task (
     PRIMARY KEY (id)
 ) ENGINE = InnoDB COMMENT = '灌数据任务记录';
 
+-- 兼容旧库：data_gen_task 联表/详情三列（total_rows / tables_json / detail_json）不存在时补充（幂等）
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'data_gen_task' AND COLUMN_NAME = 'total_rows');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE data_gen_task ADD COLUMN total_rows INT NOT NULL DEFAULT 0 COMMENT ''总目标行数（表组求和）'' AFTER row_count',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'data_gen_task' AND COLUMN_NAME = 'tables_json');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE data_gen_task ADD COLUMN tables_json TEXT NULL COMMENT ''表组请求 JSON（联表形态）'' AFTER total_rows',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'data_gen_task' AND COLUMN_NAME = 'detail_json');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE data_gen_task ADD COLUMN detail_json MEDIUMTEXT NULL COMMENT ''执行详情 JSON（逐表统计/警告/试运行报告/自检报告）'' AFTER rule_json',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 7.5 semantic_hint：语义提示库（魔法值候选 / 表间关联建议，灌数引擎回调产出，前端确认采纳）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS semantic_hint (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    repo_id       BIGINT UNSIGNED NULL COMMENT '源码仓库 ID（纯 DB 元数据来源时为空）',
+    hint_type     VARCHAR(16)   NOT NULL COMMENT '类型：value 魔法值 / relation 关联关系',
+    table_name    VARCHAR(128)  NOT NULL COMMENT '表名（relation 时为子表）',
+    column_name   VARCHAR(128)  NULL COMMENT '列名（relation 时为子表外键列）',
+    values_json   TEXT          NULL COMMENT '候选值 JSON 数组（value 类型）',
+    parent_table  VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '父表名（relation 类型；value 类型为空串）',
+    parent_column VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '父表主键列（relation 类型；value 类型为空串）',
+    source_refs   TEXT          NULL COMMENT '来源定位 JSON 数组（文件:行号 / metadata / sample）',
+    source        VARCHAR(32)   NOT NULL DEFAULT '' COMMENT '来源：literal/constant/enum/range/db_fk/orm_join/naming/naming_empty_fallback',
+    confidence    DOUBLE        NULL COMMENT '置信度 0~1',
+    status        VARCHAR(16)   NOT NULL DEFAULT 'pending' COMMENT '状态：pending/adopted/dismissed',
+    create_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_hint (repo_id, hint_type, table_name, column_name, parent_table),
+    KEY idx_table_status (table_name, status)
+) ENGINE = InnoDB COMMENT = '语义提示库（魔法值/关联建议）';
+
 -- ---------------------------------------------------------------------
 -- 8. source_repo：源码仓库（zip / git / 本地路径导入记录）
 -- ---------------------------------------------------------------------

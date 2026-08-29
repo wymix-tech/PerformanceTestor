@@ -16,6 +16,12 @@ public class DataGenTask {
     /** 状态：pending/running/finished/failed */
     private String status;
     private Integer inserted;
+    /** 总目标行数（表组求和） */
+    private Integer totalRows;
+    /** 表组请求 JSON（联表形态） */
+    private String tablesJson;
+    /** 执行详情 JSON（逐表统计/警告/试运行报告/自检报告） */
+    private String detailJson;
     private Long costMs;
     private String errorMsg;
     private LocalDateTime createTime;
@@ -82,6 +88,30 @@ public class DataGenTask {
 
     public void setInserted(Integer inserted) {
         this.inserted = inserted;
+    }
+
+    public Integer getTotalRows() {
+        return totalRows;
+    }
+
+    public void setTotalRows(Integer totalRows) {
+        this.totalRows = totalRows;
+    }
+
+    public String getTablesJson() {
+        return tablesJson;
+    }
+
+    public void setTablesJson(String tablesJson) {
+        this.tablesJson = tablesJson;
+    }
+
+    public String getDetailJson() {
+        return detailJson;
+    }
+
+    public void setDetailJson(String detailJson) {
+        this.detailJson = detailJson;
     }
 
     public Long getCostMs() {

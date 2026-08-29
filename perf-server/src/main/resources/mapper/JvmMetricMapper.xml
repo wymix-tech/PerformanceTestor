@@ -47,16 +47,4 @@
         LIMIT #{limit}
     </select>
 
-    <select id="queryLatest" resultMap="BaseResultMap">
-        SELECT <include refid="BaseColumns"/>
-        FROM jvm_metric
-        <where>
-            <if test="appName != null and appName != ''">
-                app_name = #{appName}
-            </if>
-        </where>
-        ORDER BY collect_time DESC
-        LIMIT #{limit}
-    </select>
-
 </mapper>

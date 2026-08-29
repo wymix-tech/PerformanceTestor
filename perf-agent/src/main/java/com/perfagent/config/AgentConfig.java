@@ -32,6 +32,13 @@ public class AgentConfig {
      * 留空时运行期自动从被测应用 jar 的 MANIFEST.MF 读 Implementation-Version。
      */
     public String appVersion = "";
+    /**
+     * 显式埋点包前缀（逗号分隔多个，如 "com.acme.core,com.acme.mall"）。
+     * 留空时自动推导：被测应用 fat jar 的 Start-Class/Main-Class 所在包 = 业务根包（推荐）。
+     * 覆盖业务包内全部类（Controller/Service/Repository/Component/工具类等），
+     * 自动排除 JDK、第三方依赖与 agent 自身。
+     */
+    public String includePackages = "";
     /** 慢 SQL 阈值 ms（默认 500） */
     public long slowSqlThresholdMs = 500;
     /** JMX 采集周期秒（默认 5） */
@@ -40,6 +47,16 @@ public class AgentConfig {
     public int batchSize = 500;
     /** 上报缓冲区上限（超出丢弃最旧数据） */
     public int bufferSize = 5000;
+    /**
+     * trace 队列字节预算（估算值，超出丢最旧；大树调用链内存防爆）。
+     * 估算公式：节点数 × 256B（Map+装箱+字符串的保守均值）。默认 8MB。
+     */
+    public int traceBufferBytes = 8 * 1024 * 1024;
+    /**
+     * 每秒最大采样 trace 条数（令牌桶洪峰保护，0=不限）。
+     * 采样率控制比例，令牌桶控制绝对量：高 QPS 洪峰时避免 trace 洪水。默认 50。
+     */
+    public int maxTracesPerSec = 50;
     /** 是否启用方法埋点 */
     public boolean methodTraceEnabled = true;
     /** 是否启用 JDBC 拦截 */
@@ -68,10 +85,13 @@ public class AgentConfig {
         if (kv.containsKey("sampleRate")) cfg.sampleRate = Double.parseDouble(kv.get("sampleRate"));
         if (kv.containsKey("appPort")) cfg.appPort = Integer.parseInt(kv.get("appPort"));
         if (kv.containsKey("appVersion")) cfg.appVersion = kv.get("appVersion");
+        if (kv.containsKey("includePackages")) cfg.includePackages = kv.get("includePackages");
         if (kv.containsKey("slowSqlThresholdMs")) cfg.slowSqlThresholdMs = Long.parseLong(kv.get("slowSqlThresholdMs"));
         if (kv.containsKey("jmxCollectIntervalSec")) cfg.jmxCollectIntervalSec = Long.parseLong(kv.get("jmxCollectIntervalSec"));
         if (kv.containsKey("batchSize")) cfg.batchSize = Integer.parseInt(kv.get("batchSize"));
         if (kv.containsKey("bufferSize")) cfg.bufferSize = Integer.parseInt(kv.get("bufferSize"));
+        if (kv.containsKey("traceBufferBytes")) cfg.traceBufferBytes = Integer.parseInt(kv.get("traceBufferBytes"));
+        if (kv.containsKey("maxTracesPerSec")) cfg.maxTracesPerSec = Integer.parseInt(kv.get("maxTracesPerSec"));
         if (kv.containsKey("methodTraceEnabled")) cfg.methodTraceEnabled = Boolean.parseBoolean(kv.get("methodTraceEnabled"));
         if (kv.containsKey("jdbcEnabled")) cfg.jdbcEnabled = Boolean.parseBoolean(kv.get("jdbcEnabled"));
         if (kv.containsKey("jmxEnabled")) cfg.jmxEnabled = Boolean.parseBoolean(kv.get("jmxEnabled"));

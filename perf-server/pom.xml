@@ -15,6 +15,12 @@
     <description>PerformanceTestor 后端服务：采集存储 / 压测引擎 / 数据灌入 / 容量分析 / 源码管理 / AI 智能体</description>
 
     <dependencies>
+        <!-- 独立 Mock 数据模块：灌数引擎（联表/枚举/魔法值/Dry-Run） -->
+        <dependency>
+            <groupId>com.perftestor</groupId>
+            <artifactId>perf-datagen</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

@@ -124,9 +124,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { FolderGit } from 'lucide-vue-next'
+import { repoStatusClass as statusClass } from '../utils/format'
 import { sourceApi } from '../api'
 
-const importForm = ref<{ repoName: string; appName: string }>({ repoName: '', appName: '' })
+const importForm = ref<{ repoName: string }>({ repoName: '' })
 const zipFile = ref<File | null>(null)
 const gitUrl = ref('')
 const gitBranch = ref('')
@@ -164,15 +165,6 @@ function onFile(e: Event) {
 function formatSize(n: number) {
   if (!n) return '0 B'
   return n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1024).toFixed(0)} KB`
-}
-
-function statusClass(s: string) {
-  const map: Record<string, string> = {
-    ready: 'text-neon-green bg-neon-green/10',
-    indexing: 'text-neon-blue bg-neon-blue/10',
-    failed: 'text-red-400 bg-red-400/10'
-  }
-  return map[s] || 'text-fg-sub bg-white/5'
 }
 
 async function loadRepos() {

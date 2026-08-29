@@ -162,6 +162,8 @@ public class SourceFileService {
             }
             return sb.toString();
         } catch (Exception e) {
+            // 哈希失败返回空串（文件索引仍可写入，仅失去内容比对能力）
+            log.warn("hash file failed: {}", file, e);
             return "";
         }
     }

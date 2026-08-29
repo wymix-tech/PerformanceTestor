@@ -56,25 +56,6 @@ public class LlmClient {
     }
 
     /**
-     * 发起一次对话补全。
-     *
-     * @param system 系统提示词
-     * @param user   用户消息
-     * @return 模型回复文本；调用失败或不可用时返回 null
-     */
-    public String chat(String system, String user) {
-        if (!available()) {
-            return null;
-        }
-        limiter.acquireUninterruptibly();
-        try {
-            return doChat(system, user, null);
-        } finally {
-            limiter.release();
-        }
-    }
-
-    /**
      * 带 JSON Schema 约束的对话补全（强制模型输出合法 JSON）。
      *
      * @return 模型输出的原始 JSON 字符串；失败或不可用返回 null
@@ -112,21 +93,10 @@ public class LlmClient {
             body.set("tools", tools);
             body.put("tool_choice", "auto");
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl.replaceAll("/+$", "") + "/chat/completions"))
-                    .timeout(Duration.ofSeconds(timeoutSec))
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + apiKey)
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                log.warn("llm api error, status={}, body={}", response.statusCode(),
-                        response.body() == null ? "" : response.body().substring(0, Math.min(500, response.body().length())));
+            JsonNode root = postChat(body);
+            if (root == null) {
                 return null;
             }
-            JsonNode root = objectMapper.readTree(response.body());
             JsonNode message = root.path("choices").path(0).path("message");
             ChatResult result = new ChatResult();
             result.setContent(message.path("content").asText(null));
@@ -141,9 +111,8 @@ public class LlmClient {
                 }
             }
             return result;
-        } catch (Exception e) {
-            log.warn("llm tool call failed: {}", e.getMessage());
-            return null;
+        } finally {
+            limiter.release();
         }
     }
 
@@ -173,23 +142,34 @@ public class LlmClient {
     }
 
     private String doChat(String system, String user, JsonNode responseSchema) {
-        try {
-            ObjectNode body = objectMapper.createObjectNode();
-            body.put("model", model);
-            body.put("temperature", 0.3);
-            ArrayNode messages = body.putArray("messages");
-            ObjectNode sysMsg = messages.addObject();
-            sysMsg.put("role", "system");
-            sysMsg.put("content", system);
-            ObjectNode userMsg = messages.addObject();
-            userMsg.put("role", "user");
-            userMsg.put("content", user);
-            if (responseSchema != null) {
-                ObjectNode resp = body.putObject("response_format");
-                resp.put("type", "json_schema");
-                resp.set("json_schema", responseSchema);
-            }
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("model", model);
+        body.put("temperature", 0.3);
+        ArrayNode messages = body.putArray("messages");
+        ObjectNode sysMsg = messages.addObject();
+        sysMsg.put("role", "system");
+        sysMsg.put("content", system);
+        ObjectNode userMsg = messages.addObject();
+        userMsg.put("role", "user");
+        userMsg.put("content", user);
+        if (responseSchema != null) {
+            ObjectNode resp = body.putObject("response_format");
+            resp.put("type", "json_schema");
+            resp.set("json_schema", responseSchema);
+        }
 
+        JsonNode root = postChat(body);
+        return root == null ? null
+                : root.path("choices").path(0).path("message").path("content").asText(null);
+    }
+
+    /**
+     * 发送 chat/completions 请求（调用方需已获取并发许可）。
+     *
+     * @return 响应 JSON 根节点；请求失败或非 200 时返回 null
+     */
+    private JsonNode postChat(ObjectNode body) {
+        try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(baseUrl.replaceAll("/+$", "") + "/chat/completions"))
                     .timeout(Duration.ofSeconds(timeoutSec))
@@ -204,8 +184,7 @@ public class LlmClient {
                         response.body() == null ? "" : response.body().substring(0, Math.min(500, response.body().length())));
                 return null;
             }
-            JsonNode root = objectMapper.readTree(response.body());
-            return root.path("choices").path(0).path("message").path("content").asText(null);
+            return objectMapper.readTree(response.body());
         } catch (Exception e) {
             log.warn("llm api call failed: {}", e.getMessage());
             return null;

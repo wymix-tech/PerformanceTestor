@@ -28,6 +28,7 @@ public class DemoDataInitializer implements CommandLineRunner {
     @Override
     public void run(String... args) {
         createTables();
+        upgradeSchema();
         Long userCount = jdbc.queryForObject("SELECT COUNT(*) FROM perf_user", Long.class);
         if (userCount == null || userCount == 0) {
             seedUsers();
@@ -40,6 +41,27 @@ public class DemoDataInitializer implements CommandLineRunner {
         log.info("[perf-demo] 演示数据就绪: perf_user={}, perf_order={}",
                 jdbc.queryForObject("SELECT COUNT(*) FROM perf_user", Long.class),
                 jdbc.queryForObject("SELECT COUNT(*) FROM perf_order", Long.class));
+    }
+
+    /**
+     * 幂等 schema 增强：perf_order.user_id 补外键约束与列注释、status 补枚举语义注释。
+     * 供灌数引擎验收：db_fk 声明外键读取、列注释「1=待支付 2=已支付」枚举发现。
+     */
+    private void upgradeSchema() {
+        // 列注释（MODIFY 需带全列定义，幂等可重复执行）
+        jdbc.execute("ALTER TABLE perf_order MODIFY COLUMN user_id BIGINT NOT NULL "
+                + "COMMENT '下单用户 ID（关联 perf_user.id）'");
+        jdbc.execute("ALTER TABLE perf_order MODIFY COLUMN status VARCHAR(16) NOT NULL DEFAULT 'PENDING' "
+                + "COMMENT '订单状态 PENDING=待支付 PAID=已支付 SHIPPED=已发货 DONE=完成'");
+        // 外键约束（存在性检查后补充）
+        Integer fkCount = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS "
+                        + "WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'fk_order_user'", Integer.class);
+        if (fkCount == null || fkCount == 0) {
+            jdbc.execute("ALTER TABLE perf_order ADD CONSTRAINT fk_order_user "
+                    + "FOREIGN KEY (user_id) REFERENCES perf_user(id)");
+            log.info("[perf-demo] perf_order 外键 fk_order_user 已创建");
+        }
     }
 
     private void createTables() {

@@ -3,6 +3,7 @@ package com.perfserver.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.perfserver.common.Texts;
 import com.perfserver.entity.FixSuggestion;
 import com.perfserver.entity.PerformanceIssue;
 import com.perfserver.entity.SlowSql;
@@ -67,19 +68,10 @@ public class SourceIssueService {
         PerformanceIssue issue = new PerformanceIssue();
         issue.setIssueType("slow_sql");
         issue.setAppName(sql.getAppName());
-        issue.setTitle("慢 SQL: " + truncate(sql.getSqlText(), 60));
+        issue.setTitle("慢 SQL: " + Texts.truncate(sql.getSqlText(), 60));
         issue.setEvidenceJson(buildEvidence(sql));
         issue.setStatus("pending");
-        if (loc != null) {
-            issue.setSourceRepoId(loc.repoId);
-            issue.setSourceFileId(loc.fileId);
-            issue.setLineStart(loc.lineStart);
-            issue.setLineEnd(loc.lineEnd);
-        } else {
-            issue.setSourceRepoId(repoId);
-        }
-        issueMapper.insert(issue);
-        return issue;
+        return insertIssue(issue, loc, repoId);
     }
 
     /** 从热点方法创建问题（人工/AI 指定类名方法名） */
@@ -96,16 +88,7 @@ public class SourceIssueService {
         evidence.put("methodName", methodName);
         issue.setEvidenceJson(evidence.toString());
         issue.setStatus("pending");
-        if (loc != null) {
-            issue.setSourceRepoId(loc.repoId);
-            issue.setSourceFileId(loc.fileId);
-            issue.setLineStart(loc.lineStart);
-            issue.setLineEnd(loc.lineEnd);
-        } else {
-            issue.setSourceRepoId(repoId);
-        }
-        issueMapper.insert(issue);
-        return issue;
+        return insertIssue(issue, loc, repoId);
     }
 
     /**
@@ -134,6 +117,11 @@ public class SourceIssueService {
         evidence.put("resultJson", task.getResultJson() == null ? "{}" : task.getResultJson());
         issue.setEvidenceJson(evidence.toString());
         issue.setStatus("pending");
+        return insertIssue(issue, loc, repoId);
+    }
+
+    /** 统一收尾：命中定位则写入源码位置，否则仅绑仓库；随后落库返回 */
+    private PerformanceIssue insertIssue(PerformanceIssue issue, IssueAssociator.IssueLocation loc, long repoId) {
         if (loc != null) {
             issue.setSourceRepoId(loc.repoId);
             issue.setSourceFileId(loc.fileId);
@@ -234,10 +222,11 @@ public class SourceIssueService {
     }
 
     private SlowSql findSlowSql(long id) {
-        List<SlowSql> list = slowSqlMapper.query(null, LocalDateTime.now().minusDays(7),
-                LocalDateTime.now(), null, 1000);
-        return list.stream().filter(s -> s.getId() != null && s.getId() == id).findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("慢 SQL 不存在: " + id));
+        SlowSql sql = slowSqlMapper.findById(id);
+        if (sql == null) {
+            throw new IllegalArgumentException("慢 SQL 不存在: " + id);
+        }
+        return sql;
     }
 
     private String buildEvidence(SlowSql sql) {
@@ -257,13 +246,6 @@ public class SourceIssueService {
             }
         }
         return node.toString();
-    }
-
-    private String truncate(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     /** 问题详情视图对象 */

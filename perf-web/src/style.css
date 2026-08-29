@@ -100,6 +100,13 @@
     box-shadow: 0 0 26px rgba(0, 229, 160, 0.55);
     transform: translateY(-1px);
   }
+  /* 次按钮：描边幽灵（试运行等辅助动作） */
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-fg-main border border-neon-blue/40 bg-neon-blue/10 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-secondary:hover:not(:disabled) {
+    @apply border-neon-blue bg-neon-blue/20;
+  }
   /* 调用树背景 */
   .tree-bg {
     background: rgba(0, 0, 0, 0.25);

@@ -18,7 +18,7 @@ import net.bytebuddy.asm.Advice;
  */
 public class JdbcInterceptor {
 
-    /** OnMethodEnter 返回值：SQL 文本与开始时间（statement 供退出时反查连接 URL） */
+    /** OnMethodEnter 返回值：SQL 参数引用（可能为 null）与开始时间（statement 供退出时反查连接 URL） */
     public static class JdbcEnter {
         public final String sql;
         public final long startNanos;
@@ -45,11 +45,23 @@ public class JdbcInterceptor {
         appName = config.appName;
     }
 
+    /**
+     * 惰性 SQL 提取（enter 阶段）：仅取第一个 String 参数的<b>引用</b>（零拷贝、零截断、零 toString）。
+     * 绝大多数 SQL 未超阈值即被丢弃——此时除了这一次 instanceof 扫描外不做任何字符串操作。
+     */
     @Advice.OnMethodEnter
-    public static Object enter(@Advice.Origin("#m") String methodName,
-                               @Advice.AllArguments Object[] args,
+    public static Object enter(@Advice.AllArguments Object[] args,
                                @Advice.This Object self) {
-        return new JdbcEnter(extractSql(methodName, args, self), System.nanoTime(), self);
+        String sqlArg = null;
+        if (args != null) {
+            for (Object arg : args) {
+                if (arg instanceof String s && !s.isBlank()) {
+                    sqlArg = s;
+                    break;
+                }
+            }
+        }
+        return new JdbcEnter(sqlArg, System.nanoTime(), self);
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class)
@@ -60,8 +72,8 @@ public class JdbcInterceptor {
         JdbcEnter je = (JdbcEnter) enter;
         long costMs = (System.nanoTime() - je.startNanos) / 1_000_000;
         if (costMs >= slowSqlThresholdMs && reporter != null) {
-            // 记录触发该 SQL 的调用方法链与目标数据库标识，便于平台侧精确定位源码与执行 EXPLAIN
-            reporter.reportSlowSql(appName, je.sql, costMs, System.currentTimeMillis(),
+            // 超阈值才做完整 SQL 解析（toString 兜底 + 截断）与方法链快照
+            reporter.reportSlowSql(appName, resolveSql(je), costMs, System.currentTimeMillis(),
                     TraceContext.currentMethodChain(), extractDbHost(je.statement));
         }
     }
@@ -91,23 +103,18 @@ public class JdbcInterceptor {
     }
 
     /**
-     * 提取 SQL 文本：优先取 String 参数，否则尝试 toString()。
-     * <p>注意：该方法被 Advice 内联代码引用（enter 方法体会被复制到目标类，
-     * 如 HikariProxyStatement），必须为 public 以免内联后跨类访问私有方法
-     * 触发 IllegalAccessError。
+     * 解析完整 SQL（exit 阶段、超阈值后才调用）：有 String 参数直接截断；
+     * 否则尝试从驱动对象的 toString() 提取（PreparedStatement 无参 execute）。
+     * <p>注意：该方法被 Advice 内联代码引用（exit 方法体会被复制到目标类），
+     * 必须为 public 以免内联后跨类访问私有方法触发 IllegalAccessError。
      */
-    public static String extractSql(String methodName, Object[] args, Object self) {
-        if (args != null) {
-            for (Object arg : args) {
-                if (arg instanceof String sql && !sql.isBlank()) {
-                    return truncate(sql);
-                }
-            }
+    public static String resolveSql(JdbcEnter je) {
+        if (je.sql != null) {
+            return truncate(je.sql);
         }
-        // PreparedStatement 无参 execute：尝试从驱动对象的 toString() 提取 SQL
-        if (self != null) {
+        if (je.statement != null) {
             try {
-                String s = self.toString();
+                String s = je.statement.toString();
                 if (s != null && !s.isBlank()) {
                     // 很多驱动 toString 形如 "com.mysql...StatementImpl[id=1, ...]sql=SELECT ..."
                     int idx = s.toLowerCase().indexOf("sql");
@@ -121,7 +128,7 @@ public class JdbcInterceptor {
         return "<unknown-sql>";
     }
 
-    /** 截断超长 SQL（public：被内联代码调用，见 extractSql 说明） */
+    /** 截断超长 SQL（public：被内联代码调用，见 resolveSql 说明） */
     public static String truncate(String sql) {
         return sql.length() > 2000 ? sql.substring(0, 2000) + "..." : sql;
     }

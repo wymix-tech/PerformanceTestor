@@ -53,7 +53,7 @@
               <div class="text-xs text-fg-main truncate">{{ t.taskName || t.targetUrl }}</div>
               <div class="text-[11px] text-fg-sub">{{ t.concurrency }} 并发 · {{ t.durationSec }}s</div>
             </div>
-            <span class="text-[11px] px-2 py-0.5 rounded-full shrink-0" :class="statusClass(t.status)">{{ t.status }}</span>
+            <span class="text-[11px] px-2 py-0.5 rounded-full shrink-0" :class="taskStatusClass(t.status)">{{ t.status }}</span>
           </div>
         </div>
       </div>
@@ -85,7 +85,7 @@
               <div class="text-xs text-fg-main truncate">{{ i.title }}</div>
               <div class="text-[11px] text-fg-sub mt-0.5">{{ i.issueType }} · {{ i.severity }}</div>
             </div>
-            <span class="text-[11px] px-2 py-0.5 rounded-full shrink-0" :class="statusClass(i.status)">{{ i.status }}</span>
+            <span class="text-[11px] px-2 py-0.5 rounded-full shrink-0" :class="issueStatusClass(i.status)">{{ i.status }}</span>
           </div>
         </div>
       </div>
@@ -96,8 +96,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { LayoutDashboard, Activity, Gauge, Database, Bug, Bot, Cpu, Users, Zap } from 'lucide-vue-next'
+import { LayoutDashboard, Gauge, Database, Bug, Bot, Cpu, Users, Zap } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
+import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, stressApi, slowSqlApi, sourceApi, jvmApi } from '../api'
 
 const router = useRouter()
@@ -156,17 +157,6 @@ const heapOption = computed(() => {
     ]
   }
 })
-
-function statusClass(s: string) {
-  const map: Record<string, string> = {
-    running: 'text-neon-green bg-neon-green/10',
-    success: 'text-neon-green bg-neon-green/10',
-    failed: 'text-red-400 bg-red-400/10',
-    analyzing: 'text-neon-blue bg-neon-blue/10',
-    open: 'text-amber-400 bg-amber-400/10'
-  }
-  return map[s] || 'text-fg-sub bg-white/5'
-}
 
 async function refresh() {
   const [a, t, s, i, j] = await Promise.allSettled([

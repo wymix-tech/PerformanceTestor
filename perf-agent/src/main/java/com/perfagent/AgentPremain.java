@@ -52,10 +52,10 @@ public class AgentPremain {
         String project = config.targetProjectName.isBlank() ? config.appName : config.targetProjectName;
         config.targetProjectName = project;
 
-        // 1) 初始化上报器与采样器
+        // 1) 初始化上报器与采样器（采样率控制比例 + 每秒令牌桶控制绝对量）
         HttpReporter http = new HttpReporter();
         MetricsReporter reporter = new MetricsReporter(config, http);
-        TraceSampler sampler = new TraceSampler(config.sampleRate);
+        TraceSampler sampler = new TraceSampler(config.sampleRate, config.maxTracesPerSec);
         TraceContext.init(config.appName, sampler, reporter);
         JdbcInterceptor.init(config, reporter);
         reporter.start();
@@ -73,8 +73,14 @@ public class AgentPremain {
                     .installOn(instrumentation);
         }
 
-        // 4) 优雅停止：JVM 退出时冲刷剩余数据
-        Runtime.getRuntime().addShutdownHook(new Thread(reporter::stop, "perf-agent-shutdown"));
+        // 4) 优雅停止：JVM 退出时停采集器并冲刷剩余数据
+        final JvmCollector collector = jvmCollector;
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (collector != null) {
+                collector.stop();
+            }
+            reporter.stop();
+        }, "perf-agent-shutdown"));
         System.out.println("[perf-agent] 启动完成 appName=" + config.appName
                 + " targetProjectName=" + config.targetProjectName
                 + " reportUrl=" + config.reportUrl

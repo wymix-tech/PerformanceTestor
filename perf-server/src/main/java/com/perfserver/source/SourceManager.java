@@ -173,7 +173,7 @@ public class SourceManager {
             int indexed = sourceFileService.indexDirectory(repoId, rootDir);
             long totalSize = sizeOf(rootDir);
             sourceRepoMapper.updateIndexed(repoId, indexed, totalSize);
-            sourceRepoMapper.updateStatus(repoId, "indexed", null);
+            sourceRepoMapper.updateStatus(repoId, "ready", null);
             log.info("source repo {} resynced ({}), indexed={}", repoId, type, indexed);
             return indexed;
         } catch (Exception e) {

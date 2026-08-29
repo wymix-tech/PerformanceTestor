@@ -16,6 +16,12 @@ public class ColumnInfo {
     private boolean autoIncrement;
     /** 是否主键列 */
     private boolean primaryKey;
+    /** 列注释（枚举值发现来源之一） */
+    private String comment;
+    /** 枚举候选值建议（ENUM/CHECK/注释/源码扫描四级发现） */
+    private java.util.List<Object> suggestedValues;
+    /** 疑似枚举列（值发现失败但列名含 status/type/state/flag 等特征） */
+    private boolean suspectEnum;
 
     public ColumnInfo() {
     }
@@ -76,5 +82,29 @@ public class ColumnInfo {
 
     public void setPrimaryKey(boolean primaryKey) {
         this.primaryKey = primaryKey;
+    }
+
+    public String getComment() {
+        return comment;
+    }
+
+    public void setComment(String comment) {
+        this.comment = comment;
+    }
+
+    public java.util.List<Object> getSuggestedValues() {
+        return suggestedValues;
+    }
+
+    public void setSuggestedValues(java.util.List<Object> suggestedValues) {
+        this.suggestedValues = suggestedValues;
+    }
+
+    public boolean isSuspectEnum() {
+        return suspectEnum;
+    }
+
+    public void setSuspectEnum(boolean suspectEnum) {
+        this.suspectEnum = suspectEnum;
     }
 }

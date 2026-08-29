@@ -142,19 +142,6 @@ public class StressTaskService {
         return sampleMapper.queryByTask(taskId, Math.max(1, Math.min(limit, 2000)));
     }
 
-    /** 解析压测结果 JSON */
-    public StressTaskResult parseResult(StressTask task) {
-        if (task == null || task.getResultJson() == null || task.getResultJson().isBlank()) {
-            return null;
-        }
-        try {
-            return objectMapper.readValue(task.getResultJson(), StressTaskResult.class);
-        } catch (Exception e) {
-            log.warn("parse stress result failed, taskId={}", task.getId(), e);
-            return null;
-        }
-    }
-
     /** 解析压测结果原始 JSON（含 capacity 等追加字段） */
     public JsonNode parseResultJson(StressTask task) {
         if (task == null || task.getResultJson() == null || task.getResultJson().isBlank()) {

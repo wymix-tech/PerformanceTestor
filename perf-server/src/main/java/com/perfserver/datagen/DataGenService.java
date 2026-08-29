@@ -1,9 +1,20 @@
 package com.perfserver.datagen;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.perfserver.entity.DataGenTask;
+import com.perfserver.entity.SemanticHint;
 import com.perfserver.mapper.DataGenTaskMapper;
+import com.perfserver.mapper.SemanticHintMapper;
+import com.perfserver.source.SourceFileProvider;
+import com.perftestor.datagen.DefaultDataGenEngine;
+import com.perftestor.datagen.model.DataGenSpec;
+import com.perftestor.datagen.model.EngineListener;
+import com.perftestor.datagen.model.EngineResult;
+import com.perftestor.datagen.model.MagicHint;
+import com.perftestor.datagen.model.RelationHint;
+import com.perftestor.datagen.model.SchemaMetadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -11,33 +22,30 @@ import org.springframework.stereotype.Service;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 数据灌入服务：读取目标表结构（DatabaseMetaData）→ 类型映射生成测试数据 →
- * rewriteBatchedStatements 批量插入。支持字段级自定义规则覆盖默认生成器。
+ * 数据灌入服务（宿主编排层）：任务落库 + 引擎调用 + 进度/语义提示持久化。
+ * 生成逻辑全部委托 perf-datagen 模块（联表外键感知/枚举语义化/魔法值感知/Dry-Run）。
  *
- * <p>安全：JDBC URL 仅允许 jdbc:mysql:// 前缀；表名白名单正则；行数上限 100 万；
- * 批量大小 500，异步执行并实时更新进度。
+ * <p>安全：JDBC URL 仅允许 jdbc:mysql:// 前缀；表名白名单正则；表组总行数上限 100 万。</p>
  */
 @Service
 public class DataGenService {
 
     private static final Logger log = LoggerFactory.getLogger(DataGenService.class);
 
-    private static final int BATCH_SIZE = 500;
     private static final int MAX_ROWS = 1_000_000;
     private static final String TABLE_NAME_REGEX = "^[A-Za-z0-9_]+$";
+    /** 端点自检抽检数量 */
+    private static final int SELF_CHECK_ENDPOINTS = 3;
 
     private static final ExecutorService DATAGEN_EXECUTOR = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "datagen-runner");
@@ -46,25 +54,58 @@ public class DataGenService {
     });
 
     private final DataGenTaskMapper taskMapper;
+    private final SemanticHintMapper hintMapper;
     private final ObjectMapper objectMapper;
+    private final DataGenSpecAdapter specAdapter;
+    private final DefaultDataGenEngine engine;
+    private final SourceFileProvider sourceFileProvider;
+    private final com.perfserver.source.EndpointScanner endpointScanner;
+    private final com.perfserver.mapper.AppInstanceMapper appInstanceMapper;
+    private final com.perfserver.mapper.SourceRepoMapper sourceRepoMapper;
+    private final com.perftestor.datagen.enumv.EnumValueDiscoverer enumDiscoverer =
+            new com.perftestor.datagen.enumv.EnumValueDiscoverer();
 
-    public DataGenService(DataGenTaskMapper taskMapper, ObjectMapper objectMapper) {
+    public DataGenService(DataGenTaskMapper taskMapper, SemanticHintMapper hintMapper,
+                          ObjectMapper objectMapper, DataGenSpecAdapter specAdapter,
+                          DefaultDataGenEngine engine, SourceFileProvider sourceFileProvider,
+                          com.perfserver.source.EndpointScanner endpointScanner,
+                          com.perfserver.mapper.AppInstanceMapper appInstanceMapper,
+                          com.perfserver.mapper.SourceRepoMapper sourceRepoMapper) {
         this.taskMapper = taskMapper;
+        this.hintMapper = hintMapper;
         this.objectMapper = objectMapper;
+        this.specAdapter = specAdapter;
+        this.engine = engine;
+        this.sourceFileProvider = sourceFileProvider;
+        this.endpointScanner = endpointScanner;
+        this.appInstanceMapper = appInstanceMapper;
+        this.sourceRepoMapper = sourceRepoMapper;
     }
 
-    /** 创建任务并异步执行 */
+    /** 创建任务并异步执行（dryRun=true 时仅校验预检） */
     public DataGenTask createAndRun(DataGenRequest request) {
         validate(request);
+        boolean multiTable = request.getTables() != null && !request.getTables().isEmpty();
+        int totalRows = multiTable
+                ? request.getTables().stream().mapToInt(DataGenRequest.TableSpecDto::getRowCount).sum()
+                : request.getRowCount();
+
         DataGenTask task = new DataGenTask();
         task.setTaskName(request.getTaskName() == null || request.getTaskName().isBlank()
-                ? "灌数据-" + request.getTableName() : request.getTaskName());
+                ? "灌数据-" + (multiTable ? request.getTables().get(0).getTableName() : request.getTableName())
+                : request.getTaskName());
         task.setDbUrl(request.getDbUrl());
-        task.setTableName(request.getTableName());
-        task.setRowCount(request.getRowCount());
+        task.setTableName(multiTable ? request.getTables().get(0).getTableName() : request.getTableName());
+        task.setRowCount(multiTable ? 0 : request.getRowCount());
+        task.setTotalRows(totalRows);
         task.setRuleJson(request.getRuleJson());
         task.setStatus("pending");
         task.setInserted(0);
+        try {
+            task.setTablesJson(specAdapter.toTablesJson(request));
+        } catch (Exception ignore) {
+            // JSON 序列化失败不阻断建任务
+        }
         taskMapper.insert(task);
 
         final long taskId = task.getId();
@@ -73,10 +114,16 @@ public class DataGenService {
             long start = System.currentTimeMillis();
             try {
                 taskMapper.updateStatus(taskId, "running");
-                int inserted = doGenerate(req, taskId);
-                taskMapper.updateFinished(taskId, "finished", inserted,
-                        System.currentTimeMillis() - start, null);
-                log.info("datagen finished, taskId={}, table={}, rows={}", taskId, req.getTableName(), inserted);
+                EngineResult result = runEngine(req, taskId);
+                if (result.isSuccess()) {
+                    taskMapper.updateFinished(taskId, "finished",
+                            (int) result.getInsertedRows(), System.currentTimeMillis() - start, null);
+                    log.info("datagen finished, taskId={}, dryRun={}, rows={}",
+                            taskId, req.isDryRun(), result.getInsertedRows());
+                } else {
+                    taskMapper.updateFinished(taskId, "failed", 0,
+                            System.currentTimeMillis() - start, result.getErrorMsg());
+                }
             } catch (Exception e) {
                 log.error("datagen failed, taskId={}", taskId, e);
                 taskMapper.updateFinished(taskId, "failed", 0,
@@ -86,67 +133,180 @@ public class DataGenService {
         return task;
     }
 
-    /** 核心生成与批量插入 */
-    private int doGenerate(DataGenRequest request, long taskId) throws Exception {
-        String url = ensureRewriteBatch(request.getDbUrl());
-        Properties props = new Properties();
-        props.setProperty("user", request.getDbUser() == null ? "" : request.getDbUser());
-        props.setProperty("password", request.getDbPassword() == null ? "" : request.getDbPassword());
-        props.setProperty("connectTimeout", "5000");
-        props.setProperty("socketTimeout", "60000");
+    /** 引擎执行 + 进度/语义提示落库 + 详情/自检报告 */
+    private EngineResult runEngine(DataGenRequest request, long taskId) throws Exception {
+        List<com.perftestor.datagen.model.SourceFile> sourceFiles = request.getRepoId() != null
+                ? sourceFileProvider.loadFiles(request.getRepoId()) : List.of();
+        DataGenSpec spec = specAdapter.toSpec(request, sourceFiles);
 
-        List<ColumnInfo> columns;
-        try (Connection conn = DriverManager.getConnection(url, props)) {
-            columns = readColumns(conn, request.getTableName());
-            if (columns.isEmpty()) {
-                throw new IllegalArgumentException("表不存在或无可见列: " + request.getTableName());
+        ObjectNode detail = objectMapper.createObjectNode();
+        List<String> warnings = new ArrayList<>();
+        EngineListener listener = new EngineListener() {
+            @Override
+            public void onProgress(long totalRows, long insertedRows, String currentTable) {
+                taskMapper.updateProgress(taskId, (int) insertedRows);
             }
-            RuleSet rules = parseRules(request.getRuleJson());
-            List<ColumnInfo> insertColumns = new ArrayList<>();
-            for (ColumnInfo col : columns) {
-                if (!col.isAutoIncrement()) {
-                    insertColumns.add(col);
-                }
-            }
-            StringBuilder sql = new StringBuilder("INSERT INTO ")
-                    .append(request.getTableName()).append(" (");
-            for (int i = 0; i < insertColumns.size(); i++) {
-                if (i > 0) {
-                    sql.append(", ");
-                }
-                sql.append('`').append(insertColumns.get(i).getName()).append('`');
-            }
-            sql.append(") VALUES (");
-            for (int i = 0; i < insertColumns.size(); i++) {
-                if (i > 0) {
-                    sql.append(", ");
-                }
-                sql.append('?');
-            }
-            sql.append(')');
 
-            int inserted = 0;
-            try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-                conn.setAutoCommit(false);
-                for (int row = 0; row < request.getRowCount(); row++) {
-                    for (int i = 0; i < insertColumns.size(); i++) {
-                        ColumnInfo col = insertColumns.get(i);
-                        setValue(ps, i + 1, col, rules);
-                    }
-                    ps.addBatch();
-                    if ((row + 1) % BATCH_SIZE == 0) {
-                        inserted += ps.executeBatch().length;
-                        conn.commit();
-                        taskMapper.updateProgress(taskId, inserted);
-                    }
+            @Override
+            public void onHints(List<MagicHint> magicHints, List<RelationHint> relationHints) {
+                try {
+                    persistHints(request.getRepoId(), magicHints, relationHints);
+                } catch (Exception e) {
+                    log.warn("persist semantic hints failed: {}", e.getMessage());
                 }
-                if (request.getRowCount() % BATCH_SIZE != 0) {
-                    inserted += ps.executeBatch().length;
-                    conn.commit();
-                }
-                taskMapper.updateProgress(taskId, inserted);
             }
-            return inserted;
+
+            @Override
+            public void onWarn(String message) {
+                warnings.add(message);
+            }
+        };
+
+        EngineResult result = engine.execute(spec, listener);
+        if (sourceFiles.isEmpty() && request.getRepoId() != null) {
+            warnings.add("源码不可读，魔法值仅基于数据库元数据（ENUM/CHECK/列注释），精准度下降");
+        }
+
+        // 详情：逐表统计 + 警告 + 试运行报告
+        ArrayNode stats = detail.putArray("tableStats");
+        result.getTableStats().forEach(s -> {
+            ObjectNode st = stats.addObject();
+            st.put("table", s.getTable());
+            st.put("rows", s.getRows());
+        });
+        ArrayNode warns = detail.putArray("warnings");
+        warnings.forEach(warns::add);
+        if (result.getErrorMsg() != null) {
+            detail.put("errorMsg", result.getErrorMsg());
+        }
+        if (request.isDryRun()) {
+            ObjectNode dry = detail.putObject("dryRunReport");
+            dry.put("estimatedMaxTxnMs", result.getEstimatedMaxTxnMs());
+            dry.put("totalRows", result.getTotalRows());
+            dry.put("passed", result.isSuccess());
+        } else if (result.isSuccess()) {
+            ObjectNode sc = selfCheck(request);
+            if (sc != null) {
+                detail.set("selfCheck", sc);
+            }
+        }
+        taskMapper.updateDetail(taskId, detail.toString(), (int) result.getTotalRows());
+        return result;
+    }
+
+    /** 语义提示落库（魔法值→value / 关联→relation；naming 系 pending 交前端确认；null 归一空串保证幂等键） */
+    private void persistHints(Long repoId, List<MagicHint> magicHints, List<RelationHint> relationHints) {
+        for (MagicHint mh : magicHints) {
+            SemanticHint h = new SemanticHint();
+            h.setRepoId(repoId);
+            h.setHintType(SemanticHint.TYPE_VALUE);
+            h.setTableName(nvl(mh.getTable()));
+            h.setColumnName(nvl(mh.getColumn()));
+            h.setValuesJson(toJson(mh.getValues()));
+            h.setParentTable("");
+            h.setParentColumn("");
+            h.setSourceRefs(toJson(mh.getSourceRefs()));
+            h.setSource(nvl(mh.getKind()));
+            h.setStatus(SemanticHint.ST_PENDING);
+            try {
+                hintMapper.upsert(h);
+            } catch (Exception e) {
+                log.debug("upsert value hint failed: {}", e.getMessage());
+            }
+        }
+        for (RelationHint rh : relationHints) {
+            SemanticHint h = new SemanticHint();
+            h.setRepoId(repoId);
+            h.setHintType(SemanticHint.TYPE_RELATION);
+            h.setTableName(nvl(rh.getChildTable()));
+            h.setColumnName(nvl(rh.getChildColumn()));
+            h.setParentTable(nvl(rh.getParentTable()));
+            h.setParentColumn(nvl(rh.getParentColumn()));
+            h.setSourceRefs(toJson(rh.getSourceRefs()));
+            h.setSource(nvl(rh.getSource()));
+            h.setConfidence(rh.getConfidence());
+            h.setStatus(rh.autoApplicable() ? SemanticHint.ST_ADOPTED : SemanticHint.ST_PENDING);
+            try {
+                hintMapper.upsert(h);
+            } catch (Exception e) {
+                log.debug("upsert relation hint failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    private static String nvl(String s) {
+        return s == null ? "" : s.toLowerCase(Locale.ROOT);
+    }
+
+    /** 灌数后端点非空自检：抽 GET 接口实调，非空返回率写入详情 */
+    private ObjectNode selfCheck(DataGenRequest request) {
+        try {
+            var repo = repoById(request.getRepoId());
+            if (repo == null || repo.getAppName() == null || repo.getAppName().isBlank()) {
+                return null;
+            }
+            var app = appInstanceMapper.findByAppName(repo.getAppName());
+            if (app == null || app.getAppHost() == null || app.getAppPort() == null) {
+                return null; // 无应用实例信息，跳过自检
+            }
+            List<Map<String, Object>> endpoints = endpointScanner.scan(request.getRepoId()).stream()
+                    .filter(e -> "GET".equalsIgnoreCase(String.valueOf(e.get("httpMethod"))))
+                    .limit(SELF_CHECK_ENDPOINTS)
+                    .toList();
+            if (endpoints.isEmpty()) {
+                return null;
+            }
+            ObjectNode report = objectMapper.createObjectNode();
+            ArrayNode items = report.putArray("endpoints");
+            int nonEmpty = 0;
+            for (Map<String, Object> ep : endpoints) {
+                String path = String.valueOf(ep.get("path"));
+                String url = "http://" + app.getAppHost() + ":" + app.getAppPort()
+                        + (path.startsWith("/") ? path : "/" + path);
+                ObjectNode item = items.addObject();
+                item.put("url", url);
+                item.put("path", path);
+                try {
+                    java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+                    java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                            .uri(java.net.URI.create(url))
+                            .timeout(java.time.Duration.ofSeconds(5))
+                            .GET().build();
+                    java.net.http.HttpResponse<String> resp =
+                            client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+                    boolean nonEmptyBody = resp.statusCode() == 200
+                            && resp.body() != null && resp.body().length() > 2;
+                    item.put("status", resp.statusCode());
+                    item.put("nonEmpty", nonEmptyBody);
+                    if (nonEmptyBody) {
+                        nonEmpty++;
+                    }
+                } catch (Exception e) {
+                    item.put("status", -1);
+                    item.put("nonEmpty", false);
+                    item.put("error", e.getMessage());
+                }
+            }
+            report.put("nonEmptyRate", endpoints.isEmpty() ? 0 : (double) nonEmpty / endpoints.size());
+            if (nonEmpty == 0) {
+                report.put("warning", "数据未命中业务谓词或服务不可达，压测结果可能失真");
+            }
+            return report;
+        } catch (Exception e) {
+            log.warn("datagen self-check failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private com.perfserver.entity.SourceRepo repoById(Long repoId) {
+        return repoId == null ? null : sourceRepoMapper.findById(repoId);
+    }
+
+    private String toJson(Object o) {
+        try {
+            return objectMapper.writeValueAsString(o);
+        } catch (Exception e) {
+            return "[]";
         }
     }
 
@@ -163,6 +323,7 @@ public class DataGenService {
                 col.setSize(rs.getInt("COLUMN_SIZE"));
                 col.setNullable(rs.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls);
                 col.setAutoIncrement("YES".equalsIgnoreCase(rs.getString("IS_AUTOINCREMENT")));
+                col.setComment(rs.getString("REMARKS"));
                 columns.add(col);
             }
         }
@@ -178,103 +339,6 @@ public class DataGenService {
             }
         }
         return columns;
-    }
-
-    /** 按列类型 + 规则设置参数值 */
-    private void setValue(PreparedStatement ps, int idx, ColumnInfo col, RuleSet rules) throws Exception {
-        JsonNode rule = rules.get(col.getName());
-        Object value = rule != null ? applyRule(rule, col) : generateDefault(col);
-        if (value == null) {
-            ps.setObject(idx, null);
-            return;
-        }
-        switch (col.getTypeName().toUpperCase()) {
-            case "INT", "INTEGER", "SMALLINT", "TINYINT", "MEDIUMINT", "YEAR" ->
-                    ps.setInt(idx, ((Number) value).intValue());
-            case "BIGINT" -> ps.setLong(idx, ((Number) value).longValue());
-            case "FLOAT" -> ps.setFloat(idx, ((Number) value).floatValue());
-            case "DOUBLE" -> ps.setDouble(idx, ((Number) value).doubleValue());
-            case "DECIMAL", "NUMERIC" -> ps.setBigDecimal(idx, new java.math.BigDecimal(value.toString()));
-            case "DATE" -> ps.setDate(idx, java.sql.Date.valueOf(((LocalDateTime) value).toLocalDate()));
-            case "DATETIME", "TIMESTAMP" -> ps.setTimestamp(idx, java.sql.Timestamp.valueOf((LocalDateTime) value));
-            case "BIT", "BOOLEAN", "BOOL" -> ps.setBoolean(idx, ((Number) value).intValue() != 0);
-            default -> ps.setString(idx, String.valueOf(value));
-        }
-    }
-
-    /** 默认类型映射生成器 */
-    private Object generateDefault(ColumnInfo col) {
-        ThreadLocalRandom r = ThreadLocalRandom.current();
-        String type = col.getTypeName().toUpperCase();
-        return switch (type) {
-            case "INT", "INTEGER", "SMALLINT", "TINYINT", "MEDIUMINT", "YEAR" -> r.nextInt(1, 100000);
-            case "BIGINT" -> Math.abs(r.nextLong());
-            case "FLOAT", "DOUBLE" -> Math.round(r.nextDouble() * 10000) / 100.0;
-            case "DECIMAL", "NUMERIC" -> Math.round(r.nextDouble() * 100000) / 100.0;
-            case "DATE", "DATETIME", "TIMESTAMP" -> LocalDateTime.now().minusDays(r.nextInt(0, 365)).withNano(0);
-            case "BIT", "BOOLEAN", "BOOL" -> r.nextInt(0, 2);
-            case "TEXT", "MEDIUMTEXT", "LONGTEXT", "CLOB" -> randomText(Math.min(col.getSize(), 200));
-            default -> randomText(Math.max(1, Math.min(col.getSize(), 64)));
-        };
-    }
-
-    /** 规则生成器：fixed / range / enum */
-    private Object applyRule(JsonNode rule, ColumnInfo col) {
-        ThreadLocalRandom r = ThreadLocalRandom.current();
-        String type = rule.path("type").asText("random");
-        switch (type) {
-            case "fixed" -> {
-                JsonNode v = rule.path("value");
-                if (v.isNumber()) {
-                    return v.numberValue();
-                }
-                return v.asText();
-            }
-            case "range" -> {
-                double min = rule.path("min").asDouble(0);
-                double max = rule.path("max").asDouble(100);
-                return Math.round((min + r.nextDouble() * (max - min)) * 100) / 100.0;
-            }
-            case "enum" -> {
-                JsonNode values = rule.path("values");
-                if (values.isArray() && values.size() > 0) {
-                    JsonNode v = values.get(r.nextInt(values.size()));
-                    return v.isNumber() ? v.numberValue() : v.asText();
-                }
-                return generateDefault(col);
-            }
-            default -> {
-                return generateDefault(col);
-            }
-        }
-    }
-
-    private String randomText(int len) {
-        String chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        StringBuilder sb = new StringBuilder(len);
-        ThreadLocalRandom r = ThreadLocalRandom.current();
-        for (int i = 0; i < len; i++) {
-            sb.append(chars.charAt(r.nextInt(chars.length())));
-        }
-        return sb.toString();
-    }
-
-    /** 解析规则 JSON → Map<列名, 规则节点> */
-    private RuleSet parseRules(String ruleJson) {
-        RuleSet set = new RuleSet();
-        if (ruleJson == null || ruleJson.isBlank()) {
-            return set;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(ruleJson);
-            JsonNode fields = root.path("fields");
-            if (fields.isObject()) {
-                fields.fields().forEachRemaining(e -> set.put(e.getKey(), e.getValue()));
-            }
-        } catch (Exception e) {
-            log.warn("parse datagen rules failed: {}", ruleJson, e);
-        }
-        return set;
     }
 
     /** 任务列表（时间倒序） */
@@ -303,15 +367,45 @@ public class DataGenService {
         return tables;
     }
 
-    /** 目标表列清单（规则配置表单） */
+    /** 目标表列清单（规则配置表单；附枚举建议值与疑似枚举标记） */
     public List<ColumnInfo> listColumns(String dbUrl, String dbUser, String dbPassword, String tableName) {
         validateDbUrl(dbUrl);
         validateTableName(tableName);
         try (Connection conn = connect(dbUrl, dbUser, dbPassword)) {
-            return readColumns(conn, tableName);
+            List<ColumnInfo> columns = readColumns(conn, tableName);
+            for (ColumnInfo col : columns) {
+                // 模块枚举发现：内联 ENUM / 注释（CHECK 与 Java 枚举由建议接口/任务回调补充）
+                SchemaMetadata.ColumnMeta cm = new SchemaMetadata.ColumnMeta();
+                cm.setName(col.getName());
+                cm.setTypeName(col.getTypeName());
+                cm.setComment(col.getComment());
+                List<Object> values = enumDiscoverer.discover(null, null, cm, Map.of());
+                if (!values.isEmpty()) {
+                    col.setSuggestedValues(values);
+                } else {
+                    col.setSuspectEnum(com.perftestor.datagen.enumv.EnumValueDiscoverer
+                            .suspectEnumColumn(cm));
+                }
+            }
+            return columns;
         } catch (Exception e) {
             throw new IllegalArgumentException("读取表结构失败: " + e.getMessage());
         }
+    }
+
+    /** 语义建议查询（魔法值 value / 关联 relation；status 过滤 pending 可查看待确认项） */
+    public List<SemanticHint> suggestions(Long repoId, String tableName, String hintType, String status) {
+        return hintMapper.query(repoId, tableName, hintType,
+                status == null || status.isBlank() ? null : status, 100);
+    }
+
+    /** 建议采纳/忽略（adopted / dismissed） */
+    public void adopt(long hintId, boolean adopt) {
+        SemanticHint hint = hintMapper.findById(hintId);
+        if (hint == null) {
+            throw new IllegalArgumentException("建议不存在: " + hintId);
+        }
+        hintMapper.updateStatus(hintId, adopt ? SemanticHint.ST_ADOPTED : SemanticHint.ST_DISMISSED);
     }
 
     private Connection connect(String dbUrl, String dbUser, String dbPassword) throws Exception {
@@ -322,20 +416,39 @@ public class DataGenService {
         return DriverManager.getConnection(ensureRewriteBatch(dbUrl), props);
     }
 
-    /** 追加 rewriteBatchedStatements 提升批量插入性能 */
+    /** URL 增强：rewriteBatchedStatements（批量写入）+ useInformationSchema（读取列注释） */
     private String ensureRewriteBatch(String url) {
-        if (url.contains("rewriteBatchedStatements")) {
-            return url;
+        String enriched = url;
+        if (!enriched.contains("rewriteBatchedStatements")) {
+            enriched += (enriched.contains("?") ? "&" : "?") + "rewriteBatchedStatements=true";
         }
-        return url + (url.contains("?") ? "&" : "?") + "rewriteBatchedStatements=true";
+        if (!enriched.contains("useInformationSchema")) {
+            enriched += "&useInformationSchema=true";
+        }
+        return enriched;
     }
 
-    /** 参数校验与上限保护 */
+    /** 参数校验与上限保护（单表与表组两种形态） */
     private void validate(DataGenRequest request) {
         validateDbUrl(request.getDbUrl());
-        validateTableName(request.getTableName());
-        if (request.getRowCount() < 1 || request.getRowCount() > MAX_ROWS) {
-            throw new IllegalArgumentException("行数必须在 1-" + MAX_ROWS + " 之间");
+        boolean multiTable = request.getTables() != null && !request.getTables().isEmpty();
+        if (multiTable) {
+            int total = 0;
+            for (DataGenRequest.TableSpecDto ts : request.getTables()) {
+                validateTableName(ts.getTableName());
+                if (ts.getRowCount() < 0) {
+                    throw new IllegalArgumentException("行数非法: " + ts.getTableName());
+                }
+                total += ts.getRowCount();
+            }
+            if (total < 1 || total > MAX_ROWS) {
+                throw new IllegalArgumentException("表组总行数必须在 1-" + MAX_ROWS + " 之间");
+            }
+        } else {
+            validateTableName(request.getTableName());
+            if (request.getRowCount() < 1 || request.getRowCount() > MAX_ROWS) {
+                throw new IllegalArgumentException("行数必须在 1-" + MAX_ROWS + " 之间");
+            }
         }
     }
 
@@ -348,19 +461,6 @@ public class DataGenService {
     private void validateTableName(String tableName) {
         if (tableName == null || !tableName.matches(TABLE_NAME_REGEX)) {
             throw new IllegalArgumentException("表名仅允许字母数字下划线");
-        }
-    }
-
-    /** 规则集合（列名 → 规则 JSON 节点） */
-    private static class RuleSet {
-        private final Map<String, JsonNode> rules = new HashMap<>();
-
-        void put(String column, JsonNode rule) {
-            rules.put(column, rule);
-        }
-
-        JsonNode get(String column) {
-            return rules.get(column);
         }
     }
 }

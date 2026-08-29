@@ -104,8 +104,13 @@ public class AgentReportService {
             warnUnknownProjectOnce(targetProject, type);
             return;
         }
-        // 心跳注册应用实例（携带 appPort 供压测地址自动预填）
+        // 心跳注册应用实例（携带 appPort/appVersion 供压测地址自动预填与版本快照）
         registerInstance(appName, remoteHost, body);
+
+        // agent 侧丢弃计数（队列超限/退避丢数据时随报文带出，供数据完整性观测）
+        if (body.get("dropped") instanceof Map<?, ?> dropped) {
+            log.warn("agent dropped data (queue overflow/backoff), app={}, dropped={}", appName, dropped);
+        }
 
         Object rawItems = body.get("items");
         if (!(rawItems instanceof List<?> items) || items.isEmpty()) {

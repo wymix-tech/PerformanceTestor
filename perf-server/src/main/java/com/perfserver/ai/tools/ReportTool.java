@@ -1,6 +1,7 @@
 package com.perfserver.ai.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.perfserver.common.Texts;
 import com.perfserver.entity.JvmMetric;
 import com.perfserver.entity.PerformanceIssue;
 import com.perfserver.entity.SlowSql;
@@ -89,7 +90,7 @@ public class ReportTool extends AbstractAiTool {
             } else {
                 for (SlowSql s : slowSqls) {
                     sb.append("- **").append(s.getCostMs()).append("ms** [").append(s.getSource()).append("] ")
-                            .append(truncate(s.getSqlText(), 100)).append("\n");
+                            .append(Texts.truncate(s.getSqlText(), 100)).append("\n");
                 }
                 sb.append("\n");
             }
@@ -142,12 +143,5 @@ public class ReportTool extends AbstractAiTool {
         } catch (Exception e) {
             return error("报告生成失败: " + e.getMessage());
         }
-    }
-
-    private String truncate(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 }

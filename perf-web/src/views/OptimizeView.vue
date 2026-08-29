@@ -232,6 +232,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { Target } from 'lucide-vue-next'
+import { issueStatusClass as statusClass } from '../utils/format'
 import { sourceApi, slowSqlApi, stressApi, dbConnApi } from '../api'
 
 const repos = ref<Array<Record<string, any>>>([])
@@ -269,16 +270,6 @@ const fastSlowSql = ref(0)
 const fastStress = ref(0)
 const hotClass = ref('')
 const hotMethod = ref('')
-
-function statusClass(s: string) {
-  const map: Record<string, string> = {
-    analyzed: 'text-neon-green bg-neon-green/10',
-    analyzing: 'text-neon-blue bg-neon-blue/10',
-    open: 'text-amber-400 bg-amber-400/10',
-    failed: 'text-red-400 bg-red-400/10'
-  }
-  return map[s] || 'text-fg-sub bg-white/5'
-}
 
 async function loadRepos() {
   const r = await sourceApi.repos()
@@ -548,10 +539,25 @@ async function createFromStress() {
 }
 
 onMounted(async () => {
-  await Promise.allSettled([loadRepos(), loadIssues(), slowSqlApi.list({ limit: 10 }), stressApi.list({ limit: 10 }), loadConns()])
-  const s = await sourceApi.recentSlowSqls({ limit: 10 })
-  recentSlow.value = s.data
-  const t = await stressApi.list({ limit: 10 })
-  stressTasks.value = t.data
+  // 并行加载互不依赖的数据；单项失败不影响其余（下拉兜底为空）
+  await Promise.allSettled([
+    loadRepos(),
+    loadIssues(),
+    loadConns(),
+    loadRecentSlowSqls(),
+    loadStressTasksForIssue()
+  ])
 })
+
+// 最近慢 SQL（一键创建问题用）
+async function loadRecentSlowSqls() {
+  const r = await sourceApi.recentSlowSqls({ limit: 10 })
+  recentSlow.value = r.data || []
+}
+
+// 压测任务列表（从压测任务创建问题用）
+async function loadStressTasksForIssue() {
+  const r = await stressApi.list({ limit: 10 })
+  stressTasks.value = r.data || []
+}
 </script>

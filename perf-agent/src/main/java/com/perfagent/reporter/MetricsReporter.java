@@ -2,6 +2,7 @@ package com.perfagent.reporter;
 
 import com.perfagent.config.AgentConfig;
 import com.perfagent.trace.TraceNode;
+import com.perfagent.util.AppManifest;
 import com.perfagent.util.JsonUtil;
 
 import java.util.ArrayDeque;
@@ -14,18 +15,25 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.jar.Attributes;
-import java.util.jar.JarFile;
-import java.util.jar.Manifest;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 指标上报器：本地队列缓冲 + 单线程定时 flush + 失败指数退避重试 + 超时丢弃。
+ * 指标上报器：本地队列缓冲 + 单线程定时 flush + 失败指数退避重试 + 超限丢弃。
  *
- * <p>设计目标（分离部署可靠性）：agent 与被测应用在同一进程，
- * 上报走异步线程，业务线程零阻塞；平台不可达时数据在本地缓冲，
- * 达到上限丢弃最旧数据，网络抖动不影响被测应用。
+ * <p>低开销设计（探针影响最小化）：
+ * <ul>
+ *   <li><b>业务线程零转换</b>：调用链以 TraceNode 原生树直接入队（O(1)），
+ *       树转 Map / JSON 序列化全部在 reporter 线程 flush 时完成；</li>
+ *   <li><b>每队列独立锁</b>：trace / jvm / slowSql 三队列各自加锁，
+ *       业务线程入队互不争用全局锁；</li>
+ *   <li><b>trace 字节预算</b>：条数上限之外增加内存预算（节点数×256B 估算），
+ *       大树洪水不会撑爆内存，超限丢最旧并计数；</li>
+ *   <li><b>丢弃可观测</b>：dropped 计数随下一次上报 body 顶层带出，平台侧记录日志；</li>
+ *   <li><b>平台不可达</b>：指数退避至 60s，队列满丢最旧——被测应用完全不受影响。</li>
+ * </ul>
  *
- * <p>上报 body 格式：{"type":"trace|jvm|slowSql","appName":"...","items":[...]}
+ * <p>上报 body 格式：{"type":"trace|jvm|slowSql","appName":"...","items":[...],
+ * "dropped":{"trace":n,"jvm":n,"slowSql":n}}（dropped 为自上次成功上报以来的累计丢弃数）
  */
 public class MetricsReporter {
 
@@ -33,6 +41,27 @@ public class MetricsReporter {
     public static final String TYPE_TRACE = "trace";
     public static final String TYPE_JVM = "jvm";
     public static final String TYPE_SLOW_SQL = "slowSql";
+
+    /** 单条 trace 字节估算：节点数 × 256B（Map + 装箱 + 字符串的保守均值），下限 1KB */
+    private static final int BYTES_PER_NODE = 256;
+    private static final int MIN_TRACE_BYTES = 1024;
+
+    /** 调用链队列元素：原生树引用 + 估算字节数（转 Map 在 reporter 线程做） */
+    private static final class TraceItem {
+        final String traceId;
+        final String app;
+        final TraceNode root;
+        final long startTimeMs;
+        final int estBytes;
+
+        TraceItem(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs) {
+            this.traceId = traceId;
+            this.app = app;
+            this.root = root;
+            this.startTimeMs = startTimeMs;
+            this.estBytes = Math.max(MIN_TRACE_BYTES, nodeCount * BYTES_PER_NODE);
+        }
+    }
 
     private final String reportUrl;
     private final String appName;
@@ -44,15 +73,25 @@ public class MetricsReporter {
     private final String configuredAppVersion;
     private final int batchSize;
     private final int bufferSize;
+    /** trace 队列字节预算（超出丢最旧） */
+    private final int traceBufferBytes;
 
     /** 运行期懒探测缓存的应用端口（-1 未探测） */
     private int resolvedAppPort = -1;
     /** 运行期懒探测缓存的应用版本（null 未探测；探测结果可能为空串） */
     private String resolvedAppVersion;
 
-    private final Deque<Map<String, Object>> traceQueue = new ArrayDeque<>();
-    private final Deque<Map<String, Object>> jvmQueue = new ArrayDeque<>();
-    private final Deque<Map<String, Object>> slowSqlQueue = new ArrayDeque<>();
+    /** 三队列元素统一 Object（trace 存 TraceItem，jvm/slowSql 存 Map），各自独立锁 */
+    private final Deque<Object> traceQueue = new ArrayDeque<>();
+    private final Deque<Object> jvmQueue = new ArrayDeque<>();
+    private final Deque<Object> slowSqlQueue = new ArrayDeque<>();
+    /** trace 队列当前估算字节数（仅在 traceQueue 锁内变更） */
+    private long traceQueueBytes = 0;
+
+    /** 丢弃计数（自上次成功上报以来的累计；上报时取走增量） */
+    private final AtomicLong droppedTrace = new AtomicLong();
+    private final AtomicLong droppedJvm = new AtomicLong();
+    private final AtomicLong droppedSlowSql = new AtomicLong();
 
     private final HttpReporter http;
     private final ScheduledExecutorService scheduler;
@@ -73,6 +112,7 @@ public class MetricsReporter {
         this.configuredAppVersion = config.appVersion == null ? "" : config.appVersion.trim();
         this.batchSize = config.batchSize;
         this.bufferSize = config.bufferSize;
+        this.traceBufferBytes = Math.max(1024 * 1024, config.traceBufferBytes);
         this.http = http;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "perf-reporter");
@@ -93,23 +133,27 @@ public class MetricsReporter {
         scheduler.shutdownNow();
     }
 
-    // ===================== 上报入口（业务线程调用，非阻塞） =====================
+    // ===================== 上报入口（业务线程调用，非阻塞 O(1)） =====================
 
-    /** 上报一条调用链 */
-    public void reportTrace(String traceId, String app, TraceNode root, long startTimeMs) {
+    /** 上报一条调用链（原生树直接入队，转 Map 在 reporter 线程做） */
+    public void reportTrace(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs) {
         if (!running.get()) {
             return;
         }
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("traceId", traceId);
-        item.put("appName", app);
-        item.put("targetProjectName", targetProjectName);
-        item.put("rootMethod", root.method);
-        // 链路总耗时 = 根节点自身耗时（父节点耗时已包含子调用，不应逐层相加）
-        item.put("totalMs", root.costMs);
-        item.put("startTime", startTimeMs);
-        item.put("tree", toTreeMap(root));
-        enqueue(traceQueue, item);
+        TraceItem item = new TraceItem(traceId, app, root, nodeCount, startTimeMs);
+        synchronized (traceQueue) {
+            // 条数与字节预算双重限制，超限丢最旧
+            while (traceQueue.size() >= bufferSize || traceQueueBytes + item.estBytes > traceBufferBytes) {
+                Object old = traceQueue.pollFirst();
+                if (old == null) {
+                    break;
+                }
+                traceQueueBytes -= ((TraceItem) old).estBytes;
+                droppedTrace.incrementAndGet();
+            }
+            traceQueue.addLast(item);
+            traceQueueBytes += item.estBytes;
+        }
     }
 
     /** 上报一条 JVM 指标 */
@@ -118,7 +162,10 @@ public class MetricsReporter {
             return;
         }
         metric.put("targetProjectName", targetProjectName);
-        enqueue(jvmQueue, metric);
+        synchronized (jvmQueue) {
+            dropOldest(jvmQueue, droppedJvm);
+            jvmQueue.addLast(metric);
+        }
     }
 
     /** 上报一条慢 SQL（携带触发方法链与目标数据库标识，供源码定位与 EXPLAIN 分析） */
@@ -140,28 +187,21 @@ public class MetricsReporter {
         if (dbHost != null && !dbHost.isBlank()) {
             item.put("dbHost", dbHost);
         }
-        enqueue(slowSqlQueue, item);
+        synchronized (slowSqlQueue) {
+            dropOldest(slowSqlQueue, droppedSlowSql);
+            slowSqlQueue.addLast(item);
+        }
     }
 
-    // ===================== 内部实现 =====================
-
-    /** 入队：满则丢弃最旧 */
-    private synchronized void enqueue(Deque<Map<String, Object>> queue, Map<String, Object> item) {
+    /** 条数超限丢最旧（jvm/slowSql 队列，条数即体积的良好代理） */
+    private void dropOldest(Deque<Object> queue, AtomicLong dropped) {
         if (queue.size() >= bufferSize) {
             queue.pollFirst();
+            dropped.incrementAndGet();
         }
-        queue.addLast(item);
     }
 
-    /** 批量取出（最多 batchSize 条） */
-    private synchronized List<Map<String, Object>> drain(Deque<Map<String, Object>> queue) {
-        int count = Math.min(batchSize, queue.size());
-        List<Map<String, Object>> list = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) {
-            list.add(queue.pollFirst());
-        }
-        return list;
-    }
+    // ===================== 内部实现（reporter 线程） =====================
 
     /** flush 所有类型队列（定时调用）；项目被平台拒绝后整体停报 */
     private void flushAll() {
@@ -169,29 +209,77 @@ public class MetricsReporter {
         if (stoppedByProjectGate.get()) {
             return;
         }
-        boolean okTrace = flush(TYPE_TRACE, traceQueue);
-        boolean okJvm = flush(TYPE_JVM, jvmQueue);
-        boolean okSql = flush(TYPE_SLOW_SQL, slowSqlQueue);
+        boolean okTrace = flushTrace();
+        boolean okJvm = flushSimple(TYPE_JVM, jvmQueue);
+        boolean okSql = flushSimple(TYPE_SLOW_SQL, slowSqlQueue);
         if (okTrace && okJvm && okSql) {
             backoffMs = 1000;
         }
     }
 
-    /** 发送单个类型队列，成功返回 true，失败进入退避；平台判定项目不存在则永久停报 */
-    private boolean flush(String type, Deque<Map<String, Object>> queue) {
+    /** 发送 trace 队列（锁内仅 drain，树转 Map 在锁外做，不阻塞业务线程入队） */
+    private boolean flushTrace() {
         if (backoffMs >= MAX_BACKOFF_MS || stoppedByProjectGate.get()) {
             return false;
         }
-        List<Map<String, Object>> items;
-        synchronized (this) {
-            if (queue.isEmpty()) {
+        List<TraceItem> items;
+        synchronized (traceQueue) {
+            if (traceQueue.isEmpty()) {
                 return true;
             }
-            items = drain(queue);
+            int count = Math.min(batchSize, traceQueue.size());
+            items = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                TraceItem t = (TraceItem) traceQueue.pollFirst();
+                traceQueueBytes -= t.estBytes;
+                items.add(t);
+            }
         }
         if (items.isEmpty()) {
             return true;
         }
+        // 树转 Map 在 reporter 线程（业务线程只入队原生树）
+        List<Map<String, Object>> converted = new ArrayList<>(items.size());
+        for (TraceItem t : items) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("traceId", t.traceId);
+            item.put("appName", t.app);
+            item.put("targetProjectName", targetProjectName);
+            item.put("rootMethod", t.root.method);
+            // 链路总耗时 = 根节点自身耗时（父节点耗时已包含子调用，不应逐层相加）
+            item.put("totalMs", t.root.costMs);
+            item.put("startTime", t.startTimeMs);
+            item.put("tree", toTreeMap(t.root));
+            converted.add(item);
+        }
+        return post(TYPE_TRACE, converted);
+    }
+
+    /** 发送 jvm / slowSql 队列（元素已是 Map，直接批量） */
+    private boolean flushSimple(String type, Deque<Object> queue) {
+        if (backoffMs >= MAX_BACKOFF_MS || stoppedByProjectGate.get()) {
+            return false;
+        }
+        List<Map<String, Object>> items;
+        synchronized (queue) {
+            if (queue.isEmpty()) {
+                return true;
+            }
+            int count = Math.min(batchSize, queue.size());
+            items = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                items.add((Map<String, Object>) queue.pollFirst());
+            }
+        }
+        if (items.isEmpty()) {
+            return true;
+        }
+        return post(type, items);
+    }
+
+    /** 组装 body 并 POST；失败进入退避；平台判定项目不存在则永久停报 */
+    @SuppressWarnings("unchecked")
+    private boolean post(String type, List<Map<String, Object>> items) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", type);
         body.put("appName", appName);
@@ -205,6 +293,13 @@ public class MetricsReporter {
             body.put("appVersion", version);
         }
         body.put("items", items);
+        // 丢弃计数（增量取走，供平台侧数据完整性观测）
+        long dt = droppedTrace.getAndSet(0);
+        long dj = droppedJvm.getAndSet(0);
+        long ds = droppedSlowSql.getAndSet(0);
+        if (dt > 0 || dj > 0 || ds > 0) {
+            body.put("dropped", Map.of("trace", dt, "jvm", dj, "slowSql", ds));
+        }
 
         HttpReporter.PostResult result = http.postJson(reportUrl, JsonUtil.serialize(body));
         if (!result.ok()) {
@@ -212,9 +307,14 @@ public class MetricsReporter {
             String respBody = result.body() == null ? "" : result.body();
             if (respBody.contains("项目不存在") || respBody.contains("PROJECT_NOT_FOUND")) {
                 stoppedByProjectGate.set(true);
-                synchronized (this) {
+                synchronized (traceQueue) {
                     traceQueue.clear();
+                    traceQueueBytes = 0;
+                }
+                synchronized (jvmQueue) {
                     jvmQueue.clear();
+                }
+                synchronized (slowSqlQueue) {
                     slowSqlQueue.clear();
                 }
                 System.err.println("[perf-agent] 平台不存在项目「" + targetProjectName
@@ -252,64 +352,18 @@ public class MetricsReporter {
         return resolvedAppPort;
     }
 
-    /** 解析被测应用版本：显式配置优先，否则从被测应用 jar 的 MANIFEST 读 Implementation-Version（懒探测一次缓存） */
+    /** 解析被测应用版本：显式配置优先，否则读被测 jar MANIFEST（AppManifest 懒探测一次缓存） */
     private String resolveAppVersion() {
         if (!configuredAppVersion.isEmpty()) {
             return configuredAppVersion;
         }
-        if (resolvedAppVersion != null) {
-            return resolvedAppVersion;
+        if (resolvedAppVersion == null) {
+            resolvedAppVersion = AppManifest.implementationVersion();
         }
-        resolvedAppVersion = detectVersionFromManifest();
         return resolvedAppVersion;
     }
 
-    /**
-     * 从被测应用 jar 解析版本（仅当未配置 appVersion 参数时执行）：
-     * 1) sun.java.command 形如 "-jar /path/app.jar --spring..." —— java -jar 启动，最精确；
-     * 2) 兜底 java.class.path 中的 jar（排除 agent 自身；IDE exploded 运行时可能取到依赖 jar，返回空串更保守）。
-     * 读取其 META-INF/MANIFEST.MF 的 Implementation-Version（Spring Boot repackage 默认写入 pom 版本）。
-     */
-    private String detectVersionFromManifest() {
-        try {
-            String jarPath = null;
-            // 1) -jar 启动：命令行第二个参数即应用 jar
-            String cmd = System.getProperty("sun.java.command", "");
-            if (cmd.startsWith("-jar ")) {
-                String[] parts = cmd.split("\\s+");
-                if (parts.length > 1 && parts[1].endsWith(".jar")) {
-                    jarPath = parts[1];
-                }
-            }
-            // 2) 兜底：classpath 中的 jar（排除 -javaagent 自身的 jar）
-            if (jarPath == null) {
-                for (String p : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
-                    if (p.endsWith(".jar") && !p.toLowerCase().contains("perf-agent")) {
-                        jarPath = p;
-                        break;
-                    }
-                }
-            }
-            if (jarPath == null) {
-                return "";
-            }
-            try (JarFile jf = new JarFile(jarPath)) {
-                Manifest mf = jf.getManifest();
-                if (mf == null) {
-                    return "";
-                }
-                String v = mf.getMainAttributes().getValue(Attributes.Name.IMPLEMENTATION_VERSION);
-                if (v == null || v.isBlank()) {
-                    v = mf.getMainAttributes().getValue("Build-Version");
-                }
-                return v == null ? "" : v.trim();
-            }
-        } catch (Throwable ignored) {
-            return "";
-        }
-    }
-
-    /** TraceNode 树转 Map（便于 JSON 序列化，含每层耗时占比与开始偏移） */
+    /** TraceNode 树转 Map（便于 JSON 序列化，含每层耗时占比与开始偏移）——仅在 reporter 线程执行 */
     private static Map<String, Object> toTreeMap(TraceNode node) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("method", node.method);

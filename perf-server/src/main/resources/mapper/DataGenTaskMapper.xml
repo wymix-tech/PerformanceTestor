@@ -8,7 +8,10 @@
         <result column="db_url" property="dbUrl"/>
         <result column="table_name" property="tableName"/>
         <result column="row_count" property="rowCount"/>
+        <result column="total_rows" property="totalRows"/>
+        <result column="tables_json" property="tablesJson"/>
         <result column="rule_json" property="ruleJson"/>
+        <result column="detail_json" property="detailJson"/>
         <result column="status" property="status"/>
         <result column="inserted" property="inserted"/>
         <result column="cost_ms" property="costMs"/>
@@ -17,8 +20,10 @@
     </resultMap>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO data_gen_task (task_name, db_url, table_name, row_count, rule_json, status, inserted)
-        VALUES (#{taskName}, #{dbUrl}, #{tableName}, #{rowCount}, #{ruleJson}, 'pending', 0)
+        INSERT INTO data_gen_task (task_name, db_url, table_name, row_count, total_rows, tables_json,
+                                   rule_json, status, inserted)
+        VALUES (#{taskName}, #{dbUrl}, #{tableName}, #{rowCount},
+                COALESCE(#{totalRows}, #{rowCount}), #{tablesJson}, #{ruleJson}, 'pending', 0)
     </insert>
 
     <update id="updateStatus">
@@ -29,6 +34,10 @@
         UPDATE data_gen_task SET inserted = #{inserted} WHERE id = #{id}
     </update>
 
+    <update id="updateDetail">
+        UPDATE data_gen_task SET detail_json = #{detailJson}, total_rows = #{totalRows} WHERE id = #{id}
+    </update>
+
     <update id="updateFinished">
         UPDATE data_gen_task
         SET status = #{status}, inserted = #{inserted}, cost_ms = #{costMs}, error_msg = #{errorMsg}
@@ -36,7 +45,8 @@
     </update>
 
     <sql id="BaseColumns">
-        id, task_name, db_url, table_name, row_count, rule_json, status, inserted, cost_ms, error_msg, create_time
+        id, task_name, db_url, table_name, row_count, total_rows, tables_json, rule_json,
+        detail_json, status, inserted, cost_ms, error_msg, create_time
     </sql>
 
     <select id="findById" resultMap="BaseResultMap">

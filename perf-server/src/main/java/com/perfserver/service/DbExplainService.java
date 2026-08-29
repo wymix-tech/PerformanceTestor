@@ -284,7 +284,9 @@ public class DbExplainService {
                     return rs.getLong(1);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            // 表行数为估算值（information_schema），查询失败不阻断 EXPLAIN 分析
+            log.debug("estimate table rows failed: {}.{}", schema, tableName, e);
         }
         return null;
     }

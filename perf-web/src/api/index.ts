@@ -28,19 +28,11 @@ export const slowSqlApi = {
     http.get('/slow-sqls', { params })
 }
 
-export const slowLogApi = {
-  // 慢查询日志内容解析入库
-  parse: (data: { appName: string; dbHost?: string; content: string }) =>
-    http.post('/slowlog/parse', data)
-}
-
 export const stressApi = {
   // 创建并启动压测任务（异步执行）
   create: (data: Record<string, unknown>) => http.post('/stress/tasks', data),
   // 任务列表
   list: (params?: { status?: string; limit?: number }) => http.get('/stress/tasks', { params }),
-  // 任务详情
-  detail: (id: number) => http.get(`/stress/tasks/${id}`),
   // 周期采样（实时图表）
   samples: (id: number, limit = 500) => http.get(`/stress/tasks/${id}/samples`, { params: { limit } }),
   // 压测报告（含统计/分档采样点/容量评估结果）
@@ -48,26 +40,27 @@ export const stressApi = {
 }
 
 export const dataGenApi = {
-  // 启动灌数据任务
+  // 启动灌数据任务（dryRun=true 仅校验预检；tables 支持联表表组）
   create: (data: Record<string, unknown>) => http.post('/datagen/tasks', data),
   // 任务列表
   list: (limit = 50) => http.get('/datagen/tasks', { params: { limit } }),
-  // 任务详情（含进度）
-  detail: (id: number) => http.get(`/datagen/tasks/${id}`),
   // 读取目标库表清单
   tables: (data: { dbUrl: string; dbUser: string; dbPassword: string }) =>
     http.post('/datagen/tables', data),
-  // 读取目标表列结构
+  // 读取目标表列结构（含枚举建议值与疑似枚举标记）
   columns: (data: { dbUrl: string; dbUser: string; dbPassword: string; tableName: string }) =>
-    http.post('/datagen/columns', data)
+    http.post('/datagen/columns', data),
+  // 语义建议查询（hintType=value/relation；status=pending 待确认）
+  suggestions: (params?: { repoId?: number; tableName?: string; hintType?: string; status?: string }) =>
+    http.get('/datagen/suggestions', { params }),
+  // 建议采纳/忽略
+  adopt: (id: number, adopt = true) => http.post(`/datagen/suggestions/${id}/adopt`, null, { params: { adopt } })
 }
 
 export const capacityApi = {
   // 对压测任务执行容量评估（幂等，结果落库）
   analyze: (data: { taskId: number; targetP95Ms?: number; app?: string }) =>
     http.post('/capacity/analyze', data),
-  // 已落库的容量评估结果
-  stored: (taskId: number) => http.get(`/capacity/task/${taskId}`),
   // 实时扩容与 JVM 配置建议
   advice: (params?: { app?: string }) => http.get('/capacity/advice', { params })
 }
@@ -85,8 +78,6 @@ export const sourceApi = {
   branches: (repoId: number) => http.get(`/source/repos/${repoId}/branches`),
   // 切换分支（git 仓库，切换后自动重新同步）
   switchBranch: (repoId: number, branch: string) => http.post(`/source/repos/${repoId}/branch`, { branch }),
-  // 绑定应用（appName 空 = 解绑）
-  bindApp: (repoId: number, appName: string) => http.post(`/source/repos/${repoId}/bind-app`, { appName }),
   // zip 上传导入（multipart；appName 导入即绑定应用）
   importZip: (repoName: string, file: File, appName?: string) => {
     const fd = new FormData()
@@ -132,16 +123,12 @@ export const sourceApi = {
     http.post('/source/issues/from-stress', null, { params }),
   // 最近慢 SQL（源码页一键建问题用）
   recentSlowSqls: (params?: { app?: string; limit?: number }) =>
-    http.get('/source/recent-slow-sqls', { params }),
-  // 修复方案详情（含提示词）
-  suggestion: (id: number) => http.get(`/source/suggestions/${id}`)
+    http.get('/source/recent-slow-sqls', { params })
 }
 
 export const aiApi = {
   // AI 对话（Function Calling，服务端无 Key 时降级规则模式）
   chat: (data: { sessionId?: string; message: string }) => http.post('/ai/chat', data),
-  // 工具清单
-  tools: () => http.get('/ai/tools'),
   // 清空会话
   clearSession: (sessionId: string) => http.delete(`/ai/session/${sessionId}`)
 }
@@ -161,4 +148,4 @@ export const dbConnApi = {
     http.post('/dbconns/test', data)
 }
 
-export default { appApi, jvmApi, traceApi, slowSqlApi, slowLogApi, stressApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }
+export default { appApi, jvmApi, traceApi, slowSqlApi, stressApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }

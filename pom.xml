@@ -13,6 +13,7 @@
     <description>Java 性能检测智能体平台：压测 / JVM 监控 / 调用链耗时 / 慢 SQL / 灌数据 / 容量建议 / AI 修复闭环</description>
 
     <modules>
+        <module>perf-datagen</module>
         <module>perf-agent</module>
         <module>perf-server</module>
         <module>perf-demo</module>
@@ -27,6 +28,11 @@
         <mybatis-spring-boot.version>3.0.3</mybatis-spring-boot.version>
         <mysql-connector.version>8.3.0</mysql-connector.version>
         <byte-buddy.version>1.14.15</byte-buddy.version>
+        <!-- perf-datagen：Java 源码 AST 解析（MyBatis 魔法值/关联语义扫描） -->
+        <javaparser.version>3.26.2</javaparser.version>
+        <!-- PIT 突变测试（perf-datagen 质量门禁；1.15.3+ 支持 JDK 21） -->
+        <pitest.version>1.17.4</pitest.version>
+        <pitest-junit5.version>1.2.2</pitest-junit5.version>
     </properties>
 
     <dependencyManagement>
@@ -62,6 +68,12 @@
                 <artifactId>byte-buddy-agent</artifactId>
                 <version>${byte-buddy.version}</version>
             </dependency>
+            <!-- JavaParser：perf-datagen 源码 AST 解析 -->
+            <dependency>
+                <groupId>com.github.javaparser</groupId>
+                <artifactId>javaparser-core</artifactId>
+                <version>${javaparser.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -85,6 +97,26 @@
                         <!-- 保留方法参数名，供 Spring MVC @RequestParam 反射绑定 -->
                         <parameters>true</parameters>
                     </configuration>
+                </plugin>
+                <!-- 测试插件：3.2.5 才能发现 JUnit 5 测试（Maven 默认绑定 2.17 过老） -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.2.5</version>
+                </plugin>
+                <!-- PIT 突变测试插件 -->
+                <plugin>
+                    <groupId>org.pitest</groupId>
+                    <artifactId>pitest-maven</artifactId>
+                    <version>${pitest.version}</version>
+                    <dependencies>
+                        <!-- JUnit 5 平台支持 -->
+                        <dependency>
+                            <groupId>org.pitest</groupId>
+                            <artifactId>pitest-junit5-plugin</artifactId>
+                            <version>${pitest-junit5.version}</version>
+                        </dependency>
+                    </dependencies>
                 </plugin>
             </plugins>
         </pluginManagement>

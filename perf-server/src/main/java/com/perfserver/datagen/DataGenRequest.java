@@ -18,10 +18,91 @@ public class DataGenRequest {
     /** 目标行数（上限 100 万） */
     private int rowCount = 1000;
     /**
-     * 字段生成规则 JSON，如：
+     * 字段生成规则 JSON（单表形态），如：
      * {"fields":{"age":{"type":"range","min":18,"max":60},"status":{"type":"enum","values":[0,1,2]}}}
      */
     private String ruleJson;
+    /** 表组（联表形态；空则退化为单表 tableName/rowCount） */
+    private java.util.List<TableSpecDto> tables;
+    /** 全局孤儿率（0~1，默认 0） */
+    private Double orphanRate;
+    /** 试运行：完整校验预检但不 INSERT（结果写入任务详情） */
+    private boolean dryRun;
+    /** 源码仓库 ID（可选；提供时扫描 MyBatis 源码做魔法值/关联语义识别） */
+    private Long repoId;
+
+    /** 表组元素 DTO（fields 为字段规则 JSON，形态同 ruleJson.fields 值） */
+    public static class TableSpecDto {
+        private String tableName;
+        private int rowCount = 1000;
+        /** 字段规则 JSON：{"col":{"type":"refSkew",...},...} */
+        private String fields;
+        private Double orphanRate;
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        public void setTableName(String tableName) {
+            this.tableName = tableName;
+        }
+
+        public int getRowCount() {
+            return rowCount;
+        }
+
+        public void setRowCount(int rowCount) {
+            this.rowCount = rowCount;
+        }
+
+        public String getFields() {
+            return fields;
+        }
+
+        public void setFields(String fields) {
+            this.fields = fields;
+        }
+
+        public Double getOrphanRate() {
+            return orphanRate;
+        }
+
+        public void setOrphanRate(Double orphanRate) {
+            this.orphanRate = orphanRate;
+        }
+    }
+
+    public java.util.List<TableSpecDto> getTables() {
+        return tables;
+    }
+
+    public void setTables(java.util.List<TableSpecDto> tables) {
+        this.tables = tables;
+    }
+
+    public Double getOrphanRate() {
+        return orphanRate;
+    }
+
+    public void setOrphanRate(Double orphanRate) {
+        this.orphanRate = orphanRate;
+    }
+
+    public boolean isDryRun() {
+        return dryRun;
+    }
+
+    public void setDryRun(boolean dryRun) {
+        this.dryRun = dryRun;
+    }
+
+    public Long getRepoId() {
+        return repoId;
+    }
+
+    public void setRepoId(Long repoId) {
+        this.repoId = repoId;
+    }
 
     public String getTaskName() {
         return taskName;

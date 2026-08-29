@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.perfserver.ai.LlmClient.ChatResult;
 import com.perfserver.ai.LlmClient.ToolCall;
+import com.perfserver.common.Texts;
 import com.perfserver.entity.JvmMetric;
 import com.perfserver.entity.PerformanceIssue;
 import com.perfserver.entity.SlowSql;
@@ -124,7 +125,7 @@ public class AiAgentService {
                 toolMsg.put("tool_call_id", tc.getId());
                 toolMsg.put("content", output);
                 messages.add(toolMsg);
-                toolLog.add(Map.of("name", tc.getName(), "args", tc.getArguments(), "result", truncate(output, 300)));
+                toolLog.add(Map.of("name", tc.getName(), "args", tc.getArguments(), "result", Texts.truncate(output, 300)));
             }
             trim(messages);
             rounds++;
@@ -173,7 +174,7 @@ public class AiAgentService {
                 } else {
                     for (SlowSql s : sqls) {
                         sb.append("- ").append(s.getCostMs()).append("ms [").append(s.getSource()).append("] ")
-                                .append(truncate(s.getSqlText(), 90)).append("\n");
+                                .append(Texts.truncate(s.getSqlText(), 90)).append("\n");
                     }
                 }
                 sb.append("\n想分析根因并生成修复方案，可配置大模型 API Key 后发送\"分析最近慢 SQL 根因并给出修复方案\"。");
@@ -245,12 +246,5 @@ public class AiAgentService {
             messages.add(sys);
             messages.addAll(tail);
         }
-    }
-
-    private String truncate(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 }

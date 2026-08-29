@@ -3,6 +3,8 @@ package com.perfserver.source;
 import com.perfserver.entity.SourceFile;
 import com.perfserver.entity.SourceRepo;
 import com.perfserver.mapper.SourceFileMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -25,6 +27,8 @@ import java.util.regex.Pattern;
  */
 @Component
 public class EndpointScanner {
+
+    private static final Logger log = LoggerFactory.getLogger(EndpointScanner.class);
 
     private final SourceFileMapper sourceFileMapper;
     private final SourceManager sourceManager;
@@ -182,6 +186,8 @@ public class EndpointScanner {
             }
             return Files.readString(path);
         } catch (IOException e) {
+            // 单文件读取失败跳过（不影响其余文件扫描）
+            log.warn("read file failed during endpoint scan: {}", sf.getRelativePath(), e);
             return null;
         }
     }

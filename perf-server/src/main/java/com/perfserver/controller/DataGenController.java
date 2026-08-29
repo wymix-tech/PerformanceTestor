@@ -6,6 +6,7 @@ import com.perfserver.datagen.DataGenRequest;
 import com.perfserver.datagen.DataGenService;
 import com.perfserver.entity.DataGenTask;
 import com.perfserver.entity.DbConn;
+import com.perfserver.entity.SemanticHint;
 import com.perfserver.mapper.DbConnMapper;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -19,8 +20,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 数据准备 API：灌数据任务启动/查询、目标库表/列结构探查。
- * 连接凭据支持直接手填，也支持传 connId 复用"数据库连接配置"（与慢 SQL 分析共用）。
+ * 数据准备 API：灌数据任务启动/查询（含 Dry-Run 试运行）、目标库表/列结构探查（含枚举建议）、
+ * 语义建议查询与采纳（魔法值/表间关联）。
  */
 @RestController
 @RequestMapping("/api/datagen")
@@ -82,11 +83,29 @@ public class DataGenController {
                 body.get("dbUrl"), body.get("dbUser"), body.get("dbPassword")));
     }
 
-    /** 目标表列清单（connId 提供时复用连接配置凭据） */
+    /** 目标表列清单（含枚举建议值 suggestedValues 与疑似枚举标记 suspectEnum） */
     @PostMapping("/columns")
     public ApiResponse<List<ColumnInfo>> columns(@RequestBody Map<String, String> body) {
         applyConn(body);
         return ApiResponse.ok(dataGenService.listColumns(
                 body.get("dbUrl"), body.get("dbUser"), body.get("dbPassword"), body.get("tableName")));
+    }
+
+    /** 语义建议查询（hintType=value/relation；status=pending 查看待确认项） */
+    @GetMapping("/suggestions")
+    public ApiResponse<List<SemanticHint>> suggestions(
+            @RequestParam(required = false) Long repoId,
+            @RequestParam(required = false) String tableName,
+            @RequestParam(required = false) String hintType,
+            @RequestParam(required = false) String status) {
+        return ApiResponse.ok(dataGenService.suggestions(repoId, tableName, hintType, status));
+    }
+
+    /** 建议采纳/忽略（adopt=true 采纳为生成规则依据） */
+    @PostMapping("/suggestions/{id}/adopt")
+    public ApiResponse<Void> adopt(@PathVariable long id,
+                                   @RequestParam(defaultValue = "true") boolean adopt) {
+        dataGenService.adopt(id, adopt);
+        return ApiResponse.ok(null);
     }
 }

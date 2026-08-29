@@ -108,7 +108,8 @@ import { computed, onMounted, ref } from 'vue'
 import { GitBranch } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import TraceTree from '../components/TraceTree.vue'
-import { traceApi, slowSqlApi, appApi, sourceApi } from '../api'
+import { fmtTime } from '../utils/format'
+import { traceApi, slowSqlApi, sourceApi } from '../api'
 
 const tabs = [
   { key: 'trace', label: '调用链' },
@@ -295,10 +296,6 @@ async function loadSlowSqls() {
     limit: 50
   })
   slowSqls.value = r.data
-}
-
-function fmtTime(t: number | string) {
-  return new Date(Number(t)).toLocaleString('zh-CN', { hour12: false })
 }
 
 // 方法链格式化：methodChain 为 JSON 数组字符串（完整类名#方法），展示为 短类名#方法 → 短类名#方法

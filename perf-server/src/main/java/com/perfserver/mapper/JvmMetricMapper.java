@@ -21,7 +21,4 @@ public interface JvmMetricMapper {
                           @Param("start") LocalDateTime start,
                           @Param("end") LocalDateTime end,
                           @Param("limit") int limit);
-
-    /** 查询最近 N 条（不限时间窗口） */
-    List<JvmMetric> queryLatest(@Param("appName") String appName, @Param("limit") int limit);
 }
