@@ -7,12 +7,11 @@
     </div>
 
     <div class="grid grid-cols-1 xl:grid-cols-3 gap-4" style="height: calc(100vh - 180px)">
-      <!-- 快捷指令 -->
+      <!-- 自动执行入口 + 提示 -->
       <div class="glass-card p-5 flex flex-col">
-        <div class="text-sm font-medium mb-4">快捷指令</div>
-        <!-- AI 自动执行特色入口 -->
+        <div class="text-sm font-medium mb-4">自动执行</div>
         <button
-          class="w-full text-left px-4 py-3.5 rounded-xl mb-4 border border-neon-green/40 bg-neon-green/10 hover:bg-neon-green/20 transition-all relative overflow-hidden"
+          class="w-full text-left px-4 py-3.5 rounded-xl mb-4 border border-neon-green/40 bg-neon-green/10 hover:bg-neon-green/20 transition-all"
           @click="send(AUTO_PIPELINE_PROMPT)"
         >
           <div class="flex items-center gap-2 text-sm font-medium text-neon-green">
@@ -23,12 +22,11 @@
           </div>
           <div class="text-[11px] text-neon-green/80 mt-1.5">配置 API Key 后由 AI 多轮编排全自动执行</div>
         </button>
-        <div class="space-y-3">
-          <button
-            v-for="q in quickActions" :key="q"
-            class="w-full text-left px-4 py-3 rounded-lg bg-white/5 border border-white/10 hover:border-neon-green/40 hover:bg-neon-green/5 transition-all"
-            @click="send(q)"
-          >{{ q }}</button>
+        <div class="rounded-xl bg-white/5 p-4 text-[11px] text-fg-sub leading-relaxed">
+          <div class="font-medium text-fg-main mb-1.5">输入框技巧</div>
+          <div><code class="text-neon-blue">/</code> 呼出指令面板（压测 / 灌数 / 指标 / 报告…）</div>
+          <div class="mt-1"><code class="text-neon-blue">@</code> 引用项目或性能问题（上下文注入）</div>
+          <div class="mt-1">↑↓ 选择 · Enter 确认 · Esc 关闭</div>
         </div>
         <div class="text-[11px] text-fg-sub mt-auto pt-6 leading-relaxed">
           当前为无 API Key 降级模式：AI 基于真实库数据按规则模板回答；配置 AI Key 后将启用大模型 Function Calling 多轮推理。
@@ -36,7 +34,7 @@
       </div>
 
       <!-- 对话流 -->
-      <div class="glass-card p-5 xl:col-span-2 flex flex-col">
+      <div class="glass-card p-5 xl:col-span-2 flex flex-col relative">
         <div class="flex items-center justify-between mb-3">
           <div class="text-sm font-medium">对话（{{ sessionId }}）</div>
           <button class="text-xs text-fg-sub hover:text-fg-main" @click="clearSession">清空会话</button>
@@ -44,14 +42,12 @@
 
         <div class="flex-1 overflow-y-auto space-y-4 pr-1 min-h-[320px]">
           <div v-if="!messages.length" class="text-xs text-fg-sub py-16 text-center">
-            输入问题或点击左侧快捷指令，AI 将自动调用工具执行压测 / 查询指标 / 分析代码问题
+            输入 <code class="text-neon-blue">/</code> 使用指令，输入 <code class="text-neon-blue">@</code> 引用项目/问题，或直接自然语言提问
           </div>
           <div v-for="(m, i) in messages" :key="i">
-            <!-- 用户消息 -->
             <div v-if="m.role === 'user'" class="flex justify-end mb-3">
               <div class="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-sm bg-neon-green/15 border border-neon-green/30 text-sm text-fg-main whitespace-pre-wrap">{{ m.content }}</div>
             </div>
-            <!-- AI 消息 -->
             <div v-else class="flex justify-start">
               <div class="max-w-[85%]">
                 <div v-for="(tool, ti) in m.toolCalls" :key="ti"
@@ -70,15 +66,37 @@
           </div>
         </div>
 
-        <!-- 输入框 -->
-        <div class="mt-4 flex gap-2">
-          <input
-            v-model="input" class="input-text flex-1" placeholder="例如：帮我压测一下 /api/apps，50 并发 30 秒"
-            @keyup.enter="send(input)"
-          />
-          <button class="btn-primary" :disabled="loading || !input.trim()" @click="send(input)">
-            <Send class="w-4 h-4" /> 发送
-          </button>
+        <!-- 输入框（含命令面板） -->
+        <div class="mt-4 relative">
+          <!-- 命令面板 -->
+          <div v-if="panelOpen" class="absolute bottom-full left-0 right-0 mb-2 glass-card p-2 max-h-[300px] overflow-y-auto z-10">
+            <div class="px-2 py-1 text-[11px] text-fg-sub">
+              {{ panelMode === 'slash' ? '指令（/）' : panelMode === 'project' ? '引用项目（@）' : '引用性能问题（@）' }}
+            </div>
+            <button v-for="(it, i) in panelItems" :key="it.key"
+              class="w-full text-left px-3 py-2 rounded-lg text-xs transition-all flex items-center gap-2"
+              :class="i === panelIdx ? 'bg-neon-green/15 text-fg-main' : 'hover:bg-white/5 text-fg-sub'"
+              @mousedown.prevent="pickItem(it)"
+            >
+              <component :is="it.icon" class="w-3.5 h-3.5 shrink-0" :class="i === panelIdx ? 'text-neon-green' : 'text-fg-sub'" />
+              <span class="font-medium">{{ it.title }}</span>
+              <span class="text-fg-sub truncate ml-auto">{{ it.desc }}</span>
+            </button>
+            <div v-if="!panelItems.length" class="px-3 py-4 text-xs text-fg-sub text-center">
+              未命中{{ panelMode === 'slash' ? '指令' : '项目/问题' }} — 将作为普通文本发送
+            </div>
+          </div>
+
+          <div class="flex gap-2">
+            <input
+              ref="inputEl" v-model="input" class="input-text flex-1"
+              placeholder="输入 / 呼出指令，@ 引用项目/问题，或直接自然语言提问"
+              @input="onInput" @keydown="onKeydown" @blur="closePanelSoon"
+            />
+            <button class="btn-primary" :disabled="loading || !input.trim()" @click="send(input)">
+              <Send class="w-4 h-4" /> 发送
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -86,24 +104,17 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Bot, Send, Zap } from 'lucide-vue-next'
-import { aiApi } from '../api'
+import { Bot, Send, Zap, Rocket, Database, Gauge, FileText, Wrench, Bug, Boxes } from 'lucide-vue-next'
+import { aiApi, sourceApi } from '../api'
 
 const route = useRoute()
 const sessionId = ref(`s-${Date.now().toString(36)}`)
 const messages = ref<Array<Record<string, any>>>([])
 const input = ref('')
 const loading = ref(false)
-
-const quickActions = [
-  '编译被测项目并部署到服务器启动（需告知 repoId 与 SSH 连接）',
-  '分析最近慢 SQL 的根因并给出修复方案',
-  '当前性能能承受多少并发、何时扩容',
-  '查询最近 JVM 指标',
-  '生成一份性能检测报告'
-]
+const inputEl = ref<HTMLInputElement | null>(null)
 
 /** AI 自动执行闭环编排指令（LLM 档自动串联工具多轮执行；规则档返回状态快照+执行计划） */
 const AUTO_PIPELINE_PROMPT =
@@ -112,10 +123,123 @@ const AUTO_PIPELINE_PROMPT =
   'http://127.0.0.1:8081/api/user/list?limit=200 发起 20 并发 15 秒压测，压测期间采集 JVM 指标、热点调用链与慢 SQL，' +
   '将证据关联源码生成 2-3 个修复方案，最后汇总输出一份完整性能检测报告（含容量评估与扩容建议）。'
 
+// ===== Slash / @ 命令面板 =====
+interface PanelItem {
+  key: string
+  title: string
+  desc: string
+  icon: any
+  /** slash 指令：选中后填入的完整文本；project/issue：插入引用标记 */
+  insert: string
+}
+
+const SLASH_COMMANDS: PanelItem[] = [
+  { key: 'auto', title: '自动执行性能检测闭环', desc: '灌数→压测→观测→修复→报告', icon: Zap, insert: AUTO_PIPELINE_PROMPT },
+  { key: 'stress', title: '发起压测', desc: '目标 URL + 并发 + 时长', icon: Gauge, insert: '帮我压测 http://127.0.0.1:8081/api/user/list?limit=200 ，并发 20 持续 15 秒' },
+  { key: 'datagen', title: '灌注测试数据', desc: 'demo 库联表灌数', icon: Database, insert: '向 demo 库灌入测试数据：perf_user 1000 行、perf_order 2000 行（user_id 关联 perf_user.id）' },
+  { key: 'slow', title: '慢 SQL 根因分析', desc: '关联源码给修复方案', icon: Wrench, insert: '分析最近慢 SQL 的根因并给出修复方案' },
+  { key: 'capacity', title: '容量评估', desc: '当前性能能承受多少并发', icon: Gauge, insert: '当前性能能承受多少并发、何时扩容' },
+  { key: 'jvm', title: '查询 JVM 指标', desc: '最近内存/线程/GC', icon: Boxes, insert: '查询最近 JVM 指标' },
+  { key: 'report', title: '生成性能检测报告', desc: '汇总压测/指标/问题', icon: FileText, insert: '生成一份性能检测报告' }
+]
+
+const panelMode = ref<'' | 'slash' | 'project'>('')  // project 模式含项目与问题两类
+const panelQuery = ref('')
+const panelIdx = ref(0)
+const repos = ref<Array<Record<string, any>>>([])
+const issues = ref<Array<Record<string, any>>>([])
+
+const panelItems = computed<PanelItem[]>(() => {
+  const q = panelQuery.value.trim().toLowerCase()
+  if (panelMode.value === 'slash') {
+    return q ? SLASH_COMMANDS.filter((c) => (c.title + c.key).toLowerCase().includes(q)) : SLASH_COMMANDS
+  }
+  // @ 模式：项目 + 性能问题混排
+  const items: PanelItem[] = [
+    ...repos.value.map((r) => ({
+      key: 'repo-' + r.id,
+      title: r.repoName || `项目#${r.id}`,
+      desc: `项目 · ${r.appName || '未绑定应用'}`,
+      icon: Boxes,
+      insert: `@项目「${r.repoName || r.id}」`
+    })),
+    ...issues.value.map((i) => ({
+      key: 'issue-' + i.id,
+      title: i.title || `问题#${i.id}`,
+      desc: `问题 · ${i.issueType || ''} ${i.severity || ''}`,
+      icon: Bug,
+      insert: `@问题「${i.title || i.id}」`
+    }))
+  ]
+  return q ? items.filter((x) => (x.title + x.desc).toLowerCase().includes(q)) : items
+})
+
+const panelOpen = computed(() => panelMode.value !== '')
+
+/** 输入变化：检测光标前的触发符 */
+function onInput() {
+  const el = inputEl.value
+  if (!el) return
+  const pos = el.selectionStart ?? input.value.length
+  const before = input.value.slice(0, pos)
+  // / 必须在输入起始位置（避免句子中间误触发）
+  const slashMatch = before.match(/^\/(\S*)$/)
+  const atMatch = before.match(/@([^\s@]*)$/)
+  if (slashMatch) {
+    panelMode.value = 'slash'
+    panelQuery.value = slashMatch[1]
+    panelIdx.value = 0
+  } else if (atMatch) {
+    panelMode.value = 'project'
+    panelQuery.value = atMatch[1]
+    panelIdx.value = 0
+  } else {
+    panelMode.value = ''
+  }
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (!panelOpen.value) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    panelIdx.value = Math.min(panelIdx.value + 1, panelItems.value.length - 1)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    panelIdx.value = Math.max(panelIdx.value - 1, 0)
+  } else if (e.key === 'Enter' && panelItems.value.length) {
+    e.preventDefault()
+    pickItem(panelItems.value[panelIdx.value])
+  } else if (e.key === 'Escape') {
+    panelMode.value = ''
+  }
+}
+
+/** 选中面板项：slash 整句替换；@ 插入引用标记（保留后续文本） */
+function pickItem(it: PanelItem) {
+  const el = inputEl.value
+  const pos = el?.selectionStart ?? input.value.length
+  const before = input.value.slice(0, pos)
+  const after = input.value.slice(pos)
+  if (panelMode.value === 'slash') {
+    input.value = it.insert + (after.startsWith(' ') ? after : ' ' + after)
+  } else {
+    const trigger = before.match(/@([^\s@]*)$/)
+    const start = before.length - (trigger ? trigger[0].length : 0)
+    input.value = input.value.slice(0, start) + it.insert + ' ' + after
+  }
+  panelMode.value = ''
+  inputEl.value?.focus()
+}
+
+function closePanelSoon() {
+  setTimeout(() => { panelMode.value = '' }, 150)
+}
+
 async function send(text: string) {
   const content = text.trim()
   if (!content || loading.value) return
   input.value = ''
+  panelMode.value = ''
   messages.value.push({ role: 'user', content })
   loading.value = true
   try {
@@ -137,7 +261,12 @@ async function clearSession() {
   messages.value = []
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 预载项目与问题，供 @ 引用（失败静默，@ 面板显示为空）
+  const [r, i] = await Promise.allSettled([sourceApi.repos(50), sourceApi.issues({ limit: 20 })])
+  if (r.status === 'fulfilled') repos.value = r.value.data || []
+  if (i.status === 'fulfilled') issues.value = i.value.data || []
+
   const msg = route.query.msg as string | undefined
   if (msg) {
     send(msg)
