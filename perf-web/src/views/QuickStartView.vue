@@ -384,8 +384,12 @@ async function doImportGit() {
   if (!gitUrl.value.trim()) return
   importing.value = true
   try {
+    const url = gitUrl.value.trim()
+    // 名称自动派生：URL 末段去 .git（与后端派生规则一致）
+    const name = url.replace(/\.git$/, '').split('/').pop() || 'git 项目'
     await sourceApi.importGit({
-      gitUrl: gitUrl.value.trim(),
+      repoName: name,
+      gitUrl: url,
       branch: gitBranch.value || undefined,
       gitUser: gitUser.value || undefined,
       gitToken: gitToken.value || undefined
@@ -393,7 +397,7 @@ async function doImportGit() {
     gitUrl.value = ''
     gitBranch.value = ''
     remoteBranches.value = []
-    afterImportStarted('git 项目')
+    afterImportStarted(name)
   } catch (e: any) {
     importMsg.value = { ok: false, text: '导入失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
   } finally {
@@ -405,9 +409,11 @@ async function doImportLocal() {
   if (!localPath.value.trim()) return
   importing.value = true
   try {
-    await sourceApi.importLocal({ localPath: localPath.value.trim() })
+    const path = localPath.value.trim().replace(/\/+$/, '')
+    const name = path.split('/').pop() || '本地项目'
+    await sourceApi.importLocal({ repoName: name, localPath: path })
     localPath.value = ''
-    afterImportStarted('本地项目')
+    afterImportStarted(name)
   } catch (e: any) {
     importMsg.value = { ok: false, text: '导入失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
   } finally {

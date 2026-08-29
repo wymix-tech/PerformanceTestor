@@ -63,20 +63,26 @@ public class SourceManager {
      */
     public SourceRepo startImport(String repoName, String repoType, String payload, String branch,
                                   String gitUser, String gitToken, String appName) {
-        if (repoName == null || repoName.isBlank()) {
-            throw new IllegalArgumentException("仓库名称不能为空");
-        }
         String type = repoType == null ? "zip" : repoType.toLowerCase(Locale.ROOT);
         if (!type.equals("zip") && !type.equals("git") && !type.equals("local")) {
             throw new IllegalArgumentException("不支持的导入类型: " + type);
         }
+        if (payload == null || payload.isBlank()) {
+            throw new IllegalArgumentException("导入来源不能为空（zip 路径 / git 地址 / 本地目录）");
+        }
+        // 名称未填时自动派生：git 取 URL 末段、local 取路径末段（zip 由上传侧按文件名传入）
+        String name = repoName == null || repoName.isBlank()
+                ? deriveRepoName(type, payload) : repoName.trim();
+        if (name.isBlank()) {
+            throw new IllegalArgumentException("仓库名称不能为空");
+        }
         SourceRepo repo = new SourceRepo();
-        repo.setRepoName(repoName.trim());
+        repo.setRepoName(name);
         repo.setRepoType(type);
         repo.setSourcePath(payload);
         repo.setBranch(branch == null ? "" : branch.trim());
         // 应用名 = 项目（仓库）名，agent 上报 appName 应与项目名一致
-        repo.setAppName(appName == null || appName.isBlank() ? repoName.trim() : appName.trim());
+        repo.setAppName(appName == null || appName.isBlank() ? name : appName.trim());
         repo.setGitUser(gitUser == null ? "" : gitUser.trim());
         repo.setGitToken(gitToken == null ? "" : gitToken.trim());
         repo.setStatus("importing");
@@ -185,9 +191,34 @@ public class SourceManager {
         }
     }
 
-    /** 仓库磁盘根目录 */
+    /** 仓库磁盘根目录：<存储目录>/<项目名>-<id>（目录名可读，一眼辨认项目；同名靠 id 区分） */
     private Path repoRootDir(long repoId) {
-        return Paths.get(storageDir).resolve("repo-" + repoId);
+        SourceRepo repo = sourceRepoMapper.findById(repoId);
+        String name = repo == null || repo.getRepoName() == null ? "repo" : repo.getRepoName();
+        return Paths.get(storageDir).resolve(sanitizeDirName(name) + "-" + repoId);
+    }
+
+    /** 目录名净化：仅保留中英文/数字/._-，其余替换下划线 */
+    static String sanitizeDirName(String name) {
+        String s = name.replaceAll("[^A-Za-z0-9._\\-\u4e00-\u9fa5]", "_");
+        return s.isBlank() ? "repo" : s;
+    }
+
+    /** 名称自动派生：git 取 URL 末段（去 .git）、local 取路径末段 */
+    static String deriveRepoName(String type, String payload) {
+        String p = payload.replaceAll("[/\\\\]+$", "");
+        if ("git".equals(type)) {
+            p = p.substring(p.lastIndexOf('/') + 1);
+            if (p.endsWith(".git")) {
+                p = p.substring(0, p.length() - 4);
+            }
+            return p;
+        }
+        if ("local".equals(type)) {
+            return p.substring(Math.max(0, p.lastIndexOf('/') + 1));
+        }
+        String fileName = Paths.get(p).getFileName().toString();
+        return fileName.endsWith(".zip") ? fileName.substring(0, fileName.length() - 4) : fileName;
     }
 
     private long sizeOf(Path dir) throws IOException {
