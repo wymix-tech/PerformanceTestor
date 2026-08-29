@@ -106,9 +106,12 @@
       </div>
     </div>
 
-    <!-- Step 2 数据准备 -->
-    <div v-else-if="step === 1" class="glass-card p-5">
+    <!-- Step 3 数据准备 -->
+    <div v-else-if="step === 2" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">灌注测试数据 <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
+      <div v-if="autoDbUrl" class="mb-3 rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-[11px] text-neon-green">
+        ✓ 已从被测应用 agent 上报探测到数据库：{{ autoDbUrl }}{{ connId ? '（已自动匹配连接配置）' : '（无匹配的连接配置，请选择或手填）' }}
+      </div>
       <div class="text-[11px] text-fg-sub mb-4">选择数据库连接，试运行通过后正式灌数。需要更复杂的联表/规则配置？<router-link class="text-neon-blue hover:underline" to="/stress?tab=datagen">打开完整数据准备</router-link></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="space-y-3">
@@ -140,8 +143,8 @@
       </div>
     </div>
 
-    <!-- Step 3 部署（可选） -->
-    <div v-else-if="step === 2" class="glass-card p-5">
+    <!-- Step 2 部署（可选） -->
+    <div v-else-if="step === 1" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">自动部署（可选） <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
       <div class="text-[11px] text-fg-sub mb-4">平台编译项目并经 SSH 上传到目标服务器启动（自动挂载监控 agent）。被测应用已在本地运行则直接跳过此步。</div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -281,13 +284,13 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
-import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi, deployApi } from '../api'
+import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi, deployApi, slowSqlApi } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 
 const stepDefs = [
-  { title: '选择项目' }, { title: '灌注数据' }, { title: '部署(可选)' },
+  { title: '选择项目' }, { title: '部署(可选)' }, { title: '灌注数据' },
   { title: '发起压测' }, { title: '获取结果' }, { title: '分析调用链' }, { title: '问题优化' }
 ]
 
@@ -310,6 +313,8 @@ const buildResult = ref<any>(null)
 const deployResult = ref<any>(null)
 const deployStatus = ref('')
 const deployLog = ref('')
+/** 部署后从 agent 上报探测到的被测应用数据库连接（自动预填灌数步骤） */
+const autoDbUrl = ref('')
 const endpoints = ref<Array<Record<string, any>>>([])
 const endpointIdx = ref(-1)
 const manualUrl = ref('http://127.0.0.1:8081/api/user/list?limit=200')
@@ -532,7 +537,7 @@ async function runGen(dryRun: boolean) {
       // 轮询一次结果后放行正式灌数
       setTimeout(checkGen, 2500)
     } else {
-      sessionDone.value[1] = true // 本轮正式灌数已发起
+      sessionDone.value[2] = true // 本轮正式灌数已发起
       // 自动进入压测步骤（任务异步执行，进度在数据准备 Tab 可查）
       setTimeout(advance, 1200)
     }
@@ -627,10 +632,20 @@ async function runDeploy() {
     })
     deployResult.value = d.data
     if (d.data?.success) {
-      sessionDone.value[2] = true
+      sessionDone.value[1] = true // deploy ok
       const st = await deployApi.status(deployConnId.value, deployPort.value).catch(() => null)
       deployStatus.value = st?.data?.status || ''
-      setTimeout(advance, 1500) // 部署成功自动进入压测步骤
+      // 探测被测应用上报的数据库连接（agent JdbcInterceptor 采集），供灌数步骤自动预填
+      try {
+        const sl = await slowSqlApi.list({ limit: 5 })
+        const url = (sl.data || []).map((x: any) => x.dbUrl).find((u: string) => !!u)
+        if (url) {
+          autoDbUrl.value = url
+          const match = conns.value.find((c: any) => url.startsWith(String(c.dbUrl || '').split('?')[0]))
+          if (match) connId.value = match.id
+        }
+      } catch { /* 探测失败不影响流程 */ }
+      setTimeout(advance, 1500) // 部署成功自动进入灌数步骤
     }
   } catch (e: any) {
     deployLog.value = '部署失败：' + (e?.response?.data?.message || e?.message || '请求异常')
