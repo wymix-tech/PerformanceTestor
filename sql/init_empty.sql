@@ -335,3 +335,21 @@ BEGIN
     DEALLOCATE PREPARE stmt;
 END$$
 DELIMITER ;
+
+-- 7.6 deploy_conn：被测服务器 SSH 连接配置（AI 编排远程编译部署启动）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS deploy_conn (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    conn_name     VARCHAR(128)  NOT NULL COMMENT '连接名称',
+    host          VARCHAR(128)  NOT NULL COMMENT 'SSH 主机',
+    port          INT           NOT NULL DEFAULT 22 COMMENT 'SSH 端口',
+    username      VARCHAR(64)   NOT NULL COMMENT 'SSH 用户',
+    auth_type     VARCHAR(16)   NOT NULL DEFAULT 'password' COMMENT '认证：password/privateKey',
+    password      VARCHAR(255)  NULL COMMENT '密码（auth_type=password）',
+    private_key   TEXT          NULL COMMENT '私钥（auth_type=privateKey）',
+    work_dir      VARCHAR(255)  NOT NULL DEFAULT '/opt/perftestor' COMMENT '远程工作目录（上传包与启动脚本）',
+    remark        VARCHAR(255)  NULL COMMENT '备注',
+    create_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_conn_name (conn_name)
+) ENGINE = InnoDB COMMENT = '被测服务器 SSH 连接配置';

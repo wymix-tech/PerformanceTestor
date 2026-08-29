@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.DeployConnMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.DeployConn">
+        <id column="id" property="id"/>
+        <result column="conn_name" property="connName"/>
+        <result column="host" property="host"/>
+        <result column="port" property="port"/>
+        <result column="username" property="username"/>
+        <result column="auth_type" property="authType"/>
+        <result column="password" property="password"/>
+        <result column="private_key" property="privateKey"/>
+        <result column="work_dir" property="workDir"/>
+        <result column="remark" property="remark"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO deploy_conn (conn_name, host, port, username, auth_type, password, private_key, work_dir, remark)
+        VALUES (#{connName}, #{host}, #{port}, #{username},
+                COALESCE(#{authType}, 'password'), #{password}, #{privateKey},
+                COALESCE(#{workDir}, '/opt/perftestor'), #{remark})
+    </insert>
+
+    <sql id="BaseColumns">
+        id, conn_name, host, port, username, auth_type, password, private_key, work_dir, remark, create_time
+    </sql>
+
+    <select id="list" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/> FROM deploy_conn ORDER BY id DESC LIMIT #{limit}
+    </select>
+
+    <select id="findById" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/> FROM deploy_conn WHERE id = #{id} LIMIT 1
+    </select>
+
+    <delete id="delete">
+        DELETE FROM deploy_conn WHERE id = #{id}
+    </delete>
+
+</mapper>
+

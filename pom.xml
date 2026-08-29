@@ -30,6 +30,8 @@
         <byte-buddy.version>1.14.15</byte-buddy.version>
         <!-- perf-datagen：Java 源码 AST 解析（MyBatis 魔法值/关联语义扫描） -->
         <javaparser.version>3.26.2</javaparser.version>
+        <!-- 远程部署：SSH/SFTP 客户端（AI 编排编译部署启动） -->
+        <jsch.version>0.2.17</jsch.version>
         <!-- PIT 突变测试（perf-datagen 质量门禁；1.15.3+ 支持 JDK 21） -->
         <pitest.version>1.17.4</pitest.version>
         <pitest-junit5.version>1.2.2</pitest-junit5.version>
@@ -73,6 +75,12 @@
                 <groupId>com.github.javaparser</groupId>
                 <artifactId>javaparser-core</artifactId>
                 <version>${javaparser.version}</version>
+            </dependency>
+            <!-- SSH/SFTP：AI 编排远程编译部署 -->
+            <dependency>
+                <groupId>com.github.mwiede</groupId>
+                <artifactId>jsch</artifactId>
+                <version>${jsch.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

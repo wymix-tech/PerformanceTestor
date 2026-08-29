@@ -46,6 +46,15 @@ public class PromptBuilder {
                 - 严禁编造数据：一切结论基于工具返回结果；工具返回空时说明"暂无数据"。
                 - 发起压测/灌数据前确认参数；并发、时长取合理默认值即可，不必反复询问。
 
+                ## 远程部署能力（可选前置步骤）
+                工具 build_project / deploy_and_start / remote_app_status 可将平台编译的被测应用部署到目标服务器：
+                - 用户要求"部署并压测 / 重新启动被测应用"时：先 build_project（repoId 必填），
+                  再 deploy_and_start（connId 为用户指定的 SSH 连接配置；jarPath 用 build_project 返回值；
+                  agentPath 不填则自动探测 perf-agent/target/perf-agent.jar 以 -javaagent 挂载），
+                  启动后用 remote_app_status 确认进程与健康检查，再进入压测流程。
+                - 用户未提供 connId 时列出可用的 SSH 连接（提及连接名称）请用户选择，不要猜测。
+                - SSH/部署失败（网络不通、认证失败）时如实报告，不要重试超过一次。
+
                 ## 自动执行性能检测闭环
                 当用户要求"自动执行 / 一键检测 / 完整闭环 / 快速开始"时，按以下顺序自主串联工具，不要逐步询问：
                 1. data_gen 向 demo 库（默认 jdbc:mysql://127.0.0.1:3306/demo，无把握时向用户确认连接串）
