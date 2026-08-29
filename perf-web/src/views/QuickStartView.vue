@@ -143,11 +143,23 @@
       </div>
     </div>
 
-    <!-- Step 2 部署（可选） -->
+    <!-- Step 2 部署（可选：自动 / 手动） -->
     <div v-else-if="step === 1" class="glass-card p-5">
-      <div class="text-sm font-medium mb-1">自动部署（可选） <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
-      <div class="text-[11px] text-fg-sub mb-4">平台编译项目并经 SSH 上传到目标服务器启动（自动挂载监控 agent）。被测应用已在本地运行则直接跳过此步。</div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="text-sm font-medium mb-1">部署（可选） <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
+      <div class="text-[11px] text-fg-sub mb-3">被测应用需挂载监控 agent 才能采集调用链与 JVM 指标。已在运行（且已挂 agent）则直接跳过此步。</div>
+
+      <!-- 方式切换 -->
+      <div class="flex gap-2 mb-4">
+        <button class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all"
+                :class="deployMode === 'auto' ? 'border-neon-green bg-neon-green/15 text-neon-green' : 'border-white/10 text-fg-sub hover:border-white/30'"
+                @click="deployMode = 'auto'">自动部署（平台编译 + SSH 上传启动）</button>
+        <button class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all"
+                :class="deployMode === 'manual' ? 'border-neon-green bg-neon-green/15 text-neon-green' : 'border-white/10 text-fg-sub hover:border-white/30'"
+                @click="deployMode = 'manual'">手动部署（生成启动命令）</button>
+      </div>
+
+      <!-- 自动部署 -->
+      <div v-if="deployMode === 'auto'" class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="space-y-3">
           <div>
             <label class="text-xs text-fg-sub">SSH 连接（被测服务器）</label>
@@ -155,7 +167,7 @@
               <option :value="0">— 跳过部署，应用已在运行 —</option>
               <option v-for="c in deployConns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.host }}）</option>
             </select>
-            <div v-if="!deployConns.length" class="text-[11px] text-amber-400 mt-1">暂无 SSH 连接配置，可跳过本步（应用已在运行）或先在部署管理中添加连接</div>
+            <div v-if="!deployConns.length" class="text-[11px] text-amber-400 mt-1">暂无 SSH 连接配置，可跳过本步或改用手动部署</div>
           </div>
           <template v-if="deployConnId">
             <div><label class="text-xs text-fg-sub">Maven 模块（可空=整仓）</label><input v-model="deployModule" class="input-text w-full text-xs" placeholder="如 perf-demo" /></div>
@@ -179,6 +191,36 @@
             </div>
             <div v-if="deployLog" class="text-[11px] text-fg-sub whitespace-pre-wrap font-mono max-h-[160px] overflow-y-auto">{{ deployLog }}</div>
           </template>
+        </div>
+      </div>
+
+      <!-- 手动部署：生成带 agent 的启动命令 -->
+      <div v-else class="space-y-3">
+        <div class="rounded-xl border border-neon-blue/30 bg-neon-blue/5 p-4">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-xs font-medium text-fg-main">① 上传 agent 包到被测服务器</div>
+            <button class="text-[11px] text-neon-blue hover:underline" @click="copyText(manualScpCmd)">复制</button>
+          </div>
+          <pre class="text-[11px] text-fg-sub font-mono whitespace-pre-wrap">{{ manualScpCmd }}</pre>
+          <div class="text-[11px] text-fg-sub mt-2">agent 包路径：perf-agent/target/perf-agent.jar（平台构建产物，本地已存在）。若目标目录不存在请先执行 <code class="text-neon-blue">mkdir -p /opt/perftestor</code></div>
+        </div>
+        <div class="rounded-xl border border-neon-blue/30 bg-neon-blue/5 p-4">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-xs font-medium text-fg-main">② 带 agent 启动被测应用</div>
+            <button class="text-[11px] text-neon-blue hover:underline" @click="copyText(manualStartCmd)">复制</button>
+          </div>
+          <pre class="text-[11px] text-fg-sub font-mono whitespace-pre-wrap">{{ manualStartCmd }}</pre>
+          <div class="text-[11px] text-fg-sub mt-2 leading-relaxed">
+            将 <code>&lt;平台IP&gt;</code> 替换为平台服务器 IP、<code>/path/to/app.jar</code> 替换为你的应用 jar 路径；
+            <code>appName</code> 请与项目名保持一致（当前项目：{{ repoName || '未选择' }}），否则数据不会归属到本项目。
+          </div>
+        </div>
+        <div class="rounded-xl border border-neon-green/30 bg-neon-green/5 p-4">
+          <div class="text-xs font-medium text-fg-main mb-2">③ 验证接入</div>
+          <div class="text-[11px] text-fg-sub leading-relaxed">
+            启动后 5 秒内 agent 会向平台注册并上报指标。可在总览「接入应用」卡片确认应用上线，
+            或压测后查看调用链数据是否产生。确认后点击底部「下一步」继续。
+          </div>
         </div>
       </div>
     </div>
@@ -313,8 +355,35 @@ const buildResult = ref<any>(null)
 const deployResult = ref<any>(null)
 const deployStatus = ref('')
 const deployLog = ref('')
+/** 部署方式：auto=平台编译+SSH 上传启动；manual=生成带 agent 的启动命令自行执行 */
+const deployMode = ref<'auto' | 'manual'>('auto')
 /** 部署后从 agent 上报探测到的被测应用数据库连接（自动预填灌数步骤） */
 const autoDbUrl = ref('')
+
+/** 手动部署：SCP 上传 agent 命令 */
+const manualScpCmd = computed(() => {
+  const c = deployConns.value.find((x) => x.id === deployConnId.value)
+  const host = c ? `${c.username || 'root'}@${c.host}` : 'user@被测服务器IP'
+  return `scp perf-agent/target/perf-agent.jar ${host}:/opt/perftestor/agent.jar`
+})
+
+/** 手动部署：带 agent 的应用启动命令（reportUrl 指向平台，appName 与项目一致）
+ *  注意：-javaagent 参数必须紧跟 jar 路径（k=v 逗号分隔），换行续行会在拼接处引入空格导致参数丢失 */
+const manualStartCmd = computed(() => {
+  const app = repoName.value || '项目名'
+  return `java -javaagent:/opt/perftestor/agent.jar=reportUrl=http://<平台IP>:8080/api/agent/report,appName=${app},sampleRate=1.0 -jar /path/to/app.jar`
+})
+
+function copyText(t: string) {
+  navigator.clipboard?.writeText(t).catch(() => {
+    const ta = document.createElement('textarea')
+    ta.value = t
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  })
+}
 const endpoints = ref<Array<Record<string, any>>>([])
 const endpointIdx = ref(-1)
 const manualUrl = ref('http://127.0.0.1:8081/api/user/list?limit=200')

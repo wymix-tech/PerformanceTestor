@@ -24,7 +24,7 @@
       <div class="flex items-center justify-between mb-4">
         <div class="text-sm font-medium flex items-center gap-2">
           <Rocket class="w-4 h-4 text-neon-green" /> 快速开始
-          <span class="text-[11px] font-normal text-fg-sub">六步完成性能检测闭环：项目 → 数据 → 压测 → 结果 → 调用链 → 优化</span>
+          <span class="text-[11px] font-normal text-fg-sub">七步完成性能检测闭环：项目 → 部署(可选) → 数据 → 压测 → 结果 → 调用链 → 优化</span>
         </div>
         <div class="flex gap-2 shrink-0">
           <button
@@ -41,7 +41,7 @@
           </button>
         </div>
       </div>
-      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3">
         <div v-for="(s, idx) in steps" :key="s.title"
              class="text-left p-4 rounded-xl border border-white/10 bg-white/[0.03]">
           <span class="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold bg-white/10 text-fg-sub mb-2">{{ idx + 1 }}</span>
@@ -50,7 +50,7 @@
         </div>
       </div>
       <div class="text-[11px] text-fg-sub mt-3">
-        点击「快速开始」开启全新流程：选择项目 → 灌数据（Dry-Run 试运行防呆）→ 压测 → 看报告 → 析链路 → 优化；「AI 开始」由 AI 助手自动串联全流程。
+        点击「快速开始」开启全新流程：选择项目 → 部署（可选，自动 / 手动接入 agent）→ 灌数据（Dry-Run 试运行防呆）→ 压测 → 看报告 → 析链路 → 优化；「AI 开始」由 AI 助手自动串联全流程。
       </div>
     </div>
 
@@ -147,9 +147,10 @@ const metrics = computed(() => [
   { label: '待处理问题', value: issues.value.filter((i) => i.status === 'open').length, hint: '未分析', icon: Bug }
 ])
 
-/** 快速开始六步引导：平等展示，点击直达向导对应步骤 */
+/** 快速开始七步引导：平等展示，点击直达向导对应步骤 */
 const steps = [
   { title: '导入 / 选择项目', desc: '上传源码或 git 导入被测项目' },
+  { title: '部署（可选）', desc: '自动部署或生成带 agent 启动命令' },
   { title: '灌注测试数据', desc: '联表 Mock 数据 + 试运行防呆' },
   { title: '配置压测任务', desc: '选项目自动带出接口清单' },
   { title: '获取压测结果', desc: '查看 QPS/RT/容量评估报告' },
