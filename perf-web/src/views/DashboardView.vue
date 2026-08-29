@@ -26,12 +26,6 @@
           <Rocket class="w-4 h-4 text-neon-green" /> 快速开始
           <span class="text-[11px] font-normal text-fg-sub">六步完成性能检测闭环：项目 → 数据 → 压测 → 结果 → 调用链 → 优化</span>
         </div>
-        <div>
-          <div class="text-xs mt-1.5" :class="doneCount >= steps.length ? 'text-neon-green' : 'text-fg-sub'">
-            <template v-if="doneCount >= steps.length">✓ 六步全部完成，可以开始新一轮检测</template>
-            <template v-else>当前完成度 {{ doneCount }}/6，点击步骤卡片可直达对应页面</template>
-          </div>
-        </div>
         <div class="flex gap-2 shrink-0">
           <button
             class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium bg-neon-green/15 text-neon-green border border-neon-green/40 hover:bg-neon-green/25 transition-all"
@@ -50,24 +44,12 @@
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <button
           v-for="(s, idx) in steps" :key="s.title"
-          class="text-left p-4 rounded-xl border transition-all relative"
-          :class="stepClass(s.done)"
+          class="text-left p-4 rounded-xl border border-white/10 bg-white/[0.03] hover:border-neon-green/40 hover:bg-neon-green/5 transition-all"
           @click="router.push(`/quick-start?step=${idx}`)"
         >
-          <div class="flex items-center justify-between mb-2">
-            <span
-              class="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
-              :class="s.done ? 'bg-neon-green text-black' : 'bg-white/10 text-fg-sub'"
-            >
-              <Check v-if="s.done" class="w-3.5 h-3.5" />
-              <template v-else>{{ idx + 1 }}</template>
-            </span>
-            <ArrowRight class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100" :class="s.done ? 'text-fg-sub' : 'text-neon-blue'" />
-          </div>
-          <div class="text-sm font-medium" :class="s.done ? 'text-fg-sub' : 'text-fg-main'">{{ s.title }}</div>
-          <div class="text-[11px] mt-1" :class="s.done ? 'text-neon-green' : 'text-fg-sub'">
-            {{ s.done ? s.doneHint : s.todoHint }}
-          </div>
+          <span class="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold bg-white/10 text-fg-sub mb-2">{{ idx + 1 }}</span>
+          <div class="text-sm font-medium text-fg-main">{{ s.title }}</div>
+          <div class="text-[11px] mt-1 text-fg-sub">{{ s.desc }}</div>
         </button>
       </div>
       <div class="text-[11px] text-fg-sub mt-3">
@@ -146,8 +128,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { LayoutDashboard, Gauge, Database, Bug, Bot, Users, Zap, Boxes, DatabaseZap, Route, Wrench, Rocket, Check, ArrowRight } from 'lucide-vue-next'
-// Zap 同时用于 AI 自动执行入口
+import { LayoutDashboard, Gauge, Database, Bug, Bot, Users, Zap, Boxes, DatabaseZap, Rocket } from 'lucide-vue-next'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, stressApi, slowSqlApi, sourceApi, traceApi, dataGenApi } from '../api'
 
@@ -169,63 +150,15 @@ const metrics = computed(() => [
   { label: '待处理问题', value: issues.value.filter((i) => i.status === 'open').length, hint: '未分析', icon: Bug }
 ])
 
-/** 快速开始六步引导：完成状态由平台数据自动判定，点击直达对应页面 */
-const steps = computed(() => [
-  {
-    title: '导入 / 选择项目',
-    done: repos.value.length > 0,
-    doneHint: `已导入 ${repos.value.length} 个项目`,
-    todoHint: '上传源码或 git 导入被测项目',
-    to: '/projects'
-  },
-  {
-    title: '灌注测试数据',
-    done: genTasks.value.some((t) => t.status === 'finished'),
-    doneHint: '已有灌数任务完成',
-    todoHint: '联表 Mock 数据 + 试运行防呆',
-    to: '/stress?tab=datagen'
-  },
-  {
-    title: '配置压测任务',
-    done: stressTasks.value.length > 0,
-    doneHint: `已创建 ${stressTasks.value.length} 个任务`,
-    todoHint: '选项目自动带出接口清单',
-    to: '/stress?tab=stress'
-  },
-  {
-    title: '获取压测结果',
-    done: stressTasks.value.some((t) => t.status === 'finished'),
-    doneHint: '已有任务完成出报告',
-    todoHint: '查看 QPS/RT/容量评估报告',
-    to: '/stress?tab=stress'
-  },
-  {
-    title: '分析调用链',
-    done: traces.value.length > 0,
-    doneHint: `已捕获 ${traces.value.length} 条链路`,
-    todoHint: '压测流量产生调用链后分析',
-    to: '/trace'
-  },
-  {
-    title: '问题优化',
-    done: issues.value.length > 0,
-    doneHint: `已识别 ${issues.value.length} 个问题`,
-    todoHint: 'N+1 / 慢 SQL 源码定位与修复',
-    to: '/optimize'
-  }
-])
-
-const doneCount = computed(() => steps.value.filter((s) => s.done).length)
-/** 第一个未完成步骤即当前引导位置 */
-const currentIdx = computed(() => {
-  const idx = steps.value.findIndex((s) => !s.done)
-  return idx === -1 ? steps.value.length : idx
-})
-
-function stepClass(done: boolean) {
-  if (done) return 'bg-neon-green/5 border-neon-green/25 cursor-pointer hover:border-neon-green/50'
-  return 'bg-white/[0.03] border-white/10 cursor-pointer hover:border-white/25'
-}
+/** 快速开始六步引导：平等展示，点击直达向导对应步骤 */
+const steps = [
+  { title: '导入 / 选择项目', desc: '上传源码或 git 导入被测项目' },
+  { title: '灌注测试数据', desc: '联表 Mock 数据 + 试运行防呆' },
+  { title: '配置压测任务', desc: '选项目自动带出接口清单' },
+  { title: '获取压测结果', desc: '查看 QPS/RT/容量评估报告' },
+  { title: '分析调用链', desc: '压测流量产生调用链后分析' },
+  { title: '问题优化', desc: 'N+1 / 慢 SQL 源码定位与修复' }
+]
 
 function startFresh() {
   // 快速开始 = 每次全新流程，从第 1 步进入向导
