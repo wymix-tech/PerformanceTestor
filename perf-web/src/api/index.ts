@@ -57,6 +57,22 @@ export const dataGenApi = {
   adopt: (id: number, adopt = true) => http.post(`/datagen/suggestions/${id}/adopt`, null, { params: { adopt } })
 }
 
+export const deployApi = {
+  // SSH 连接列表
+  conns: (limit = 50) => http.get('/deploy/conns', { params: { limit } }),
+  // 新增 SSH 连接
+  addConn: (data: Record<string, unknown>) => http.post('/deploy/conns', data),
+  // 删除 SSH 连接
+  delConn: (id: number) => http.delete(`/deploy/conns/${id}`),
+  // 平台侧编译被测项目（返回 jarPath）
+  build: (data: { repoId: number; module?: string }) => http.post('/deploy/build', data),
+  // 上传编译包并远程启动（agent 自动探测挂载）
+  start: (data: { connId: number; jarPath: string; agentPath?: string; appPort?: number }) =>
+    http.post('/deploy/start', data),
+  // 远程应用状态（进程/健康检查/日志尾部）
+  status: (connId: number, appPort = 8081) => http.get('/deploy/status', { params: { connId, appPort } })
+}
+
 export const capacityApi = {
   // 对压测任务执行容量评估（幂等，结果落库）
   analyze: (data: { taskId: number; targetP95Ms?: number; app?: string }) =>

@@ -140,8 +140,48 @@
       </div>
     </div>
 
-    <!-- Step 3 压测 -->
+    <!-- Step 3 部署（可选） -->
     <div v-else-if="step === 2" class="glass-card p-5">
+      <div class="text-sm font-medium mb-1">自动部署（可选） <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
+      <div class="text-[11px] text-fg-sub mb-4">平台编译项目并经 SSH 上传到目标服务器启动（自动挂载监控 agent）。被测应用已在本地运行则直接跳过此步。</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs text-fg-sub">SSH 连接（被测服务器）</label>
+            <select v-model="deployConnId" class="input-select w-full">
+              <option :value="0">— 跳过部署，应用已在运行 —</option>
+              <option v-for="c in deployConns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.host }}）</option>
+            </select>
+            <div v-if="!deployConns.length" class="text-[11px] text-amber-400 mt-1">暂无 SSH 连接配置，可跳过本步（应用已在运行）或先在部署管理中添加连接</div>
+          </div>
+          <template v-if="deployConnId">
+            <div><label class="text-xs text-fg-sub">Maven 模块（可空=整仓）</label><input v-model="deployModule" class="input-text w-full text-xs" placeholder="如 perf-demo" /></div>
+            <div><label class="text-xs text-fg-sub">应用端口（启动后健康检查）</label><input v-model.number="deployPort" type="number" class="input-text w-full text-xs" /></div>
+            <button class="btn-primary w-full justify-center" :disabled="deploying" @click="runDeploy">
+              {{ deploying ? '编译部署中…（约 1-2 分钟）' : '编译并部署启动' }}
+            </button>
+          </template>
+        </div>
+        <div class="rounded-xl bg-white/5 p-4 text-xs space-y-2">
+          <div class="text-fg-sub font-medium">部署状态</div>
+          <div v-if="!buildResult && !deployResult" class="text-fg-sub">未执行（跳过则直接压测本地已运行的应用）</div>
+          <template v-else>
+            <div v-if="buildResult">
+              <span :class="buildResult.success ? 'text-neon-green' : 'text-red-400'">{{ buildResult.success ? '✓ 编译成功' : '✗ 编译失败' }}</span>
+              <div class="text-[11px] text-fg-sub mt-1 font-mono break-all">{{ buildResult.jarPath || buildResult.logTail }}</div>
+            </div>
+            <div v-if="deployResult">
+              <span :class="deployResult.success ? 'text-neon-green' : 'text-red-400'">{{ deployResult.success ? '✓ 已启动' : '✗ 启动失败' }}</span>
+              <span class="text-fg-sub ml-2">PID {{ deployResult.pid }} · 健康检查 HTTP {{ deployResult.healthCode }} · {{ deployResult.processStatus }}</span>
+            </div>
+            <div v-if="deployLog" class="text-[11px] text-fg-sub whitespace-pre-wrap font-mono max-h-[160px] overflow-y-auto">{{ deployLog }}</div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4 压测 -->
+    <div v-else-if="step === 3" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">配置并发起压测 <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
       <div class="text-[11px] text-fg-sub mb-4">已导入项目会自动扫描 GET 接口清单。需要完整配置（JMeter/分阶段）？<router-link class="text-neon-blue hover:underline" to="/stress">打开压测中心</router-link></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -174,8 +214,8 @@
       </div>
     </div>
 
-    <!-- Step 4 结果 -->
-    <div v-else-if="step === 3" class="glass-card p-5">
+    <!-- Step 5 获取结果 -->
+    <div v-else-if="step === 4" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">获取压测结果</div>
       <div class="text-[11px] text-fg-sub mb-4">任务完成后自动拉取报告摘要。<router-link class="text-neon-blue hover:underline" to="/stress">打开完整压测报告</router-link></div>
       <div v-if="!stressTask" class="text-xs text-fg-sub py-8 text-center">请先在上一步发起压测</div>
@@ -191,8 +231,8 @@
       </div>
     </div>
 
-    <!-- Step 5 调用链 -->
-    <div v-else-if="step === 4" class="glass-card p-5">
+    <!-- Step 6 分析调用链 -->
+    <div v-else-if="step === 5" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">分析调用链 <span class="text-neon-green text-xs ml-1">{{ appName }}</span></div>
       <div class="text-[11px] text-fg-sub mb-4">压测流量产生的调用链（热点方法耗时树）。<router-link class="text-neon-blue hover:underline" to="/trace">打开调用链分析</router-link></div>
       <div v-if="!traces.length" class="text-xs text-fg-sub py-8 text-center">暂无调用链，回上一步压测产生流量后自动捕获</div>
@@ -207,7 +247,7 @@
       </div>
     </div>
 
-    <!-- Step 6 优化 -->
+    <!-- Step 7 问题优化 -->
     <div v-else class="glass-card p-5">
       <div class="text-sm font-medium mb-1">问题优化</div>
       <div class="text-[11px] text-fg-sub mb-4">平台自动识别的性能问题（N+1 / 慢 SQL / 瓶颈），可让 AI 关联源码给出修复方案。<router-link class="text-neon-blue hover:underline" to="/optimize">打开性能优化</router-link></div>
@@ -241,14 +281,14 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
-import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi } from '../api'
+import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi, deployApi } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 
 const stepDefs = [
-  { title: '选择项目' }, { title: '灌注数据' }, { title: '发起压测' },
-  { title: '获取结果' }, { title: '分析调用链' }, { title: '问题优化' }
+  { title: '选择项目' }, { title: '灌注数据' }, { title: '部署(可选)' },
+  { title: '发起压测' }, { title: '获取结果' }, { title: '分析调用链' }, { title: '问题优化' }
 ]
 
 const step = ref(0)
@@ -261,6 +301,15 @@ const genUsers = ref(1000)
 const genOrders = ref(2000)
 const genTask = ref<any>(null)
 const genDryPassed = ref(false)
+// 部署（可选步骤）：跳过或执行后进入压测
+const deployConnId = ref<number>(0)
+const deployModule = ref('')
+const deployPort = ref(8081)
+const deploying = ref(false)
+const buildResult = ref<any>(null)
+const deployResult = ref<any>(null)
+const deployStatus = ref('')
+const deployLog = ref('')
 const endpoints = ref<Array<Record<string, any>>>([])
 const endpointIdx = ref(-1)
 const manualUrl = ref('http://127.0.0.1:8081/api/user/list?limit=200')
@@ -272,10 +321,12 @@ const capacityText = ref('')
 const traces = ref<Array<Record<string, any>>>([])
 const issues = ref<Array<Record<string, any>>>([])
 const appInstances = ref<Array<Record<string, any>>>([])
+/** SSH 连接（可选部署步骤用） */
+const deployConns = ref<Array<Record<string, any>>>([])
 let pollTimer: any = null
 
 /** 本轮向导会话完成标记：只认用户在本轮亲自完成的动作，与平台历史数据无关 */
-const sessionDone = ref<boolean[]>([false, false, false, false, false, false])
+const sessionDone = ref<boolean[]>([false, false, false, false, false, false, false])
 
 const repoName = computed(() => repos.value.find((r) => r.id === repoId.value)?.repoName || '')
 const appName = computed(() => repos.value.find((r) => r.id === repoId.value)?.appName || repoName.value)
@@ -297,7 +348,7 @@ function badgeClass(i: number) {
 function goStep(i: number) {
   step.value = Math.max(0, Math.min(stepDefs.length - 1, i))
   // 浏览型步骤（分析调用链/问题优化）以到达为完成
-  if (i >= 4) sessionDone.value[i] = true
+  if (i >= 5) sessionDone.value[i] = true
   router.replace({ query: { step: String(step.value) } })
   onEnterStep()
 }
@@ -513,7 +564,7 @@ async function startStress() {
       appName: appName.value || undefined
     })
     stressTask.value = r.data
-    sessionDone.value[2] = true // 本轮压测已发起
+    sessionDone.value[3] = true // 本轮压测已发起
     startPolling()
     // 压测已发起 → 自动进入结果步骤（轮询拉取报告）
     setTimeout(advance, 1200)
@@ -534,7 +585,7 @@ function startPolling() {
       const rep = await stressApi.report(stressTask.value.id)
       const stat = rep.data?.statistics || rep.data?.result?.statistics || {}
       report.value = stat
-      sessionDone.value[3] = true // 本轮报告已获取
+      sessionDone.value[4] = true // 本轮报告已获取
       const cap = rep.data?.result?.capacity || rep.data?.capacity
       if (cap) capacityText.value = `容量评估：最大可承受并发 ${cap.maxConcurrency ?? '—'}，最大 QPS ${cap.maxQps ?? '—'}`
       loadTracesAndIssues()
@@ -557,6 +608,37 @@ async function loadTracesAndIssues() {
   } catch { /* 忽略 */ }
 }
 
+/** 编译并部署启动：build → SFTP 上传 → 远程 nohup 启动（agent 自动挂载）→ 健康检查 */
+async function runDeploy() {
+  if (!deployConnId.value || !repoId.value) return
+  deploying.value = true
+  deployLog.value = ''
+  try {
+    const b = await deployApi.build({ repoId: repoId.value, module: deployModule.value || undefined })
+    buildResult.value = b.data
+    if (!b.data?.success || !b.data?.jarPath) {
+      deployLog.value = b.data?.logTail || '编译失败'
+      return
+    }
+    const d = await deployApi.start({
+      connId: deployConnId.value,
+      jarPath: b.data.jarPath,
+      appPort: deployPort.value
+    })
+    deployResult.value = d.data
+    if (d.data?.success) {
+      sessionDone.value[2] = true
+      const st = await deployApi.status(deployConnId.value, deployPort.value).catch(() => null)
+      deployStatus.value = st?.data?.status || ''
+      setTimeout(advance, 1500) // 部署成功自动进入压测步骤
+    }
+  } catch (e: any) {
+    deployLog.value = '部署失败：' + (e?.response?.data?.message || e?.message || '请求异常')
+  } finally {
+    deploying.value = false
+  }
+}
+
 function goAiAnalyze() {
   router.push({ path: '/ai', query: { msg: `分析项目「${repoName.value}」最近的慢 SQL 与热点调用链根因，并给出修复方案` } })
 }
@@ -567,14 +649,14 @@ function finishRound() {
 }
 
 function onEnterStep() {
-  if (step.value === 3 && stressTask.value?.status === 'finished' && !report.value) startPolling()
+  if (step.value === 4 && stressTask.value?.status === 'finished' && !report.value) startPolling()
 }
 
 onMounted(async () => {
   // 快速开始 = 每次全新流程：固定第 1 步，不预选项目、不载入历史任务（打勾只认本轮操作）
   step.value = 0
-  const [r, c, a] = await Promise.allSettled([
-    sourceApi.repos(50), dbConnApi.list(), appApi.list()
+  const [r, c, a, dc] = await Promise.allSettled([
+    sourceApi.repos(50), dbConnApi.list(), appApi.list(), deployApi.conns(50)
   ])
   if (r.status === 'fulfilled') {
     repos.value = r.value.data || []
@@ -582,6 +664,7 @@ onMounted(async () => {
   }
   if (c.status === 'fulfilled') conns.value = c.value.data || []
   if (a.status === 'fulfilled') appInstances.value = a.value.data || []
+  if (dc.status === 'fulfilled') deployConns.value = dc.value.data || []
 })
 
 onUnmounted(stopPolling)
