@@ -339,6 +339,16 @@ async function fetchRemoteBranches() {
 }
 
 function selectRepo(r: any) {
+  // 再次点击已选卡片 → 取消选择（连带清空该项目上下文）
+  if (repoId.value === r.id) {
+    repoId.value = 0
+    sessionDone.value[0] = false
+    endpoints.value = []
+    endpointIdx.value = -1
+    traces.value = []
+    issues.value = []
+    return
+  }
   repoId.value = r.id
   sessionDone.value[0] = true // 本轮亲自选择项目
   loadEndpoints()
