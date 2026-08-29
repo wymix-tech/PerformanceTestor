@@ -13,6 +13,12 @@ const routes = [
         meta: { title: '总览' }
       },
       {
+        path: 'quick-start',
+        name: 'QuickStart',
+        component: () => import('@/views/QuickStartView.vue'),
+        meta: { title: '快速开始' }
+      },
+      {
         path: 'projects',
         name: 'ProjectManage',
         component: () => import('@/views/ProjectManageView.vue'),

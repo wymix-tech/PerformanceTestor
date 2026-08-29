@@ -26,11 +26,19 @@
           <Rocket class="w-4 h-4 text-neon-green" /> 快速开始
           <span class="text-[11px] font-normal text-fg-sub">六步完成性能检测闭环：项目 → 数据 → 压测 → 结果 → 调用链 → 优化</span>
         </div>
-        <div class="text-xs text-fg-sub">
-          已完成 <span class="text-neon-green font-bold">{{ doneCount }}</span>/{{ steps.length }}
-          <div class="w-28 h-1.5 rounded bg-white/10 mt-1 overflow-hidden">
-            <div class="h-full bg-neon-green rounded transition-all" :style="{ width: (doneCount / steps.length) * 100 + '%' }"></div>
+        <div class="flex items-center gap-3">
+          <div class="text-xs text-fg-sub">
+            已完成 <span class="text-neon-green font-bold">{{ doneCount }}</span>/{{ steps.length }}
+            <div class="w-28 h-1.5 rounded bg-white/10 mt-1 overflow-hidden">
+              <div class="h-full bg-neon-green rounded transition-all" :style="{ width: (doneCount / steps.length) * 100 + '%' }"></div>
+            </div>
           </div>
+          <button
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neon-green/15 text-neon-green border border-neon-green/40 hover:bg-neon-green/25 transition-all"
+            @click="router.push(`/quick-start?step=${currentIdx}`)"
+          >
+            <Rocket class="w-3.5 h-3.5" /> 进入向导
+          </button>
         </div>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
@@ -38,7 +46,7 @@
           v-for="(s, idx) in steps" :key="s.title"
           class="text-left p-4 rounded-xl border transition-all relative"
           :class="stepClass(s.done, idx === currentIdx)"
-          @click="router.push(s.to)"
+          @click="router.push(`/quick-start?step=${idx}`)"
         >
           <div class="flex items-center justify-between mb-2">
             <span
@@ -57,11 +65,11 @@
           <div
             v-if="idx === currentIdx && !s.done"
             class="mt-2 inline-block text-[11px] px-2 py-0.5 rounded-full bg-neon-blue/15 text-neon-blue"
-          >当前步骤 · 去完成</div>
+          >当前步骤 · 继续</div>
         </button>
       </div>
       <div v-if="doneCount < steps.length" class="text-[11px] text-fg-sub mt-3 flex items-center justify-between">
-        <span>建议：首次使用按 1→6 顺序执行；数据准备支持 Dry-Run 试运行防呆，压测前先灌入贴近业务语义的测试数据，报告才可信。</span>
+        <span>向导会带着所选项目上下文逐步执行：数据准备支持 Dry-Run 试运行防呆，压测前先灌入贴近业务语义的测试数据，报告才可信。</span>
         <button
           class="shrink-0 ml-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-neon-green/40 bg-neon-green/10 text-neon-green hover:bg-neon-green/20 transition-all"
           @click="router.push('/ai?auto=1')"
