@@ -192,9 +192,6 @@ import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi } from '.
 const route = useRoute()
 const router = useRouter()
 
-/** 向导进度持久化：刷新/离开后恢复到上次所在步骤，不每次重头开始 */
-const QS_KEY = 'perftestor.qs.step'
-
 const stepDefs = [
   { title: '选择项目' }, { title: '灌注数据' }, { title: '发起压测' },
   { title: '获取结果' }, { title: '分析调用链' }, { title: '问题优化' }
@@ -246,7 +243,6 @@ function badgeClass(i: number) {
 
 function goStep(i: number) {
   step.value = Math.max(0, Math.min(stepDefs.length - 1, i))
-  try { localStorage.setItem(QS_KEY, String(step.value)) } catch { /* 忽略 */ }
   router.replace({ query: { step: String(step.value) } })
   onEnterStep()
 }
@@ -371,9 +367,8 @@ function goAiAnalyze() {
   router.push({ path: '/ai', query: { msg: `分析项目「${repoName.value}」最近的慢 SQL 与热点调用链根因，并给出修复方案` } })
 }
 
-/** 完成本轮：清除持久化进度，总览回到开始新一轮状态 */
+/** 完成本轮，回到总览 */
 function finishRound() {
-  try { localStorage.removeItem(QS_KEY) } catch { /* ignore */ }
   router.push('/dashboard')
 }
 
@@ -386,11 +381,9 @@ onMounted(async () => {
   if (urlStep !== undefined) {
     step.value = Math.max(0, Math.min(5, parseInt(String(urlStep)) || 0))
   } else {
-    // 无显式步骤参数：恢复上次进度（未开始过则从第 1 步起）
-    const saved = parseInt(localStorage.getItem(QS_KEY) ?? '')
-    step.value = Number.isFinite(saved) && saved >= 0 && saved <= 5 ? saved : 0
+    // 每次进入均为全新流程：从第 1 步开始（不再恢复历史进度）
+    step.value = 0
   }
-  try { localStorage.setItem(QS_KEY, String(step.value)) } catch { /* 忽略 */ }
   const [r, c, g, a] = await Promise.allSettled([
     sourceApi.repos(50), dbConnApi.list(), dataGenApi.list(5), appApi.list()
   ])

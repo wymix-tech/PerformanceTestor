@@ -27,35 +27,37 @@
           <span class="text-[11px] font-normal text-fg-sub">六步完成性能检测闭环：项目 → 数据 → 压测 → 结果 → 调用链 → 优化</span>
         </div>
         <div>
-          <div class="text-xs" :class="doneCount >= steps.length ? 'text-neon-green' : 'text-neon-blue'">
-            <template v-if="doneCount >= steps.length">✓ 六步全部完成，可开始新一轮检测</template>
-            <template v-else-if="doneCount > 0">进行中：<span class="font-bold">{{ currentIdx + 1 }}. {{ steps[currentIdx].title }}</span>（{{ doneCount }}/6 已完成）</template>
-            <template v-else>尚未开始，从「1. 选择项目」起步</template>
-          </div>
-          <div class="flex gap-1 mt-2 justify-end">
-            <span v-for="(s, i) in steps" :key="i" class="w-8 h-1 rounded"
-                  :class="i < currentIdx || s.done ? 'bg-neon-green/70' : i === currentIdx ? 'bg-neon-blue' : 'bg-white/10'" />
+          <div class="text-xs mt-1.5" :class="doneCount >= steps.length ? 'text-neon-green' : 'text-fg-sub'">
+            <template v-if="doneCount >= steps.length">✓ 六步全部完成，可以开始新一轮检测</template>
+            <template v-else>当前完成度 {{ doneCount }}/6，点击步骤卡片可直达对应页面</template>
           </div>
         </div>
-        <button
-          class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium bg-neon-green/15 text-neon-green border border-neon-green/40 hover:bg-neon-green/25 transition-all shrink-0"
-          @click="router.push(`/quick-start?step=${currentIdx}`)"
-        >
-          <Rocket class="w-3.5 h-3.5" />
-          {{ doneCount >= steps.length ? '开始新一轮' : doneCount === 0 ? '开始向导' : `继续 · 第 ${currentIdx + 1} 步` }}
-        </button>
+        <div class="flex gap-2 shrink-0">
+          <button
+            class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium bg-neon-green/15 text-neon-green border border-neon-green/40 hover:bg-neon-green/25 transition-all"
+            @click="startFresh"
+          >
+            <Rocket class="w-3.5 h-3.5" /> 快速开始
+          </button>
+          <button
+            class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium bg-neon-blue/15 text-neon-blue border border-neon-blue/40 hover:bg-neon-blue/25 transition-all"
+            @click="router.push('/ai?auto=1')"
+          >
+            <Zap class="w-3.5 h-3.5" /> AI 开始
+          </button>
+        </div>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <button
           v-for="(s, idx) in steps" :key="s.title"
           class="text-left p-4 rounded-xl border transition-all relative"
-          :class="stepClass(s.done, idx === currentIdx)"
+          :class="stepClass(s.done)"
           @click="router.push(`/quick-start?step=${idx}`)"
         >
           <div class="flex items-center justify-between mb-2">
             <span
               class="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
-              :class="s.done ? 'bg-neon-green text-black' : idx === currentIdx ? 'bg-neon-blue text-black' : 'bg-white/10 text-fg-sub'"
+              :class="s.done ? 'bg-neon-green text-black' : 'bg-white/10 text-fg-sub'"
             >
               <Check v-if="s.done" class="w-3.5 h-3.5" />
               <template v-else>{{ idx + 1 }}</template>
@@ -66,22 +68,11 @@
           <div class="text-[11px] mt-1" :class="s.done ? 'text-neon-green' : 'text-fg-sub'">
             {{ s.done ? s.doneHint : s.todoHint }}
           </div>
-          <div
-            v-if="idx === currentIdx && !s.done"
-            class="mt-2 inline-block text-[11px] px-2 py-0.5 rounded-full bg-neon-blue/15 text-neon-blue"
-          >当前步骤 · 继续</div>
         </button>
       </div>
-      <div v-if="doneCount < steps.length" class="text-[11px] text-fg-sub mt-3 flex items-center justify-between">
-        <span>向导会带着所选项目上下文逐步执行：数据准备支持 Dry-Run 试运行防呆，压测前先灌入贴近业务语义的测试数据，报告才可信。</span>
-        <button
-          class="shrink-0 ml-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-neon-green/40 bg-neon-green/10 text-neon-green hover:bg-neon-green/20 transition-all"
-          @click="router.push('/ai?auto=1')"
-        >
-          <Zap class="w-3 h-3" /> 让 AI 自动执行
-        </button>
+      <div class="text-[11px] text-fg-sub mt-3">
+        「快速开始」打开分步向导（带着所选项目逐步执行，灌数据支持 Dry-Run 试运行防呆）；「AI 开始」由 AI 助手自动串联全流程。
       </div>
-      <div v-else class="text-[11px] text-neon-green mt-3">✓ 全部步骤已完成，可回到压测中心继续多轮压测对比，或让 AI 助手生成一份完整性能检测报告。</div>
     </div>
 
     <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -231,10 +222,14 @@ const currentIdx = computed(() => {
   return idx === -1 ? steps.value.length : idx
 })
 
-function stepClass(done: boolean, isCurrent: boolean) {
+function stepClass(done: boolean) {
   if (done) return 'bg-neon-green/5 border-neon-green/25 cursor-pointer hover:border-neon-green/50'
-  if (isCurrent) return 'bg-neon-blue/5 border-neon-blue/40 cursor-pointer hover:border-neon-blue shadow-[0_0_18px_rgba(14,165,233,0.15)]'
   return 'bg-white/[0.03] border-white/10 cursor-pointer hover:border-white/25'
+}
+
+function startFresh() {
+  // 快速开始 = 每次全新流程，从第 1 步进入向导
+  router.push('/quick-start?step=0')
 }
 
 const quickActions = [
