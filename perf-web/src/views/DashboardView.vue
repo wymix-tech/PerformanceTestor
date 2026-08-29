@@ -60,8 +60,14 @@
           >当前步骤 · 去完成</div>
         </button>
       </div>
-      <div v-if="doneCount < steps.length" class="text-[11px] text-fg-sub mt-3">
-        建议：首次使用按 1→6 顺序执行；数据准备支持 Dry-Run 试运行防呆，压测前先灌入贴近业务语义的测试数据，报告才可信。
+      <div v-if="doneCount < steps.length" class="text-[11px] text-fg-sub mt-3 flex items-center justify-between">
+        <span>建议：首次使用按 1→6 顺序执行；数据准备支持 Dry-Run 试运行防呆，压测前先灌入贴近业务语义的测试数据，报告才可信。</span>
+        <button
+          class="shrink-0 ml-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-neon-green/40 bg-neon-green/10 text-neon-green hover:bg-neon-green/20 transition-all"
+          @click="router.push('/ai?auto=1')"
+        >
+          <Zap class="w-3 h-3" /> 让 AI 自动执行
+        </button>
       </div>
       <div v-else class="text-[11px] text-neon-green mt-3">✓ 全部步骤已完成，可回到压测中心继续多轮压测对比，或让 AI 助手生成一份完整性能检测报告。</div>
     </div>
@@ -138,6 +144,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { LayoutDashboard, Gauge, Database, Bug, Bot, Users, Zap, Boxes, DatabaseZap, Route, Wrench, Rocket, Check, ArrowRight } from 'lucide-vue-next'
+// Zap 同时用于 AI 自动执行入口
 import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, stressApi, slowSqlApi, sourceApi, traceApi, dataGenApi } from '../api'
 

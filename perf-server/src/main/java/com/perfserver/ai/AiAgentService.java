@@ -36,7 +36,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AiAgentService {
 
     private static final Logger log = LoggerFactory.getLogger(AiAgentService.class);
-    private static final int MAX_ROUNDS = 6;
+    /** 闭环自动执行（灌数+压测+三项观测+分析+报告）最多需 8 轮左右，留余量 */
+    private static final int MAX_ROUNDS = 10;
     private static final int MAX_HISTORY = 20;
 
     private final LlmClient llmClient;
@@ -228,6 +229,27 @@ public class AiAgentService {
             if (msg.contains("压测")) {
                 return "我可以发起 HTTP 压测。配置大模型 API Key 后发送类似\"对 http://127.0.0.1:8080/api/apps 压测，"
                         + "并发 50，持续 30 秒\"即可执行；当前为演示模式（无 Key）。";
+            }
+            if (msg.contains("自动执行") || msg.contains("闭环") || msg.contains("快速开始") || msg.contains("一键")) {
+                // 规则档自动执行：真实状态快照 + 执行计划（灌数/压测为异步任务，无法同步等待完成）
+                List<StressTask> tasks = stressTaskService.list(null, 3);
+                List<PerformanceIssue> issues = sourceIssueService.listIssues(null, null, null, 5);
+                StringBuilder sb = new StringBuilder("【AI 自动执行 · 性能检测闭环】当前为演示模式（未配置大模型 Key），"
+                        + "无法自主多轮编排；以下为平台真实状态与执行计划：\n\n");
+                sb.append("■ 当前状态快照\n");
+                sb.append("- 最近压测任务 ").append(tasks.isEmpty() ? "无" : tasks.size() + " 个（最新 #"
+                        + tasks.get(0).getId() + " " + tasks.get(0).getStatus() + "）\n");
+                sb.append("- 已识别性能问题 ").append(issues.size()).append(" 个\n\n");
+                sb.append("■ 六步执行计划（可在页面手动完成，或配置 Key 后由我自动串联）\n");
+                sb.append("1. 导入/选择项目 → 源码管理页上传或 git 导入\n");
+                sb.append("2. 灌注测试数据 → 压测中心「数据准备」Tab：联表配置 + Dry-Run 试运行后正式灌数\n");
+                sb.append("3. 配置压测任务 → 选项目自动带出接口清单，设并发/时长发起\n");
+                sb.append("4. 获取结果 → 压测报告（QPS/RT/容量评估）\n");
+                sb.append("5. 分析调用链 → 调用链页热点方法耗时分析\n");
+                sb.append("6. 问题优化 → 性能问题列表（N+1/慢 SQL）源码定位 + AI 修复方案\n\n");
+                sb.append("配置大模型 API Key 后重新发送\"自动执行性能检测闭环\"，我将自动依次执行灌数 → 压测 → ");
+                sb.append("指标/调用链/慢 SQL 分析 → 修复方案 → 最终报告。");
+                return sb.toString();
             }
         } catch (Exception e) {
             log.warn("fallback reply error: {}", e.getMessage());

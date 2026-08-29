@@ -10,6 +10,19 @@
       <!-- 快捷指令 -->
       <div class="glass-card p-5 flex flex-col">
         <div class="text-sm font-medium mb-4">快捷指令</div>
+        <!-- AI 自动执行特色入口 -->
+        <button
+          class="w-full text-left px-4 py-3.5 rounded-xl mb-4 border border-neon-green/40 bg-neon-green/10 hover:bg-neon-green/20 transition-all relative overflow-hidden"
+          @click="send(AUTO_PIPELINE_PROMPT)"
+        >
+          <div class="flex items-center gap-2 text-sm font-medium text-neon-green">
+            <Zap class="w-4 h-4" /> AI 自动执行性能检测闭环
+          </div>
+          <div class="text-[11px] text-fg-sub mt-1.5 leading-relaxed">
+            自动串联：灌测试数据 → 发起压测 → 采集 JVM/调用链/慢 SQL → 生成修复方案 → 输出检测报告
+          </div>
+          <div class="text-[11px] text-neon-green/80 mt-1.5">配置 API Key 后由 AI 多轮编排全自动执行</div>
+        </button>
         <div class="space-y-3">
           <button
             v-for="q in quickActions" :key="q"
@@ -75,7 +88,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Bot, Send } from 'lucide-vue-next'
+import { Bot, Send, Zap } from 'lucide-vue-next'
 import { aiApi } from '../api'
 
 const route = useRoute()
@@ -90,6 +103,13 @@ const quickActions = [
   '查询最近 JVM 指标',
   '生成一份性能检测报告'
 ]
+
+/** AI 自动执行闭环编排指令（LLM 档自动串联工具多轮执行；规则档返回状态快照+执行计划） */
+const AUTO_PIPELINE_PROMPT =
+  '自动执行性能检测闭环：检查已接入项目后，向 demo 库（jdbc:mysql://127.0.0.1:3306/demo）灌入测试数据' +
+  '（perf_user 1000 行、perf_order 2000 行，user_id 关联 perf_user.id），随后对 ' +
+  'http://127.0.0.1:8081/api/user/list?limit=200 发起 20 并发 15 秒压测，压测期间采集 JVM 指标、热点调用链与慢 SQL，' +
+  '将证据关联源码生成 2-3 个修复方案，最后汇总输出一份完整性能检测报告（含容量评估与扩容建议）。'
 
 async function send(text: string) {
   const content = text.trim()
@@ -118,6 +138,13 @@ async function clearSession() {
 
 onMounted(() => {
   const msg = route.query.msg as string | undefined
-  if (msg) send(msg)
+  if (msg) {
+    send(msg)
+    return
+  }
+  // 总览快速开始引导等入口：/ai?auto=1 直接启动 AI 自动执行闭环
+  if (route.query.auto) {
+    send(AUTO_PIPELINE_PROMPT)
+  }
 })
 </script>
