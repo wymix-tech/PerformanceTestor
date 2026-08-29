@@ -177,7 +177,7 @@
       <button class="btn-secondary" :disabled="step === 0" @click="goStep(step - 1)">上一步</button>
       <div class="text-xs text-fg-sub">步骤 {{ step + 1 }} / {{ stepDefs.length }} · 所选项目：<span class="text-neon-green">{{ repoName || '未选择' }}</span></div>
       <button v-if="step < stepDefs.length - 1" class="btn-primary" @click="goStep(step + 1)">下一步<ArrowRight class="w-4 h-4 ml-1" /></button>
-      <button v-else class="btn-primary" @click="router.push('/dashboard')">完成，回到总览<Check class="w-4 h-4 ml-1" /></button>
+      <button v-else class="btn-primary" @click="finishRound">完成本轮，回到总览<Check class="w-4 h-4 ml-1" /></button>
     </div>
   </div>
 </template>
@@ -191,6 +191,9 @@ import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi } from '.
 
 const route = useRoute()
 const router = useRouter()
+
+/** 向导进度持久化：刷新/离开后恢复到上次所在步骤，不每次重头开始 */
+const QS_KEY = 'perftestor.qs.step'
 
 const stepDefs = [
   { title: '选择项目' }, { title: '灌注数据' }, { title: '发起压测' },
@@ -243,8 +246,14 @@ function badgeClass(i: number) {
 
 function goStep(i: number) {
   step.value = Math.max(0, Math.min(stepDefs.length - 1, i))
+  try { localStorage.setItem(QS_KEY, String(step.value)) } catch { /* 忽略 */ }
   router.replace({ query: { step: String(step.value) } })
   onEnterStep()
+}
+
+/** 关键动作完成 → 自动推进到下一步（用户可随时手动回跳） */
+function advance() {
+  if (step.value < stepDefs.length - 1) goStep(step.value + 1)
 }
 
 function selectRepo(r: any) {
@@ -284,6 +293,9 @@ async function runGen(dryRun: boolean) {
     if (dryRun) {
       // 轮询一次结果后放行正式灌数
       setTimeout(checkGen, 2500)
+    } else {
+      // 正式灌数已发起 → 自动进入压测步骤（任务异步执行，进度在数据准备 Tab 可查）
+      setTimeout(advance, 1200)
     }
   } finally {
     busy.value = false
@@ -314,6 +326,8 @@ async function startStress() {
     })
     stressTask.value = r.data
     startPolling()
+    // 压测已发起 → 自动进入结果步骤（轮询拉取报告）
+    setTimeout(advance, 1200)
   } finally {
     busy.value = false
   }
@@ -357,12 +371,26 @@ function goAiAnalyze() {
   router.push({ path: '/ai', query: { msg: `分析项目「${repoName.value}」最近的慢 SQL 与热点调用链根因，并给出修复方案` } })
 }
 
+/** 完成本轮：清除持久化进度，总览回到开始新一轮状态 */
+function finishRound() {
+  try { localStorage.removeItem(QS_KEY) } catch { /* ignore */ }
+  router.push('/dashboard')
+}
+
 function onEnterStep() {
   if (step.value === 3 && stressTask.value?.status === 'finished' && !report.value) startPolling()
 }
 
 onMounted(async () => {
-  step.value = Math.max(0, Math.min(5, parseInt(String(route.query.step ?? '0')) || 0))
+  const urlStep = route.query.step
+  if (urlStep !== undefined) {
+    step.value = Math.max(0, Math.min(5, parseInt(String(urlStep)) || 0))
+  } else {
+    // 无显式步骤参数：恢复上次进度（未开始过则从第 1 步起）
+    const saved = parseInt(localStorage.getItem(QS_KEY) ?? '')
+    step.value = Number.isFinite(saved) && saved >= 0 && saved <= 5 ? saved : 0
+  }
+  try { localStorage.setItem(QS_KEY, String(step.value)) } catch { /* 忽略 */ }
   const [r, c, g, a] = await Promise.allSettled([
     sourceApi.repos(50), dbConnApi.list(), dataGenApi.list(5), appApi.list()
   ])

@@ -26,20 +26,24 @@
           <Rocket class="w-4 h-4 text-neon-green" /> 快速开始
           <span class="text-[11px] font-normal text-fg-sub">六步完成性能检测闭环：项目 → 数据 → 压测 → 结果 → 调用链 → 优化</span>
         </div>
-        <div class="flex items-center gap-3">
-          <div class="text-xs text-fg-sub">
-            已完成 <span class="text-neon-green font-bold">{{ doneCount }}</span>/{{ steps.length }}
-            <div class="w-28 h-1.5 rounded bg-white/10 mt-1 overflow-hidden">
-              <div class="h-full bg-neon-green rounded transition-all" :style="{ width: (doneCount / steps.length) * 100 + '%' }"></div>
-            </div>
+        <div>
+          <div class="text-xs" :class="doneCount >= steps.length ? 'text-neon-green' : 'text-neon-blue'">
+            <template v-if="doneCount >= steps.length">✓ 六步全部完成，可开始新一轮检测</template>
+            <template v-else-if="doneCount > 0">进行中：<span class="font-bold">{{ currentIdx + 1 }}. {{ steps[currentIdx].title }}</span>（{{ doneCount }}/6 已完成）</template>
+            <template v-else>尚未开始，从「1. 选择项目」起步</template>
           </div>
-          <button
-            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neon-green/15 text-neon-green border border-neon-green/40 hover:bg-neon-green/25 transition-all"
-            @click="router.push(`/quick-start?step=${currentIdx}`)"
-          >
-            <Rocket class="w-3.5 h-3.5" /> 进入向导
-          </button>
+          <div class="flex gap-1 mt-2 justify-end">
+            <span v-for="(s, i) in steps" :key="i" class="w-8 h-1 rounded"
+                  :class="i < currentIdx || s.done ? 'bg-neon-green/70' : i === currentIdx ? 'bg-neon-blue' : 'bg-white/10'" />
+          </div>
         </div>
+        <button
+          class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium bg-neon-green/15 text-neon-green border border-neon-green/40 hover:bg-neon-green/25 transition-all shrink-0"
+          @click="router.push(`/quick-start?step=${currentIdx}`)"
+        >
+          <Rocket class="w-3.5 h-3.5" />
+          {{ doneCount >= steps.length ? '开始新一轮' : doneCount === 0 ? '开始向导' : `继续 · 第 ${currentIdx + 1} 步` }}
+        </button>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <button
