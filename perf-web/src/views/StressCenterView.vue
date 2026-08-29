@@ -251,7 +251,7 @@
     </div>
 
     <!-- 数据准备 Tab -->
-    <div v-else class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+    <div v-else-if="activeTab === 'datagen'" class="grid grid-cols-1 xl:grid-cols-2 gap-4">
       <div class="glass-card p-5">
         <div class="text-sm font-medium mb-4">自动灌数据</div>
         <div class="space-y-3">
@@ -381,9 +381,9 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 
 const tabs = [
+  { key: 'datagen', label: '数据准备' },
   { key: 'stress', label: '压测' },
-  { key: 'capacity', label: '容量建议' },
-  { key: 'datagen', label: '数据准备' }
+  { key: 'capacity', label: '容量建议' }
 ]
 const activeTab = ref(['stress', 'capacity', 'datagen'].includes(String(route.query.tab))
   ? String(route.query.tab) : 'stress')
