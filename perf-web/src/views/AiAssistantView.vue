@@ -6,35 +6,8 @@
       <span class="text-xs font-normal text-fg-sub ml-2">自然语言执行压测 / 查指标 / 分析根因 / 生成报告（Function Calling）</span>
     </div>
 
-    <div class="grid grid-cols-1 xl:grid-cols-3 gap-4" style="height: calc(100vh - 180px)">
-      <!-- 自动执行入口 + 提示 -->
-      <div class="glass-card p-5 flex flex-col">
-        <div class="text-sm font-medium mb-4">自动执行</div>
-        <button
-          class="w-full text-left px-4 py-3.5 rounded-xl mb-4 border border-neon-green/40 bg-neon-green/10 hover:bg-neon-green/20 transition-all"
-          @click="send(AUTO_PIPELINE_PROMPT)"
-        >
-          <div class="flex items-center gap-2 text-sm font-medium text-neon-green">
-            <Zap class="w-4 h-4" /> AI 自动执行性能检测闭环
-          </div>
-          <div class="text-[11px] text-fg-sub mt-1.5 leading-relaxed">
-            自动串联：灌测试数据 → 发起压测 → 采集 JVM/调用链/慢 SQL → 生成修复方案 → 输出检测报告
-          </div>
-          <div class="text-[11px] text-neon-green/80 mt-1.5">配置 API Key 后由 AI 多轮编排全自动执行</div>
-        </button>
-        <div class="rounded-xl bg-white/5 p-4 text-[11px] text-fg-sub leading-relaxed">
-          <div class="font-medium text-fg-main mb-1.5">输入框技巧</div>
-          <div><code class="text-neon-blue">/</code> 呼出指令面板（压测 / 灌数 / 指标 / 报告…）</div>
-          <div class="mt-1"><code class="text-neon-blue">@</code> 引用项目或性能问题（上下文注入）</div>
-          <div class="mt-1">↑↓ 选择 · Enter 确认 · Esc 关闭</div>
-        </div>
-        <div class="text-[11px] text-fg-sub mt-auto pt-6 leading-relaxed">
-          当前为无 API Key 降级模式：AI 基于真实库数据按规则模板回答；配置 AI Key 后将启用大模型 Function Calling 多轮推理。
-        </div>
-      </div>
-
-      <!-- 对话流 -->
-      <div class="glass-card p-5 xl:col-span-2 flex flex-col relative">
+    <!-- 对话流（全宽） -->
+    <div class="glass-card p-5 flex flex-col relative" style="height: calc(100vh - 180px)">
         <div class="flex items-center justify-between mb-3">
           <div class="text-sm font-medium">对话（{{ sessionId }}）</div>
           <button class="text-xs text-fg-sub hover:text-fg-main" @click="clearSession">清空会话</button>
@@ -98,7 +71,6 @@
             </button>
           </div>
         </div>
-      </div>
     </div>
   </div>
 </template>
@@ -106,7 +78,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Bot, Send, Zap, Rocket, Database, Gauge, FileText, Wrench, Bug, Boxes } from 'lucide-vue-next'
+import { Bot, Send, Zap, Database, Gauge, FileText, Wrench, Bug, Boxes } from 'lucide-vue-next'
 import { aiApi, sourceApi } from '../api'
 
 const route = useRoute()
