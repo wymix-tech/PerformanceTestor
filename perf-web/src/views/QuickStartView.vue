@@ -33,12 +33,20 @@
 
     <!-- Step 1 项目 -->
     <div v-if="step === 0" class="glass-card p-5">
-      <div class="text-sm font-medium mb-1">选择被测项目</div>
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium">选择被测项目</div>
+        <button
+          class="text-xs inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-neon-blue/40 bg-neon-blue/10 text-neon-blue hover:bg-neon-blue/20 transition-all"
+          @click="importPanelOpen = !importPanelOpen"
+        >
+          + 导入新项目
+        </button>
+      </div>
       <div class="text-[11px] text-fg-sub mb-4">项目贯穿后续所有步骤（接口清单 / 源码分析 / 数据归属）。</div>
 
-      <!-- 无项目：内联导入（不打断流程） -->
-      <div v-if="!repos.length" class="rounded-xl border border-neon-blue/30 bg-neon-blue/5 p-4 mb-4">
-        <div class="text-sm font-medium mb-1">还没有项目 — 直接在这里导入</div>
+      <!-- 内联导入面板（无项目自动展开；已有项目点「+ 导入新项目」展开） -->
+      <div v-if="importPanelOpen" class="rounded-xl border border-neon-blue/30 bg-neon-blue/5 p-4 mb-4">
+        <div class="text-sm font-medium mb-1">{{ repos.length ? '导入新项目' : '还没有项目 — 直接在这里导入' }}</div>
         <div class="text-[11px] text-fg-sub mb-3">支持 zip 上传 / Git 地址 / 本地目录三种方式，导入完成后自动选中新项目</div>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div class="space-y-2">
@@ -297,6 +305,8 @@ const gitUrl = ref('')
 const localPath = ref('')
 const importing = ref(false)
 const importMsg = ref<{ ok: boolean; text: string } | null>(null)
+/** 导入面板开关：无项目时默认展开，否则点「+ 导入新项目」展开 */
+const importPanelOpen = ref(false)
 let importPoll: ReturnType<typeof setInterval> | null = null
 
 function selectRepo(r: any) {
@@ -514,7 +524,10 @@ onMounted(async () => {
   const [r, c, a] = await Promise.allSettled([
     sourceApi.repos(50), dbConnApi.list(), appApi.list()
   ])
-  if (r.status === 'fulfilled') repos.value = r.value.data || []
+  if (r.status === 'fulfilled') {
+    repos.value = r.value.data || []
+    importPanelOpen.value = repos.value.length === 0 // 无项目自动展开导入面板
+  }
   if (c.status === 'fulfilled') conns.value = c.value.data || []
   if (a.status === 'fulfilled') appInstances.value = a.value.data || []
 })
