@@ -91,10 +91,9 @@
       </div>
       <div v-else-if="!importMsg" class="text-xs text-fg-sub py-6 text-center">选择上方任一方式导入项目</div>
 
-      <!-- 已选择提示下一步 -->
-      <div v-if="repoId" class="mt-4 flex items-center justify-between rounded-xl border border-neon-green/30 bg-neon-green/5 px-4 py-3">
-        <div class="text-xs text-neon-green">✓ 已选择「{{ repoName }}」，可以进入下一步</div>
-        <button class="btn-primary text-xs" @click="goStep(1)">下一步：灌注数据<ArrowRight class="w-3.5 h-3.5 ml-1" /></button>
+      <!-- 已选择提示下一步（导航统一走底部按钮） -->
+      <div v-if="repoId" class="mt-4 rounded-xl border border-neon-green/30 bg-neon-green/5 px-4 py-3">
+        <div class="text-xs text-neon-green">✓ 已选择「{{ repoName }}」，点击底部「下一步」灌注数据</div>
       </div>
     </div>
 
