@@ -55,6 +55,21 @@ public class DeployController {
         return ApiResponse.ok(null);
     }
 
+    /** 测试 SSH 连接连通性（不落库，供新增连接前探活；host/username 必填） */
+    @PostMapping("/conns/test")
+    public ApiResponse<Map<String, Object>> testConn(@RequestBody DeployConn conn) {
+        if (conn.getHost() == null || conn.getUsername() == null) {
+            throw new IllegalArgumentException("host/username 必填");
+        }
+        return ApiResponse.ok(deployService.testConn(conn));
+    }
+
+    /** 按已保存连接 ID 测试连通性（凭据不出服务端） */
+    @PostMapping("/conns/{id}/test")
+    public ApiResponse<Map<String, Object>> testConnById(@PathVariable long id) {
+        return ApiResponse.ok(deployService.testConnById(id));
+    }
+
     /** 平台侧编译被测项目（Maven；产物路径供 /deploy 使用） */
     @PostMapping("/build")
     public ApiResponse<Map<String, Object>> build(@RequestBody Map<String, Object> body) throws Exception {

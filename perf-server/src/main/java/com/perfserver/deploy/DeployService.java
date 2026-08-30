@@ -68,6 +68,37 @@ public class DeployService {
         deployConnMapper.delete(id);
     }
 
+    /** 测试 SSH 连接连通性（不落库；密码/私钥二选一，探活并返回远程主机标识） */
+    public java.util.Map<String, Object> testConn(DeployConn conn) {
+        boolean hasKey = conn.getPrivateKey() != null && !conn.getPrivateKey().isBlank();
+        conn.setAuthType(hasKey ? DeployConn.AUTH_PRIVATE_KEY : DeployConn.AUTH_PASSWORD);
+        java.util.Map<String, Object> r = new java.util.HashMap<>();
+        Session session = null;
+        try {
+            session = connect(conn);
+            String remoteInfo = exec(session, "hostname; uname -s").trim();
+            r.put("success", true);
+            r.put("remoteInfo", remoteInfo);
+        } catch (Exception e) {
+            r.put("success", false);
+            r.put("error", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        } finally {
+            if (session != null) {
+                session.disconnect();
+            }
+        }
+        return r;
+    }
+
+    /** 按已保存连接 ID 测试连通性（凭据不出服务端） */
+    public java.util.Map<String, Object> testConnById(long id) {
+        DeployConn conn = deployConnMapper.findById(id);
+        if (conn == null) {
+            throw new IllegalArgumentException("SSH 连接不存在: " + id);
+        }
+        return testConn(conn);
+    }
+
     /** 平台侧编译：mvn -pl 模块 package（源码仓库已在平台上，Maven 镜像沿用平台 settings.xml） */
     public BuildResult build(long repoId, String module, String repoPath) throws Exception {
         if (repoPath == null || repoPath.isBlank() || repoPath.contains("..")) {

@@ -62,6 +62,10 @@ export const deployApi = {
   conns: (limit = 50) => http.get('/deploy/conns', { params: { limit } }),
   // 新增 SSH 连接
   addConn: (data: Record<string, unknown>) => http.post('/deploy/conns', data),
+  // 测试 SSH 连接连通性（不落库，新增前探活）
+  testConn: (data: Record<string, unknown>) => http.post('/deploy/conns/test', data),
+  // 按已保存连接 ID 测试连通性（凭据不出服务端）
+  testConnById: (id: number) => http.post(`/deploy/conns/${id}/test`),
   // 删除 SSH 连接
   delConn: (id: number) => http.delete(`/deploy/conns/${id}`),
   // 平台侧编译被测项目（返回 jarPath）

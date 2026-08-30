@@ -25,6 +25,12 @@ const routes = [
         meta: { title: '项目管理' }
       },
       {
+        path: 'deploy',
+        name: 'DeployManage',
+        component: () => import('@/views/DeployManageView.vue'),
+        meta: { title: '部署管理' }
+      },
+      {
         path: 'jvm',
         name: 'JvmMonitor',
         component: () => import('@/views/JvmMonitorView.vue'),

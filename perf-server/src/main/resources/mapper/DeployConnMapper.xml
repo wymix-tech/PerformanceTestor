@@ -24,7 +24,12 @@
     </insert>
 
     <sql id="BaseColumns">
-        id, conn_name, host, port, username, auth_type, password, private_key, work_dir, remark, create_time
+        id, conn_name, host, port, username, auth_type, work_dir, remark, create_time
+    </sql>
+
+    <!-- 凭据列仅 findById（部署用）返回，列表脱敏 -->
+    <sql id="SecretColumns">
+        password, private_key
     </sql>
 
     <select id="list" resultMap="BaseResultMap">
@@ -32,7 +37,7 @@
     </select>
 
     <select id="findById" resultMap="BaseResultMap">
-        SELECT <include refid="BaseColumns"/> FROM deploy_conn WHERE id = #{id} LIMIT 1
+        SELECT <include refid="BaseColumns"/>, <include refid="SecretColumns"/> FROM deploy_conn WHERE id = #{id} LIMIT 1
     </select>
 
     <delete id="delete">
