@@ -9,7 +9,7 @@
     <!-- 对话流（全宽） -->
     <div class="glass-card p-5 flex flex-col relative" style="height: calc(100vh - 180px)">
         <div class="flex items-center justify-between mb-3">
-          <div class="text-sm font-medium">对话（{{ sessionId }}）</div>
+          <div class="text-sm font-medium">对话</div>
           <button class="text-xs text-fg-sub hover:text-fg-main" @click="clearSession">清空会话</button>
         </div>
 
