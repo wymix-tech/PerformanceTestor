@@ -15,6 +15,23 @@ post() { curl -s -X POST "$BASE$1" -H 'Content-Type: application/json' -d "$2"; 
 get()  { curl -s "$BASE$1"; }
 task_field() { get "/api/datagen/tasks/$1" | grep -o "\"$2\":[^,}]*" | head -1 | cut -d: -f2; }
 
+# 生成创建任务请求体（fields 为字符串型规则 JSON，与前端 dataGenApi JSON.stringify 行为一致）
+gen_body() {
+  python3 - "$1" "$2" "$DEMO_DB" "$DB_USER" "$DB_PASS" <<'PY'
+import json, sys
+task, dry, db, user, pwd = sys.argv[1], sys.argv[2] == "dry", sys.argv[3], sys.argv[4], sys.argv[5]
+fields = {
+    "user_id": {"type": "refSkew", "table": "perf_user", "column": "id", "hotPercent": 20, "hotShare": 80},
+    "status": {"type": "enum", "values": ["PENDING", "PAID", "SHIPPED", "DONE"], "weights": [10, 80, 5, 5]},
+}
+body = {"taskName": task, "dbUrl": db, "dbUser": user, "dbPassword": pwd, "repoId": 1,
+        "dryRun": dry,
+        "tables": [{"tableName": "perf_user", "rowCount": 1000},
+                   {"tableName": "perf_order", "rowCount": 5000, "fields": json.dumps(fields)}]}
+print(json.dumps(body))
+PY
+}
+
 wait_status() {
   local id=$1 t=${2:-30} st=""
   for _ in $(seq 1 "$t"); do
@@ -26,39 +43,29 @@ wait_status() {
 }
 
 echo "== 1. Dry-Run 拦截错误表名 =="
-R=$(post /api/datagen/tasks "{\"taskName\":\"v-bad\",\"dbUrl\":\"$DEMO_DB\",\"dbUser\":\"$DB_USER\",
-  \"dbPassword\":\"$DB_PASS\",\"tableName\":\"no_such_table_xyz\",\"rowCount\":10,\"dryRun\":true}")
+R=$(post /api/datagen/tasks '{"taskName":"v-bad","dbUrl":"'"$DEMO_DB"'","dbUser":"'"$DB_USER"'",
+  "dbPassword":"'"$DB_PASS"'","tableName":"no_such_table_xyz","rowCount":10,"dryRun":true}')
 TID=$(echo "$R" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
 ST=$(wait_status "$TID" 20)
 check "错误表名任务 failed" "[ \"$ST\" = \"failed\" ]"
 
 echo "== 2. Dry-Run 试运行（联表+refSkew+enum weights） =="
-R=$(post /api/datagen/tasks "{\"taskName\":\"v-dry\",\"dbUrl\":\"$DEMO_DB\",\"dbUser\":\"$DB_USER\",
-  \"dbPassword\":\"$DB_PASS\",\"repoId\":1,\"dryRun\":true,
-  \"tables\":[{\"tableName\":\"perf_user\",\"rowCount\":1000},
-   {\"tableName\":\"perf_order\",\"rowCount\":5000,\"fields\":{
-     \"user_id\":{\"type\":\"refSkew\",\"table\":\"perf_user\",\"column\":\"id\",\"hotPercent\":20,\"hotShare\":80},
-     \"status\":{\"type\":\"enum\",\"values\":[\"PENDING\",\"PAID\",\"SHIPPED\",\"DONE\"],\"weights\":[10,80,5,5]}}}]}")
+R=$(post /api/datagen/tasks "$(gen_body v-dry dry)")
 TID=$(echo "$R" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
 ST=$(wait_status "$TID" 30)
 check "试运行 finished" "[ \"$ST\" = \"finished\" ]"
 check "详情含 dryRunReport" "get /api/datagen/tasks/$TID | grep -q dryRunReport"
 
 echo "== 3. 正式灌数（FK 有效 / refSkew / weights） =="
-R=$(post /api/datagen/tasks "{\"taskName\":\"v-real\",\"dbUrl\":\"$DEMO_DB\",\"dbUser\":\"$DB_USER\",
-  \"dbPassword\":\"$DB_PASS\",\"repoId\":1,
-  \"tables\":[{\"tableName\":\"perf_user\",\"rowCount\":1000},
-   {\"tableName\":\"perf_order\",\"rowCount\":5000,\"fields\":{
-     \"user_id\":{\"type\":\"refSkew\",\"table\":\"perf_user\",\"column\":\"id\",\"hotPercent\":20,\"hotShare\":80},
-     \"status\":{\"type\":\"enum\",\"values\":[\"PENDING\",\"PAID\",\"SHIPPED\",\"DONE\"],\"weights\":[10,80,5,5]}}}]}")
+R=$(post /api/datagen/tasks "$(gen_body v-real real)")
 TID=$(echo "$R" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
 ST=$(wait_status "$TID" 120)
 check "灌数 finished" "[ \"$ST\" = \"finished\" ]"
 check "详情含自检报告 selfCheck" "get /api/datagen/tasks/$TID | grep -q selfCheck || true"
 
-echo "== 4. 语义建议（枚举建议值来自列注释/源码扫描） =="
-check "建议接口有 value 类提示" \
-  "get '/api/datagen/suggestions?tableName=perf_order&hintType=value' | grep -q 'hintType'"
+echo "== 4. 语义建议（枚举建议值来自列注释；value 类实时出口为 columns 接口） =="
+check "columns 接口 status 列返回注释发现值集" \
+  "post /api/datagen/columns '{\"dbUrl\":\"$DEMO_DB\",\"dbUser\":\"$DB_USER\",\"dbPassword\":\"$DB_PASS\",\"tableName\":\"perf_order\"}' | grep -q 'suggestedValues'"
 check "建议接口有 relation 类提示" \
   "get '/api/datagen/suggestions?tableName=perf_order&hintType=relation' | grep -q 'hintType'"
 

@@ -167,7 +167,33 @@
               <option :value="0">— 跳过部署，应用已在运行 —</option>
               <option v-for="c in deployConns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.host }}）</option>
             </select>
-            <div v-if="!deployConns.length" class="text-[11px] text-amber-400 mt-1">暂无 SSH 连接配置，可跳过本步或改用手动部署</div>
+            <div class="flex items-center justify-between mt-1">
+              <button class="text-[11px] text-neon-blue hover:underline" @click="connFormOpen = !connFormOpen">
+                {{ connFormOpen ? '− 收起新增' : '+ 手动输入服务器信息新增连接' }}
+              </button>
+              <router-link class="text-[11px] text-fg-sub hover:text-neon-blue" to="/deploy">部署管理</router-link>
+            </div>
+            <div v-if="!deployConns.length" class="text-[11px] text-amber-400 mt-1">暂无 SSH 连接配置：可在下方手动输入 IP/端口/用户名/密码，或先跳过改用手动部署</div>
+          </div>
+          <!-- 内联新增连接（手动输入 IP/端口/用户名/密码，保存后自动选中） -->
+          <div v-if="connFormOpen" class="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
+            <div class="text-[11px] text-fg-sub font-medium">新增 SSH 连接</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input v-model="connForm.connName" class="input-text w-full text-xs" placeholder="连接名称，如：压测机-A" />
+              <input v-model="connForm.host" class="input-text w-full text-xs" placeholder="主机 IP，如：192.168.1.100" />
+              <input v-model.number="connForm.port" type="number" class="input-text w-full text-xs" placeholder="SSH 端口（默认 22）" />
+              <input v-model="connForm.username" class="input-text w-full text-xs" placeholder="用户名（默认 root）" />
+            </div>
+            <input v-model="connForm.password" type="password" class="input-text w-full text-xs" placeholder="密码" />
+            <div class="flex items-center gap-2">
+              <button class="btn-secondary text-xs px-3 py-1.5" :disabled="connTesting" @click="testNewConn">
+                {{ connTesting ? '测试中…' : '测试连接' }}
+              </button>
+              <button class="btn-primary text-xs px-3 py-1.5" :disabled="connSaving" @click="saveNewConn">
+                {{ connSaving ? '保存中…' : '保存并使用' }}
+              </button>
+              <span v-if="connMsg" class="text-[11px] truncate" :class="connMsgOk ? 'text-neon-green' : 'text-red-400'">{{ connMsg }}</span>
+            </div>
           </div>
           <template v-if="deployConnId">
             <div><label class="text-xs text-fg-sub">Maven 模块（可空=整仓）</label><input v-model="deployModule" class="input-text w-full text-xs" placeholder="如 perf-demo" /></div>
@@ -228,25 +254,46 @@
     <!-- Step 4 压测 -->
     <div v-else-if="step === 3" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">配置并发起压测 <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
-      <div class="text-[11px] text-fg-sub mb-4">已导入项目会自动扫描 GET 接口清单。需要完整配置（JMeter/分阶段）？<router-link class="text-neon-blue hover:underline" to="/stress">打开压测中心</router-link></div>
+      <div class="text-[11px] text-fg-sub mb-4">参数与压测中心一致（接口/方法/引擎/分档并发）。需要完整配置？<router-link class="text-neon-blue hover:underline" to="/stress">打开压测中心</router-link></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="space-y-3">
           <div>
-            <label class="text-xs text-fg-sub">GET 接口</label>
-            <select v-model="endpointIdx" class="input-select w-full">
+            <label class="text-xs text-fg-sub">接口</label>
+            <select v-model="endpointIdx" class="input-select w-full" @change="selectEndpoint">
               <option :value="-1">— {{ endpoints.length ? '选择接口' : '无扫描结果（手填路径）' }} —</option>
-              <option v-for="(e, i) in endpoints" :key="i" :value="i">{{ e.path }}</option>
+              <option v-for="(e, i) in endpoints" :key="i" :value="i">[{{ e.httpMethod }}] {{ e.path }}（{{ e.className }}#{{ e.methodName || '?' }}）</option>
             </select>
           </div>
-          <div v-if="endpointIdx < 0">
-            <label class="text-xs text-fg-sub">完整 URL</label>
-            <input v-model="manualUrl" class="input-text w-full" placeholder="http://127.0.0.1:8081/api/user/list?limit=200" />
+          <div>
+            <label class="text-xs text-fg-sub">服务地址（选项目后按 agent 上报自动带出，可修改）</label>
+            <input v-model="stressBaseUrl" class="input-text w-full" placeholder="http://127.0.0.1:8081" @input="composeStressUrl()" />
+          </div>
+          <div>
+            <label class="text-xs text-fg-sub">目标 URL（选接口自动拼接，可微调）</label>
+            <input v-model="stressUrl" class="input-text w-full" placeholder="http://host:port/api/xxx" />
           </div>
           <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-fg-sub">并发</label><input v-model.number="stressConcurrency" type="number" min="1" class="input-text w-full" /></div>
-            <div><label class="text-xs text-fg-sub">时长(秒)</label><input v-model.number="stressDuration" type="number" min="5" class="input-text w-full" /></div>
+            <div>
+              <label class="text-xs text-fg-sub">方法</label>
+              <select v-model="stressMethod" class="input-select w-full"><option>GET</option><option>POST</option></select>
+            </div>
+            <div>
+              <label class="text-xs text-fg-sub">引擎</label>
+              <select v-model="stressEngine" class="input-select w-full">
+                <option value="http">http（内置）</option>
+                <option value="jmeter" disabled title="jmeter 引擎尚未实现，敬请期待">jmeter（未实现）</option>
+              </select>
+            </div>
           </div>
-          <button class="btn-primary w-full justify-center" :disabled="busy || targetUrl === ''" @click="startStress">发起压测</button>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label class="text-xs text-fg-sub">并发数</label><input v-model.number="stressConcurrency" type="number" class="input-text w-full" min="1" max="1000" /></div>
+            <div><label class="text-xs text-fg-sub">时长（秒）</label><input v-model.number="stressDuration" type="number" class="input-text w-full" min="1" max="3600" /></div>
+          </div>
+          <div>
+            <label class="text-xs text-fg-sub">分档并发（逗号分隔，容量曲线）</label>
+            <input v-model="stressStages" class="input-text w-full" placeholder="如 10,50,100" />
+          </div>
+          <button class="btn-primary w-full justify-center" :disabled="busy || !stressUrl.trim()" @click="startStress">发起压测</button>
         </div>
         <div class="rounded-xl bg-white/5 p-4 text-xs space-y-1.5">
           <div class="text-fg-sub font-medium mb-1">任务状态</div>
@@ -322,7 +369,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
@@ -386,9 +433,14 @@ function copyText(t: string) {
 }
 const endpoints = ref<Array<Record<string, any>>>([])
 const endpointIdx = ref(-1)
-const manualUrl = ref('http://127.0.0.1:8081/api/user/list?limit=200')
-const stressConcurrency = ref(20)
-const stressDuration = ref(15)
+/** 压测参数（与压测中心 StressCenterView 表单对齐：默认值/范围/方法/引擎/分档并发） */
+const stressBaseUrl = ref('')
+const stressUrl = ref('http://127.0.0.1:8081/api/user/list?limit=200')
+const stressMethod = ref('GET')
+const stressEngine = ref('http')
+const stressConcurrency = ref(50)
+const stressDuration = ref(30)
+const stressStages = ref('10,50,100')
 const stressTask = ref<any>(null)
 const report = ref<any>(null)
 const capacityText = ref('')
@@ -397,6 +449,66 @@ const issues = ref<Array<Record<string, any>>>([])
 const appInstances = ref<Array<Record<string, any>>>([])
 /** SSH 连接（可选部署步骤用） */
 const deployConns = ref<Array<Record<string, any>>>([])
+/** 拉取 SSH 连接列表（部署步骤下拉用） */
+async function loadDeployConns() {
+  const r = await deployApi.conns(50)
+  deployConns.value = r.data || []
+}
+/** 内联新增 SSH 连接（手动输入 IP/端口/用户名/密码） */
+const connFormOpen = ref(false)
+const connForm = reactive({ connName: '', host: '', port: 22, username: 'root', password: '' })
+const connTesting = ref(false)
+const connSaving = ref(false)
+const connMsg = ref('')
+const connMsgOk = ref(false)
+
+function connFormValid(): string | null {
+  if (!connForm.connName.trim()) return '请填写连接名称'
+  if (!connForm.host.trim()) return '请填写主机 IP'
+  if (!connForm.username.trim()) return '请填写用户名'
+  if (!connForm.password) return '请填写密码'
+  return null
+}
+
+async function testNewConn() {
+  const err = connFormValid()
+  if (err) { connMsgOk.value = false; connMsg.value = err; return }
+  connTesting.value = true
+  connMsg.value = ''
+  try {
+    const r = await deployApi.testConn({ ...connForm, port: connForm.port || 22 })
+    const d = r.data as Record<string, any>
+    connMsgOk.value = !!d?.success
+    connMsg.value = connMsgOk.value ? `连接成功：${String(d.remoteInfo || '').split('\n')[0]}` : `连接失败：${d?.error || '未知错误'}`
+  } catch (e: any) {
+    connMsgOk.value = false
+    connMsg.value = '连接失败：' + (e?.response?.data?.message || e?.message || '请求异常')
+  } finally {
+    connTesting.value = false
+  }
+}
+
+async function saveNewConn() {
+  const err = connFormValid()
+  if (err) { connMsgOk.value = false; connMsg.value = err; return }
+  connSaving.value = true
+  connMsg.value = ''
+  try {
+    const r = await deployApi.addConn({ ...connForm, port: connForm.port || 22, workDir: '/opt/perftestor' })
+    await loadDeployConns()
+    const created = r.data as Record<string, any> | null
+    if (created?.id) deployConnId.value = created.id // 保存后自动选中
+    connMsgOk.value = true
+    connMsg.value = `「${connForm.connName.trim()}」已保存并选中`
+    connFormOpen.value = false
+    Object.assign(connForm, { connName: '', host: '', port: 22, username: 'root', password: '' })
+  } catch (e: any) {
+    connMsgOk.value = false
+    connMsg.value = '保存失败：' + (e?.response?.data?.message || e?.message || '请求异常')
+  } finally {
+    connSaving.value = false
+  }
+}
 let pollTimer: any = null
 
 /** 本轮向导会话完成标记：只认用户在本轮亲自完成的动作，与平台历史数据无关 */
@@ -404,9 +516,22 @@ const sessionDone = ref<boolean[]>([false, false, false, false, false, false, fa
 
 const repoName = computed(() => repos.value.find((r) => r.id === repoId.value)?.repoName || '')
 const appName = computed(() => repos.value.find((r) => r.id === repoId.value)?.appName || repoName.value)
-const targetUrl = computed(() => endpointIdx.value >= 0
-  ? String(endpoints.value[endpointIdx.value].url || endpoints.value[endpointIdx.value].path || '')
-  : manualUrl.value.trim())
+
+/** 选中接口：自动带出方法与 URL（服务地址 + path）——与压测中心 applyEndpoint 一致 */
+function selectEndpoint() {
+  const e = endpoints.value[endpointIdx.value]
+  if (!e) return
+  stressMethod.value = e.httpMethod === 'POST' ? 'POST' : 'GET'
+  composeStressUrl(e.path)
+}
+
+/** 拼接完整目标 URL；显式传 path（选接口时）优先 */
+function composeStressUrl(pathOverride?: string) {
+  const e = endpoints.value[endpointIdx.value]
+  const base = (stressBaseUrl.value || '').replace(/\/+$/, '')
+  const p = pathOverride !== undefined ? pathOverride : (e ? e.path : '')
+  if (base && p) stressUrl.value = base + p
+}
 
 /** 打勾只认本轮向导内亲自完成的动作（浏览型步骤以到达为完成） */
 function done(i: number) {
@@ -576,15 +701,20 @@ function stopImportPoll() {
 
 async function loadEndpoints() {
   endpoints.value = []
+  endpointIdx.value = -1
   if (!repoId.value) return
   try {
-    const app = appName.value
-    const inst = appInstances.value.find((a) => a.appName === app)
-    const base = inst ? `http://${inst.appHost}:${inst.appPort}` : ''
+    // agent 上报的应用实例自动预填服务地址（host + 可选端口）
+    const inst = appInstances.value.find((a) => a.appName === appName.value)
+    if (inst?.appHost) {
+      stressBaseUrl.value = 'http://' + inst.appHost + (inst.appPort ? ':' + inst.appPort : '')
+    }
     const r = await sourceApi.endpoints(repoId.value)
-    endpoints.value = (r.data || []).filter((e: any) => e.httpMethod === 'GET')
-      .map((e: any) => ({ ...e, url: base + e.path }))
-    if (endpoints.value.length) endpointIdx.value = 0
+    endpoints.value = r.data || [] // GET/POST 全保留（与压测中心一致）
+    if (endpoints.value.length) {
+      endpointIdx.value = 0
+      selectEndpoint()
+    }
   } catch { /* 扫描失败不阻断 */ }
 }
 
@@ -598,7 +728,8 @@ async function runGen(dryRun: boolean) {
       tables: [
         { tableName: 'perf_user', rowCount: genUsers.value },
         { tableName: 'perf_order', rowCount: genOrders.value,
-          fields: { user_id: { type: 'ref', table: 'perf_user', column: 'id' } } }
+          // API 契约：fields 为字符串型规则 JSON（TableSpecDto.fields: String）
+          fields: JSON.stringify({ user_id: { type: 'ref', table: 'perf_user', column: 'id' } }) }
       ]
     })
     genTask.value = r.data
@@ -626,17 +757,22 @@ async function checkGen() {
 }
 
 async function startStress() {
+  if (!stressUrl.value.trim()) return
   busy.value = true
   try {
-    const r = await stressApi.create({
-      taskName: `向导压测-${repoName.value}`,
-      targetUrl: targetUrl.value,
-      method: 'GET',
+    const stageList = stressStages.value.split(',').map((s) => Number(s.trim())).filter((n) => n > 0)
+    const e = endpointIdx.value >= 0 ? endpoints.value[endpointIdx.value] : null
+    const body: Record<string, unknown> = {
+      taskName: e ? `${e.className}#${e.methodName || e.path}` : `向导压测-${repoName.value}`,
+      targetUrl: stressUrl.value.trim(),
+      method: stressMethod.value,
+      engineType: stressEngine.value,
       concurrency: stressConcurrency.value,
       durationSec: stressDuration.value,
-      engineType: 'http',
       appName: appName.value || undefined
-    })
+    }
+    if (stageList.length > 1) body.stageConcurrencies = stageList
+    const r = await stressApi.create(body)
     stressTask.value = r.data
     sessionDone.value[3] = true // 本轮压测已发起
     startPolling()
@@ -739,8 +875,8 @@ function onEnterStep() {
 onMounted(async () => {
   // 快速开始 = 每次全新流程：固定第 1 步，不预选项目、不载入历史任务（打勾只认本轮操作）
   step.value = 0
-  const [r, c, a, dc] = await Promise.allSettled([
-    sourceApi.repos(50), dbConnApi.list(), appApi.list(), deployApi.conns(50)
+  const [r, c, a] = await Promise.allSettled([
+    sourceApi.repos(50), dbConnApi.list(), appApi.list()
   ])
   if (r.status === 'fulfilled') {
     repos.value = r.value.data || []
@@ -748,7 +884,7 @@ onMounted(async () => {
   }
   if (c.status === 'fulfilled') conns.value = c.value.data || []
   if (a.status === 'fulfilled') appInstances.value = a.value.data || []
-  if (dc.status === 'fulfilled') deployConns.value = dc.value.data || []
+  loadDeployConns()
 })
 
 onUnmounted(stopPolling)

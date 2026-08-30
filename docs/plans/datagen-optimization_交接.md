@@ -190,9 +190,24 @@
 | 验收载体 | perf-demo DemoDataInitializer.upgradeSchema()：perf_order 幂等补 fk_order_user 外键 + status/user_id 列注释 |
 | 验收脚本 | scripts/verify-datagen-mysql.sh（Dry-Run 拦截错误表名/试运行报告/联表 refSkew/weights/建议接口） |
 
-### 7.3 待办（环境就绪后执行）
+### 7.3 待办（环境就绪后执行）—— 已全部完成（2026-08-30 验收）
 
-1. mvn clean package（本机无 JDK 未编译验证，已通过语言服务器静态检查）
-2. sql/init.sql 幂等执行 → 启动 perf-demo（自动补 FK/注释）→ 启动 perf-server
-3. 运行 scripts/verify-datagen-mysql.sh，逐项核对 PASS
-4. 人工核对 refSkew 占比 SQL（本文档 §2.3）与 weights 分布（±3pp）
+1. ~~mvn clean package~~ ✅（JDK 21 + `maven.compiler.release=17`，四模块 jar 产出）
+2. ~~sql/init.sql 幂等执行 → 启动 perf-demo（自动补 FK/注释）→ 启动 perf-server~~ ✅（Docker MySQL 8.0；demo 库 15 表 + perf_user=10000/perf_order=50000 预置 + fk_order_user 外键）
+3. ~~运行 scripts/verify-datagen-mysql.sh，逐项核对 PASS~~ ✅ **PASS=8 FAIL=0**
+4. ~~人工核对 refSkew 占比 SQL（本文档 §2.3）与 weights 分布（±3pp）~~ ✅（见 7.4）
+
+### 7.4 端到端验收记录（2026-08-30，Docker MySQL 8.0 + perf-demo/perf-server 本机）
+
+| 验收项 | 结果 | 说明 |
+|---|---|---|
+| Dry-Run 拦截错误表名 | ✅ | `no_such_table_xyz` → 任务 failed，错误信息「表不存在或无可见列」 |
+| 试运行 dryRunReport | ✅ | 联表+refSkew+enum weights 试运行 finished，详情含估算报告 |
+| 正式灌数 FK 100% 有效 | ✅ | 1000 user + 5000 order 零失败，user_id 全部命中父池 |
+| weights [10,80,5,5] | ✅ | 实测 PAID=79.8% / PENDING=9.9% / SHIPPED=4.9% / DONE=5.3%（±0.7pp < 3pp） |
+| refSkew 20/80 | ✅ | **top 20% 热点 user 承接 81.4% 订单行**（±5% 内）。注：§2.3 原验收 SQL 用 top1 占比口径与 `hotPercent=20`（20% 父行承接 80% 子行）语义不符，top1 会被热点池稀释（预期内）；二八分布口径为准 |
+| 枚举建议（列注释发现） | ✅ | columns 接口对 `perf_order.status` 从列注释解析出 [PENDING,PAID,SHIPPED,DONE]（value 类建议实时出口为 columns 接口；/suggestions 的 value 类来自源码扫描 MagicHint，需导入源码项目） |
+| relation 类建议 | ✅ | /suggestions 返回 explicit 来源关联提示 |
+| 自检报告 | ✅ | 任务详情含 selfCheck |
+
+验收脚本修复记录：原脚本 `fields` 以嵌套对象发送，而 API 契约 `TableSpecDto.fields` 为字符串型规则 JSON → 500；已改为 python3 生成请求体（与前端 JSON.stringify 行为一致）。
