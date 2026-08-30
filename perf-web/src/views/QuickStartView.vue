@@ -237,8 +237,8 @@
           </div>
           <pre class="text-[11px] text-fg-sub font-mono whitespace-pre-wrap">{{ manualStartCmd }}</pre>
           <div class="text-[11px] text-fg-sub mt-2 leading-relaxed">
-            将 <code>&lt;平台IP&gt;</code> 替换为平台服务器 IP、<code>/path/to/app.jar</code> 替换为你的应用 jar 路径；
-            <code>appName</code> 请与项目名保持一致（当前项目：{{ repoName || '未选择' }}），否则数据不会归属到本项目。
+            仅需将 <code>/path/to/app.jar</code> 替换为你的应用 jar 路径。<code>reportUrl</code> 已自动指向当前平台地址（{{ platformAddr }}）、
+            <code>appName</code> 已按所选项目生成（当前项目：{{ repoName || '未选择' }}，数据按此归属）<template v-if="instAppPort">、<code>appPort={{ instAppPort }}</code> 取自该项目的应用实例</template>。
           </div>
         </div>
         <div class="rounded-xl border border-neon-green/30 bg-neon-green/5 p-4">
@@ -275,7 +275,9 @@
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label class="text-xs text-fg-sub">方法</label>
-              <select v-model="stressMethod" class="input-select w-full"><option>GET</option><option>POST</option></select>
+              <select v-model="stressMethod" class="input-select w-full">
+                <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
+              </select>
             </div>
             <div>
               <label class="text-xs text-fg-sub">引擎</label>
@@ -288,6 +290,10 @@
           <div class="grid grid-cols-2 gap-3">
             <div><label class="text-xs text-fg-sub">并发数</label><input v-model.number="stressConcurrency" type="number" class="input-text w-full" min="1" max="1000" /></div>
             <div><label class="text-xs text-fg-sub">时长（秒）</label><input v-model.number="stressDuration" type="number" class="input-text w-full" min="1" max="3600" /></div>
+          </div>
+          <div v-if="stressMethod !== 'GET'">
+            <label class="text-xs text-fg-sub">请求体 Body（JSON，可选）</label>
+            <textarea v-model="stressBody" class="input-text w-full font-mono" rows="3" placeholder='{"key": "value"}'></textarea>
           </div>
           <div>
             <label class="text-xs text-fg-sub">分档并发（逗号分隔，容量曲线）</label>
@@ -414,11 +420,24 @@ const manualScpCmd = computed(() => {
   return `scp perf-agent/target/perf-agent.jar ${host}:/opt/perftestor/agent.jar`
 })
 
-/** 手动部署：带 agent 的应用启动命令（reportUrl 指向平台，appName 与项目一致）
+/** 手动部署：带 agent 的应用启动命令（按当前平台环境与所选项目动态生成）
+ *  - reportUrl：浏览器当前访问平台的地址（跨机访问时自动带平台 IP；dev 代理/同源部署均正确）
+ *  - appName：所选项目名（平台按项目名做数据归属校验）
+ *  - appPort：项目绑定应用实例的端口（agent 上报，压测表单服务地址自动预填用）
  *  注意：-javaagent 参数必须紧跟 jar 路径（k=v 逗号分隔），换行续行会在拼接处引入空格导致参数丢失 */
 const manualStartCmd = computed(() => {
   const app = repoName.value || '项目名'
-  return `java -javaagent:/opt/perftestor/agent.jar=reportUrl=http://<平台IP>:8080/api/agent/report,appName=${app},sampleRate=1.0 -jar /path/to/app.jar`
+  const platform = window.location.host || '127.0.0.1:8080'
+  const inst = appInstances.value.find((a) => a.appName === appName.value || a.appName === repoName.value)
+  const appPortArg = inst?.appPort ? `,appPort=${inst.appPort}` : ''
+  return `java -javaagent:/opt/perftestor/agent.jar=reportUrl=http://${platform}/api/agent/report,appName=${app}${appPortArg},sampleRate=1.0 -jar /path/to/app.jar`
+})
+
+/** 模板提示用：当前平台地址与所选项目应用实例端口 */
+const platformAddr = computed(() => window.location.host || '127.0.0.1:8080')
+const instAppPort = computed(() => {
+  const inst = appInstances.value.find((a) => a.appName === appName.value || a.appName === repoName.value)
+  return inst?.appPort || 0
 })
 
 function copyText(t: string) {
@@ -437,6 +456,7 @@ const endpointIdx = ref(-1)
 const stressBaseUrl = ref('')
 const stressUrl = ref('http://127.0.0.1:8081/api/user/list?limit=200')
 const stressMethod = ref('GET')
+const stressBody = ref('')
 const stressEngine = ref('http')
 const stressConcurrency = ref(50)
 const stressDuration = ref(30)
@@ -521,7 +541,8 @@ const appName = computed(() => repos.value.find((r) => r.id === repoId.value)?.a
 function selectEndpoint() {
   const e = endpoints.value[endpointIdx.value]
   if (!e) return
-  stressMethod.value = e.httpMethod === 'POST' ? 'POST' : 'GET'
+  // 直接采用扫描出的方法（GET/POST/PUT/DELETE/PATCH），未知时回退 GET
+  stressMethod.value = e.httpMethod || 'GET'
   composeStressUrl(e.path)
 }
 
@@ -772,6 +793,7 @@ async function startStress() {
       appName: appName.value || undefined
     }
     if (stageList.length > 1) body.stageConcurrencies = stageList
+    if (stressBody.value.trim()) body.body = stressBody.value.trim()
     const r = await stressApi.create(body)
     stressTask.value = r.data
     sessionDone.value[3] = true // 本轮压测已发起

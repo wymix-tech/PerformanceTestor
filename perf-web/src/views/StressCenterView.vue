@@ -74,7 +74,9 @@
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label class="text-xs text-fg-sub">方法</label>
-              <select v-model="form.method" class="input-select w-full"><option>GET</option><option>POST</option></select>
+              <select v-model="form.method" class="input-select w-full">
+                <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
+              </select>
             </div>
             <div>
               <label class="text-xs text-fg-sub">引擎</label>
@@ -93,6 +95,10 @@
               <label class="text-xs text-fg-sub">时长（秒）</label>
               <input v-model.number="form.durationSec" type="number" class="input-text w-full" min="1" max="3600" />
             </div>
+          </div>
+          <div v-if="form.method !== 'GET'">
+            <label class="text-xs text-fg-sub">请求体 Body（JSON，可选）</label>
+            <textarea v-model="form.body" class="input-text w-full font-mono" rows="3" placeholder='{"key": "value"}'></textarea>
           </div>
           <div>
             <label class="text-xs text-fg-sub">分档并发（逗号分隔，容量曲线）</label>
@@ -408,6 +414,7 @@ const form = ref({
   endpointIdx: -1,
   baseUrl: '',
   method: 'GET',
+  body: '',
   concurrency: 50,
   durationSec: 30,
   engineType: 'http',
@@ -505,7 +512,8 @@ async function changeBranch(branch: string) {
 function applyEndpoint() {
   const e = endpoints.value[form.value.endpointIdx]
   if (!e) return
-  form.value.method = e.httpMethod === 'POST' ? 'POST' : 'GET'
+  // 直接采用扫描出的方法（GET/POST/PUT/DELETE/PATCH），未知时回退 GET
+  form.value.method = e.httpMethod || 'GET'
   composeUrl(e.path)
   if (!form.value.taskName) {
     form.value.taskName = `${e.className}#${e.methodName || e.path}`
@@ -657,6 +665,7 @@ async function startStress() {
     engineType: form.value.engineType
   }
   if (stageList.length > 1) body.stageConcurrencies = stageList
+  if (form.value.body.trim()) body.body = form.value.body.trim()
   running.value = true
   try {
     await stressApi.create(body)
