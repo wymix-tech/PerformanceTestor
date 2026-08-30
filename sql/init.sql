@@ -4,7 +4,9 @@
 --   1. 全部使用 CREATE TABLE IF NOT EXISTS，可重复执行；
 --   2. 时序表（jvm_metric / stress_sample）使用 RANGE COLUMNS 按天分区，
 --      末尾保留 MAXVALUE 兜底分区，保证任意时间数据可写入；
---   3. 末尾插入演示数据，便于前端首屏展示与端到端联调。
+--   3. 末尾插入演示数据，便于前端首屏展示与端到端联调；
+--   4. 含中文演示数据：导入必须显式指定客户端字符集，否则中文双重编码乱码：
+--      mysql --default-character-set=utf8mb4 -u root -p < init.sql
 -- =====================================================================
 
 CREATE DATABASE IF NOT EXISTS performance_testor DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
