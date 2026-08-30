@@ -314,11 +314,38 @@ CREATE TABLE IF NOT EXISTS performance_issue (
     line_start     INT           NULL COMMENT '问题起始行',
     line_end       INT           NULL COMMENT '问题结束行',
     root_cause     TEXT          NULL COMMENT '大模型根因分析',
-    status         VARCHAR(32)   NOT NULL DEFAULT 'pending' COMMENT '状态：pending/analyzed/fixed',
+    status         VARCHAR(32)   NOT NULL DEFAULT 'pending' COMMENT '状态：pending/analyzed/fixed/resolved',
+    -- M4 修复效果自动验证：问题创建时的压测场景快照 + 重放验证结论
+    stress_task_id BIGINT        NOT NULL DEFAULT 0 COMMENT '场景快照压测任务（0=未关联；一键重放时作为基线）',
+    verify_json    MEDIUMTEXT    NULL COMMENT '重放验证结论 JSON（重放任务/前后 diff/达标判定）',
+    verify_time    DATETIME      NULL COMMENT '最近一次验证时间',
     create_time    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),
     KEY idx_type_status (issue_type, status)
 ) ENGINE = InnoDB COMMENT = '性能问题';
+
+-- ---------------------------------------------------------------------
+-- 10.1 历史库补列（老库升级：MySQL 无 ADD COLUMN IF NOT EXISTS，走 information_schema 判定）
+-- 用法：CALL add_column_if_missing('performance_issue', 'stress_task_id', 'BIGINT NOT NULL DEFAULT 0');
+-- ---------------------------------------------------------------------
+DELIMITER $$
+CREATE PROCEDURE IF NOT EXISTS add_column_if_missing(IN tbl VARCHAR(64), IN col VARCHAR(64), IN col_def TEXT)
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = tbl AND COLUMN_NAME = col
+    ) THEN
+        SET @sql = CONCAT('ALTER TABLE `', tbl, '` ADD COLUMN `', col, '` ', col_def);
+        PREPARE stmt FROM @sql;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END$$
+DELIMITER ;
+
+CALL add_column_if_missing('performance_issue', 'stress_task_id', 'BIGINT NOT NULL DEFAULT 0 COMMENT ''场景快照压测任务''');
+CALL add_column_if_missing('performance_issue', 'verify_json', 'MEDIUMTEXT NULL COMMENT ''重放验证结论 JSON''');
+CALL add_column_if_missing('performance_issue', 'verify_time', 'DATETIME NULL COMMENT ''最近一次验证时间''');
 
 -- ---------------------------------------------------------------------
 -- 11. fix_suggestion：修复方案（每个问题 2-3 条）
@@ -385,3 +412,20 @@ CREATE TABLE IF NOT EXISTS deploy_conn (
     PRIMARY KEY (id),
     UNIQUE KEY uk_conn_name (conn_name)
 ) ENGINE = InnoDB COMMENT = '被测服务器 SSH 连接配置';
+
+-- ---------------------------------------------------------------------
+-- 7.7 ai_knowledge：AI 性能知识库（分析结论沉淀 + 中文全文检索）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ai_knowledge (
+    id          BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name    VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '关联应用名（空=全局结论）',
+    title       VARCHAR(256)  NOT NULL COMMENT '结论标题',
+    content     TEXT          NOT NULL COMMENT '结论正文（根因分析/修复建议）',
+    tags        VARCHAR(256)  NOT NULL DEFAULT '' COMMENT '标签（逗号分隔：角色/意图/工具）',
+    source      VARCHAR(16)   NOT NULL DEFAULT 'ai' COMMENT '来源：ai 自动沉淀 / manual 手工录入',
+    create_time DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_app_time (app_name, create_time),
+    -- MySQL 8 默认 ngram 解析器支持中文分词
+    FULLTEXT KEY ft_content (title, content) WITH PARSER ngram
+) ENGINE = InnoDB COMMENT = 'AI 性能知识库（FULLTEXT ngram 中文检索）';

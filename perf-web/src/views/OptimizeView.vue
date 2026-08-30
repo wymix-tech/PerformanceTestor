@@ -113,6 +113,14 @@
                 :disabled="analyzing"
                 @click="runAnalyze"
               >{{ analyzing ? '分析中…' : '执行分析生成方案' }}</button>
+              <button
+                v-if="detail.issue.status !== 'resolved'"
+                class="text-xs !px-3 !py-1.5 rounded-lg border transition-all"
+                :class="detail.issue.stressTaskId ? 'border-neon-green/40 text-neon-green hover:bg-neon-green/10' : 'border-white/15 text-fg-sub hover:border-white/30'"
+                :disabled="verifying"
+                :title="detail.issue.stressTaskId ? '重放场景快照压测并对比基线' : '该问题未关联压测场景快照，请先补绑'"
+                @click="runVerify"
+              >{{ verifying ? '验证中…' : '验证修复' }}</button>
               <span v-if="detail.issue.issueType === 'slow_sql'" class="text-[11px] text-fg-sub">
                 EXPLAIN{{ issueConn ? `连接：${issueConn.conn.connName}（${issueConn.reason}）` : '：未配置连接，仅基于证据分析' }}
               </span>
@@ -146,6 +154,84 @@
           <div v-if="detail.issue.rootCause" class="p-3 rounded-lg bg-white/5 mb-4">
             <div class="text-xs text-fg-sub mb-1">根因分析</div>
             <div class="text-xs text-fg-main leading-relaxed">{{ detail.issue.rootCause }}</div>
+          </div>
+
+          <!-- 修复效果验证：重放同场景压测 + 与快照基线对比（达标自动关闭问题） -->
+          <div
+            v-if="verifyResult"
+            class="p-3 rounded-lg border mb-4"
+            :class="verifyResult.passed ? 'bg-neon-green/5 border-neon-green/30' : 'bg-white/5 border-white/10'"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-xs font-medium" :class="verifyResult.passed ? 'text-neon-green' : 'text-fg-main'">
+                修复效果验证
+                <span v-if="verifyResult.passed" class="ml-1 font-normal">· 达标已自动关闭</span>
+                <span v-else-if="verifyResult.replayFailed" class="ml-1 font-normal text-red-400">· 重放失败</span>
+                <span v-else-if="verifyResult.noSnapshot" class="ml-1 font-normal text-amber-400">· 无场景快照</span>
+                <span v-else class="ml-1 font-normal text-amber-400">· 未达标</span>
+              </div>
+              <span class="text-[11px] text-fg-sub">{{ fmtTime(verifyResult.verifyTime) }}</span>
+            </div>
+
+            <div class="text-[11px] text-fg-sub leading-relaxed mb-3">{{ verifyResult.message }}</div>
+
+            <!-- 前后指标概览 -->
+            <div v-if="verifyResult.replayTaskId" class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+              <div class="p-2 rounded bg-black/20">
+                <div class="text-[10px] text-fg-sub">P95 前</div>
+                <div class="text-sm text-fg-main">{{ fmtNum(verifyResult.p95Before) }}<span class="text-[10px] text-fg-sub ml-0.5">ms</span></div>
+              </div>
+              <div class="p-2 rounded bg-black/20">
+                <div class="text-[10px] text-fg-sub">P95 后</div>
+                <div class="text-sm" :class="verifyResult.p95DropPct > 0 ? 'text-neon-green' : 'text-fg-main'">
+                  {{ fmtNum(verifyResult.p95After) }}<span class="text-[10px] text-fg-sub ml-0.5">ms</span>
+                </div>
+              </div>
+              <div class="p-2 rounded bg-black/20">
+                <div class="text-[10px] text-fg-sub">P95 降幅</div>
+                <div class="text-sm" :class="verifyResult.p95DropPct >= 30 ? 'text-neon-green' : 'text-amber-400'">
+                  {{ fmtNum(verifyResult.p95DropPct) }}<span class="text-[10px] text-fg-sub ml-0.5">%</span>
+                </div>
+              </div>
+              <div class="p-2 rounded bg-black/20">
+                <div class="text-[10px] text-fg-sub">QPS</div>
+                <div class="text-sm text-fg-main">{{ fmtNum(verifyResult.qpsBefore) }} → {{ fmtNum(verifyResult.qpsAfter) }}</div>
+              </div>
+            </div>
+
+            <!-- 基线对比明细（复用基线对比表格语义） -->
+            <table v-if="verifyResult.rows?.length" class="w-full text-[11px]">
+              <thead>
+                <tr class="text-fg-sub">
+                  <th class="text-left font-normal py-1">指标</th>
+                  <th class="text-right font-normal py-1">基线</th>
+                  <th class="text-right font-normal py-1">重放</th>
+                  <th class="text-right font-normal py-1">变化</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, ri) in verifyResult.rows" :key="ri" class="border-t border-white/5">
+                  <td class="py-1 text-fg-main">{{ row.label }}</td>
+                  <td class="py-1 text-right text-fg-sub">{{ row.base }}</td>
+                  <td class="py-1 text-right text-fg-main">{{ row.cur }}</td>
+                  <td
+                    class="py-1 text-right"
+                    :class="row.regressed ? 'text-red-400' : row.improved ? 'text-neon-green' : 'text-fg-sub'"
+                  >{{ row.deltaPct || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- 无场景快照时补绑入口 -->
+            <div v-if="verifyResult.noSnapshot" class="mt-3 flex gap-2">
+              <select v-model="bindStressId" class="input-select flex-1 text-xs">
+                <option :value="0">— 选择压测任务作为验证基线 —</option>
+                <option v-for="s in stressTasks" :key="s.id" :value="s.id">{{ s.taskName || s.targetUrl }}</option>
+              </select>
+              <button class="btn-primary text-xs !px-3 !py-1.5" :disabled="!bindStressId || bindingStress" @click="doBindStress">
+                {{ bindingStress ? '绑定中…' : '补绑场景快照' }}
+              </button>
+            </div>
           </div>
 
           <!-- 数据库执行计划（慢 SQL 分析时 EXPLAIN 采集） -->
@@ -232,7 +318,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { Target } from 'lucide-vue-next'
-import { issueStatusClass as statusClass } from '../utils/format'
+import { issueStatusClass as statusClass, fmtTime } from '../utils/format'
 import { sourceApi, slowSqlApi, stressApi, dbConnApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 
@@ -287,6 +373,8 @@ async function loadIssues() {
 async function showIssueDetail(id: number) {
   const r = await sourceApi.issueDetail(id)
   detail.value = r.data
+  // 切换问题时重置验证结论（结论属于单次操作结果，不跨问题保留）
+  verifyResult.value = null
 }
 
 // 执行大模型分析（无 API Key 时服务端自动降级规则模板），成功后刷新详情与列表
@@ -326,6 +414,47 @@ async function runAnalyze() {
   } finally {
     analyzing.value = false
   }
+}
+
+// ===== 修复效果自动验证 =====
+const verifying = ref(false)
+const verifyResult = ref<Record<string, any> | null>(null)
+
+async function runVerify() {
+  if (!detail.value || verifying.value) return
+  verifying.value = true
+  try {
+    const r = (await sourceApi.verifyIssue(detail.value.issue.id)) as unknown as { data: Record<string, any> }
+    verifyResult.value = r.data
+    await showIssueDetail(detail.value.issue.id)
+    // showIssueDetail 会清空结论，验证结果需在其后回填
+    verifyResult.value = r.data
+    await loadIssues()
+  } finally {
+    verifying.value = false
+  }
+}
+
+// 补绑压测场景快照（无快照问题的验证前置）
+const bindStressId = ref(0)
+const bindingStress = ref(false)
+async function doBindStress() {
+  if (!detail.value || !bindStressId.value || bindingStress.value) return
+  bindingStress.value = true
+  try {
+    await sourceApi.bindIssueStress(detail.value.issue.id, bindStressId.value)
+    await showIssueDetail(detail.value.issue.id)
+    await loadIssues()
+  } finally {
+    bindingStress.value = false
+  }
+}
+
+/** 验证指标数值格式化（保留 1 位小数，整数不补零） */
+function fmtNum(v: unknown): string {
+  const n = Number(v)
+  if (!isFinite(n)) return '—'
+  return n === Math.floor(n) ? String(n) : n.toFixed(1)
 }
 
 async function selectSuggestion(s: Record<string, any>) {

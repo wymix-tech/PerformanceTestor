@@ -7,6 +7,7 @@ import com.perfserver.entity.SourceFile;
 import com.perfserver.entity.SourceRepo;
 import com.perfserver.mapper.SourceFileMapper;
 import com.perfserver.service.DataCleanupService;
+import com.perfserver.service.IssueVerifyService;
 import com.perfserver.service.SourceIssueService;
 import com.perfserver.source.SourceFileService;
 import com.perfserver.source.SourceManager;
@@ -40,12 +41,14 @@ public class SourceController {
     private final com.perfserver.mapper.FixSuggestionMapper suggestionMapper;
     private final com.perfserver.source.EndpointScanner endpointScanner;
     private final DataCleanupService dataCleanupService;
+    private final IssueVerifyService issueVerifyService;
 
     public SourceController(SourceManager sourceManager, SourceFileService sourceFileService,
                             SourceFileMapper sourceFileMapper, SourceIssueService sourceIssueService,
                             com.perfserver.mapper.FixSuggestionMapper suggestionMapper,
                             com.perfserver.source.EndpointScanner endpointScanner,
-                            DataCleanupService dataCleanupService) {
+                            DataCleanupService dataCleanupService,
+                            IssueVerifyService issueVerifyService) {
         this.sourceManager = sourceManager;
         this.sourceFileService = sourceFileService;
         this.sourceFileMapper = sourceFileMapper;
@@ -53,6 +56,7 @@ public class SourceController {
         this.suggestionMapper = suggestionMapper;
         this.endpointScanner = endpointScanner;
         this.dataCleanupService = dataCleanupService;
+        this.issueVerifyService = issueVerifyService;
     }
 
     /** 仓库列表 */
@@ -239,6 +243,19 @@ public class SourceController {
                                                        @RequestParam long repoId,
                                                        @RequestParam(required = false) String appName) {
         return ApiResponse.ok(sourceIssueService.createFromHotMethod(appName, className, methodName, repoId));
+    }
+
+    /** 一键验证修复效果：重放场景快照压测 → 与基线 diff → 达标自动关闭问题 */
+    @PostMapping("/issues/{issueId}/verify")
+    public ApiResponse<IssueVerifyService.VerifyResult> verify(@PathVariable long issueId) {
+        return ApiResponse.ok(issueVerifyService.verify(issueId));
+    }
+
+    /** 补绑压测场景快照（非压测来源问题建立验证基线） */
+    @PostMapping("/issues/{issueId}/bind-stress")
+    public ApiResponse<PerformanceIssue> bindStressTask(@PathVariable long issueId,
+                                                        @RequestParam long stressTaskId) {
+        return ApiResponse.ok(sourceIssueService.bindStressTask(issueId, stressTaskId));
     }
 
     /** 从压测任务创建问题（可指定归属应用） */

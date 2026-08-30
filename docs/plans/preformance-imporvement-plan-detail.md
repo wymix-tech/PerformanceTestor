@@ -9,12 +9,12 @@
 | M1 灌数引擎修复 | ✅ 完成 | 引擎无状态化 + 拓扑精确环路，7 个新单测 |
 | M2 前端工程优化 | ✅ 完成 | 依赖瘦身 / Pinia stores / 组件拆分 / 404+title |
 | M3 二阶段功能 | ✅ 完成 | CPU 热点采样 / JMeter 适配 / 定时压测基线告警 / 流量标记，11 个新单测 |
-| M4 三阶段功能 | ⏸️ 待执行 | AI ReAct+SSE+知识库 / 修复效果自动验证 / 容量科学化 |
+| M4 三阶段功能 | 🚧 进行中（2/3） | ✅ AI ReAct+SSE+知识库 / ✅ 修复效果自动验证 / ⏸️ 容量科学化 |
 | M5 四阶段功能 | ⏸️ 待执行 | PG 方言 / 中间件观测 / 报告导出 |
 | M6 端到端验证 | ⏸️ 待执行 | 全量构建 + start-all.sh 全链路压测验证 |
 
-验证状态：后端全模块 `mvn test` 通过（约 102 个测试，0 失败）；前端 `vue-tsc` + `vite build` 通过。
-（暂停于 M3 完成处，说"继续"从 m4-ai-upgrade 接续）
+验证状态：后端全模块 `mvn test` 通过（144 个测试，0 失败）；前端 `vue-tsc` + `vite build` 通过。
+（M4 前两项已完成，下一轮从 m4-capacity-science 接续）
 
 ## 核心功能
 - **安全鉴权**：管理员登录、平台接口统一鉴权（被测探针上报通道免鉴权）、前端登录页与路由守卫、未授权统一跳转、敏感密码与密钥安全化
@@ -53,10 +53,10 @@
 8. **JMeter 真实适配**：`JmeterStressEngine#run` 实现——JMX 模板生成（ThreadGroup/RampUp/ConstantThroughputTimer 映射现有参数）→ `ProcessBuilder` 调 `jmeter -n -t plan.jmx -l result.jtl` → 解析 JTL CSV（timeStamp/elapsed/success）回填 StressStatistician 重建分位统计；`jmeterHome` 可配，启动检测未安装时该引擎标记不可用并明确提示（不影响默认 http 引擎）
 9. **定时压测/基线/告警**：新表 `stress_schedule`（调度表达式、任务模板 JSON、启用状态、基线版本、webhook 配置）+ `StressScheduler`（@Scheduled 30s 扫描到期任务，恢复 @EnableScheduling）；同场景（同 URL/并发/时长）按 appVersion 自动 diff QPS/P95/错误率；`NotifyService` 支持自定义 webhook 与钉钉/飞书消息模板（复用 capacity 阈值配置触发）；压测请求注入 `X-Perf-Test: 1` 标记头，perf-demo 演示 header 检测切影子表路由
 
-### M4 — 三阶段功能 ⏸️（待执行）
-10. **AI 编排升级**：AiAgentService 升级 ReAct 显式循环（Thought/Action/Observation 结构化，工具结果截断防上下文膨胀）；压测执行/根因分析/修复建议三角色 system prompt 由编排层路由；`POST /api/ai/chat/stream` SseEmitter 流式输出（LlmClient 增 stream 模式，OpenAI 兼容 stream=true）；新表 `ai_knowledge`（FULLTEXT 索引）+ 分析结论自动入库 + 新工具 `search_knowledge`；前端 AiAssistantView 改流式渲染
-11. **修复效果自动验证**：问题创建时快照压测场景（stressTaskId/场景参数）；`POST /api/source/issues/{id}/verify` 重放同场景压测 → 前后指标 diff → 达标（如 P95 降幅阈值）自动关闭问题并写验证记录
-12. **容量科学化**：CapacityAnalyzer 在分段插值之上增加二项式/指数拟合 + RT-并发二阶导拐点检测 + 基于分档采样方差的置信区间；结果 JSON 增加 model/r2/fittedCurve 字段（向后兼容）
+### M4 — 三阶段功能 🚧（已完成 2/3）
+10. **AI 编排升级** ✅：`AiAgentService` 升级 ReAct 显式循环（Thought/Action/Observation，`ReactStep` 结构化留痕，Observation 截断到 2000 字符防上下文膨胀，轮次上限 10 收尾摘要）；`PromptBuilder` 增 `AiRole` 三角色（压测执行/根因分析/修复建议）+ `detectRole(intent)` 路由，角色切换时 system prompt 原地替换保留历史；`LlmClient` 增 stream 模式（`StreamAccumulator` 合并 delta 与分片 tool_calls）；新增 `AiChatStreamController`（`POST /api/ai/chat/stream`，SseEmitter 300s，事件 token/thought/tool/observation/done/error）；新表 `ai_knowledge`（FULLTEXT ngram 中文检索）+ `AiKnowledgeService`（结论自动入库，正文 ≥40 字）+ `SearchKnowledgeTool`；前端 AiAssistantView 改 fetch+ReadableStream 逐 token 渲染（含停止按钮、ReAct 过程留痕）
+11. **修复效果自动验证** ✅：`performance_issue` 加列 `stress_task_id`/`verify_json`/`verify_time`（两份脚本 + `add_column_if_missing` 幂等补列）；`createFromStress` 自动快照场景、`bindStressTask` 支持补绑；新增 `IssueVerifyService.verify()`——重放同场景压测（同 URL/方法/并发/时长/限流）→ `BaselineCompareService.diff(重放, 快照)` → P95 降幅 ≥30% 且无回归则自动 `resolved` 并写 `verify_json`；接口 `POST /api/source/issues/{id}/verify` 与 `/bind-stress`；前端 OptimizeView 加"验证修复"按钮与结果卡片（前后指标 + 基线对比表格 + 无快照补绑入口）
+12. **容量科学化** ⏸️：CapacityAnalyzer 在分段插值之上增加二项式/指数拟合 + RT-并发二阶导拐点检测 + 基于分档采样方差的置信区间；结果 JSON 增加 model/r2/fittedCurve 字段（向后兼容）
 
 ### M5 — 四阶段功能 ⏸️（待执行）
 13. **PG 方言**：perf-datagen 新增 `PostgreSQLDialect`（information_schema 元数据、双引号标识符、CHECK 约束枚举发现、SERIAL 识别）+ `JpaSourceParser`（JavaParser 解析 @Entity/@ManyToOne/@OneToMany 构建 relationHints）；H2 `MODE=PostgreSQL` 单测复用现有 SPI 测试模式；DataGenService 按 JDBC URL 自动路由 `supports()`
@@ -178,8 +178,8 @@ public class StressStatistician {
 - [x] agent CPU 热点弱采样+上报存储+前端火焰图 Tab（新表双脚本同步）
 - [x] 实现 JMeter 引擎：JMX 生成+CLI 调用+JTL 解析+未安装降级（5 单测）
 - [x] 定时压测调度+版本基线 diff+webhook 告警+压测流量标记（6 单测）
-- [ ] AI ReAct 多角色编排+SSE 流式输出+知识库 FULLTEXT 检索工具
-- [ ] 问题场景快照+一键重放压测+指标 diff+达标自动关闭
+- [x] AI ReAct 多角色编排+SSE 流式输出+知识库 FULLTEXT 检索工具（33 新单测）
+- [x] 问题场景快照+一键重放压测+指标 diff+达标自动关闭（9 新单测）
 - [ ] 容量评估非线性拟合+置信区间+拐点检测
 - [ ] PostgreSQLDialect+JpaSourceParser+H2 PG 模式单测+URL 路由
 - [ ] 用 [subagent:code-explorer] 实现 Redis/ES/MQ 拦截+慢命令上报与前端视图

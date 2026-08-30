@@ -1,12 +1,43 @@
 # PerformanceTestor 平台改进 — 工作交接文档
 
-> 交接日期：2026-08-30
-> 前任执行：AI 编码助手（CodeBuddy / GLM）
-> 交接范围：改进计划 M0–M3 已完成落地，M4–M6 待执行
+> 交接日期：2026-08-30（第二轮更新）
+> 前任执行：AI 编码助手（CodeBuddy / Hy4）
+> 交接范围：改进计划 M0–M3 已完成，M4 已完成 2/3，剩余 M4 容量科学化 + M5–M6 待执行
 > 计划文档：`docs/plans/preformance-imporvement-plan-detail.md`（含勾选进度，本交接是其配套执行指南）
-> 最新提交：`d49721f`（已推送 origin/main）
+> 基线提交：`d49721f`（M3 完成）；第二轮提交见文末「本轮变更」
 
 ---
+
+## 0. 第二轮变更摘要（2026-08-30，接手后已完成）
+
+**环境**：容器已重建，`/opt/java`、`/opt/maven`、`perf-web/node_modules` 全部丢失，已按 `docs/handoff/environment-setup.md` 重装（JDK 17.0.20.1+1 / Maven 3.9.6 / 阿里云镜像 / npmmirror），基线验证通过（后端 102 测试 + 前端 vue-tsc 全绿）。
+
+**已完成 m4-ai-upgrade**（33 新单测）：
+
+| 类型 | 新增文件 / 改动 |
+|---|---|
+| 领域模型 | `ai/AiRole`（三角色）、`ai/ReactPhase`、`ai/ReactStep`（record，Thought/Action/Observation 留痕）、`ai/AiStreamEventType`、`ai/AiStreamEvent` |
+| 流式 | `ai/StreamAccumulator`（合并 content delta + 按 index 分片合并 tool_calls）、`LlmClient#chatWithTools(messages, tools, tokenSink)`（stream=true，`HttpResponse.BodyHandlers.ofLines()`） |
+| 流式接口 | `ai/AiChatStreamController`（`POST /api/ai/chat/stream`，SseEmitter，`perf.ai.stream-timeout-sec:300`） |
+| 编排 | `AiAgentService` 重写为 ReAct 显式循环（Observation 截断 2000 字符、轮次上限 10 收尾摘要、结论自动入库、流式事件推送含轮次心跳） |
+| 提示词 | `PromptBuilder` 重写：公共基座 + 三角色段落 + `detectRole(intent)` 路由；角色切换时 system prompt 原地替换（保留历史） |
+| 知识库 | `entity/AiKnowledge` + `mapper/AiKnowledgeMapper(.xml)`（FULLTEXT ngram）+ `AiKnowledgeService`（入库门槛 40 字、检索降级到最近结论）+ `tools/SearchKnowledgeTool` + `GET /api/ai/knowledge` |
+| 建表 | `sql/init.sql` / `sql/init_empty.sql` 同步新增 `ai_knowledge`（`FULLTEXT KEY ft_content (title, content) WITH PARSER ngram`），init.sql 另含 2 条演示结论 |
+| 前端 | `AiAssistantView.vue` 改 fetch + ReadableStream 逐 token 渲染（SSE 帧解析、停止按钮、ReAct 过程留痕、角色与轮次展示）；`api/index.ts` 增 `aiApi.knowledge` |
+
+**已完成 m4-fix-verify**（9 新单测）：
+
+| 类型 | 新增文件 / 改动 |
+|---|---|
+| 建表 | `performance_issue` 加列 `stress_task_id BIGINT DEFAULT 0` / `verify_json MEDIUMTEXT` / `verify_time DATETIME`；两份脚本同步，并新增幂等补列存储过程 `add_column_if_missing`（MySQL 无 `ADD COLUMN IF NOT EXISTS`） |
+| 实体/Mapper | `PerformanceIssue` 增三字段；`PerformanceIssueMapper` 增 `updateStressTask` / `updateVerify`；XML 同步 resultMap 与 BaseColumns |
+| 服务 | `service/IssueVerifyService`（重放同场景压测 → `BaselineCompareService.diff(重放, 快照)` → P95 降幅 ≥30% 且无回归则 `resolved`，写 `verify_json`；三分支：达标/未达标/无快照，另含重放失败分支） |
+| 服务 | `SourceIssueService#createFromStress` 自动写场景快照；新增 `bindStressTask` 补绑（非压测来源问题建立验证基线） |
+| 接口 | `POST /api/source/issues/{id}/verify`、`POST /api/source/issues/{id}/bind-stress` |
+| 配置 | `perf.verify.timeout-sec: 300`（重放等待超时） |
+| 前端 | `OptimizeView.vue` 加"验证修复"按钮 + 结果卡片（P95 前后/降幅/QPS、基线对比表格、无快照补绑入口）；`utils/format.ts` 增 `fixed`/`resolved` 状态样式；`api/index.ts` 增 `verifyIssue` / `bindIssueStress` |
+
+**验证状态**：后端 144 个测试全绿（datagen 55 + agent 13 + server 76），前端 `vue-tsc` + `vite build` 通过。
 
 ## 1. 项目一页速览
 
@@ -24,7 +55,7 @@
 
 ## 2. 当前状态（交接基线）
 
-### 2.1 已完成（M0–M3，10/16 任务，均有单测覆盖）
+### 2.1 已完成（M0–M3 + M4 前两项，12/16 任务，均有单测覆盖）
 
 | 里程碑 | 内容 | 关键产出 |
 |---|---|---|
@@ -37,20 +68,23 @@
 | M3 | CPU 热点采样 | agent `HotspotSampler`（10ms 弱采样/8192 帧上限）→ `hotspot_method` 表 → `/api/hotspots` → TraceAnalyzerView 火焰排行 Tab |
 | M3 | JMeter 适配 | `JmeterStressEngine`：JMX 生成+CLI 零依赖+JTL 解析（warmup 过滤）；`available()` 未安装降级 |
 | M3 | 定时压测基线 | `stress_schedule` 表+`StressScheduler`（CAS 防重）+`BaselineCompareService`（回归阈值）+`NotifyService`（钉钉/飞书/webhook）+前端"定时压测"Tab；双引擎 `X-Perf-Test: 1` 流量标记 |
+| M4 | AI ReAct 编排升级 | `AiRole`/`ReactStep`/`AiStreamEvent`/`StreamAccumulator` 领域模型；`AiAgentService` ReAct 显式循环（Observation 截断 2000 字符 + 10 轮上限收尾）；`PromptBuilder` 三角色路由；`LlmClient` stream 模式；`AiChatStreamController`（SSE 300s + 轮次心跳）；前端 fetch+ReadableStream 逐 token |
+| M4 | 知识库 | `ai_knowledge` 表（FULLTEXT ngram）+ `AiKnowledgeService`（入库门槛/检索降级）+ `SearchKnowledgeTool` + `GET /api/ai/knowledge` + 结论自动入库 |
+| M4 | 修复效果自动验证 | `performance_issue` 补 `stress_task_id`/`verify_json`/`verify_time`；`IssueVerifyService`（重放同场景 → 基线 diff → P95 降幅 ≥30% 且无回归自动 `resolved`）；`POST /api/source/issues/{id}/verify` + `/bind-stress`；前端验证按钮与结果卡片 |
 
-**验证状态**：后端全模块 `mvn test` 约 102 个测试全过；前端 `vue-tsc` + `vite build` 通过。
+**验证状态**：后端全模块 `mvn test` 144 个测试全过（datagen 55 + agent 13 + server 76）；前端 `vue-tsc` + `vite build` 通过。
 
-### 2.2 待执行（M4–M6，6 个任务）
+### 2.2 待执行（M4 剩余 + M5–M6，4 个任务）
 
 ```
-M4  m4-ai-upgrade        AI ReAct 多角色编排 + SSE 流式 + 知识库 FULLTEXT 检索
-M4  m4-fix-verify        问题场景快照 + 一键重放压测 + 达标自动关闭
-M4  m4-capacity-science  容量评估非线性拟合 + 置信区间 + 拐点检测
+M4  m4-capacity-science  容量评估非线性拟合 + 置信区间 + 拐点检测        ← 下一个
 M5  m5-pg-dialect        PostgreSQLDialect + JpaSourceParser + H2 PG 模式单测
 M5  m5-middleware        Redis/ES/MQ 拦截 + 慢命令上报与前端视图
 M5  m5-report-export     报告打印页 + openhtmltopdf PDF 导出
 M6  m6-e2e-verify        全量构建 + start-all.sh 端到端验证
 ```
+
+**已完成任务的执行细节见第 0 节「第二轮变更摘要」**，后续任务的开发指导见第 4 节。
 
 后续任务的**详细开发指导**见第 4 节；执行时先读第 3 节环境准备与第 5 节约束。
 
@@ -102,11 +136,17 @@ export JMETER_HOME=/opt/jmeter          # JMeter 引擎（可选）
 
 ## 4. 后续任务开发指导（M4 → M6）
 
-### 4.1 m4-ai-upgrade：AI ReAct 编排 + SSE 流式 + 知识库
+### 4.1 m4-ai-upgrade ✅ 已完成：AI ReAct 编排 + SSE 流式 + 知识库
 
-**现状**：`perf-server .../ai/` 下 `AiAgentService`（Function Calling 循环）、`LlmClient`（同步 HTTP）、`PromptBuilder`、`ai/tools/`（13 个 `AbstractAiTool` 实现）。前端 `AiAssistantView.vue` 为同步问答。
+**落地差异（与下方原改造要点对照）**：
+- `AiAgentService` 构造签名已变为 `(LlmClient, PromptBuilder, List<AiTool>, AiKnowledgeService, MetricQueryService, StressTaskService, SourceIssueService)`——新增 `AiKnowledgeService` 注入，后续扩展注意。
+- `MAX_ROUNDS` 与 `MAX_OBSERVATION_CHARS` 改为包可见（`static final`），供单测断言。
+- 新增 `chat(sessionId, message, appName, sink)` 四参重载（appName 用于结论入库打标）；两参/三参重载保留。
+- SSE 的 `data` 负载统一走 JSON 编码（正文含换行，直接写文本会破坏 SSE 帧格式），前端 `handleFrame` 需 `JSON.parse`。
+- `LlmClient` 新增 `perf.ai.stream-timeout-sec`（默认 300）与 `perf.ai.stream-threads`（默认 4）两项配置。
+- 结论入库门槛：`reply` 正文 ≥ 40 字且 `mode=llm` 才写库（规则降级文本不入库）。
 
-**改造要点**：
+**原改造要点（供理解设计意图，均已落地）**：
 1. **ReAct 显式循环**：`AiAgentService` 改为 Thought/Action/Observation 结构化循环（现有 Function Calling 已具备骨架，需把工具结果截断到 ~2000 字符防上下文膨胀）；三角色 system prompt（压测执行/根因分析/修复建议）由编排层按用户意图路由，`PromptBuilder` 加 `roleFor(intent)`。
 2. **SSE 流式**：新增 `AiChatStreamController`，`POST /api/ai/chat/stream` 用 `SseEmitter`；`LlmClient` 增加 stream 模式（OpenAI 兼容 `stream=true`，逐行读 `data:` 前缀的 SSE 行解析 delta）。**注意**：SseEmitter 超时设 ≥ 300s；工具调用轮次间向前端推 `event: thought` 心跳事件防止代理断连。
 3. **知识库**：新表 `ai_knowledge`（`id, app_name, title, content TEXT, tags, create_time`，`FULLTEXT KEY ft_content (title, content)` —— **MySQL 8 默认 ngram 解析器支持中文**：`WITH PARSER ngram`，建表语句双脚本同步）；分析结论入库（`AiAgentService` 会话结束时提取结论自动写入）；新工具 `SearchKnowledgeTool extends AbstractAiTool`（`MATCH(title, content) AGAINST(? IN NATURAL LANGUAGE MODE)` 检索 top5）。
@@ -114,11 +154,17 @@ export JMETER_HOME=/opt/jmeter          # JMeter 引擎（可选）
 
 **验收**：单测（知识库检索 SQL、ReAct 循环状态机）+ 手动流式对话冒烟。
 
-### 4.2 m4-fix-verify：修复效果自动验证
+### 4.2 m4-fix-verify ✅ 已完成：修复效果自动验证
 
-**现状**：`source/SourceIssueService` 管理问题（`perf_issue` 表），问题与压测任务无关联。
+**落地差异（与下方原改造要点对照）**：
+- `performance_issue` 除 `stress_task_id` 外**额外增加** `verify_json` 与 `verify_time` 两列（原要点仅提到验证记录），结论存 `verify_json` 而非单独表。
+- 新增幂等补列存储过程 `add_column_if_missing(tbl, col, col_def)`——MySQL 无 `ADD COLUMN IF NOT EXISTS`，两份脚本均需老库可重复执行。
+- 重放压测走 `StressTaskService#createAndRun`（异步），`IssueVerifyService` 内部轮询等待（500ms 间隔，超时 `perf.verify.timeout-sec` 默认 300s）。
+- 达标判定为**双条件**：P95 降幅 ≥ 30% **且** `BaselineCompareService.diff(...).regressed == false`（QPS 降幅 ≤10%、P95 涨幅 ≤20%、错误率上升 ≤5pct）。
+- 额外增加 `POST /api/source/issues/{id}/bind-stress`：慢 SQL/热点方法类问题（创建时无压测任务）可补绑验证基线，否则"验证修复"按钮为不可用态。
+- 无快照分支**不写库**（`noSnapshot` 直接返回，避免污染 `verify_time` 与状态）。
 
-**改造要点**：
+**原改造要点（供理解设计意图，均已落地）**：
 1. `perf_issue` 加列 `stress_task_id BIGINT DEFAULT 0`（快照：问题创建时的压测场景，双脚本同步）。
 2. `POST /api/source/issues/{id}/verify`：取快照任务参数 → `StressTaskService.createAndRun` 重放同场景 → `BaselineCompareService.diff(newTaskId, snapshotTaskId)` → P95 降幅 ≥ 30% 且无回归 → 自动 `status='resolved'` 并写验证记录（`verify_json` 列存 diff 结果）。
 3. 前端问题列表加"验证修复"按钮 + 验证结果展示（复用基线对比表格组件模式）。
@@ -206,7 +252,50 @@ export JMETER_HOME=/opt/jmeter          # JMeter 引擎（可选）
 ## 7. 交接确认清单
 
 接手后建议按顺序完成：
-1. ☐ 读本文档 + `docs/plans/preformance-imporvement-plan-detail.md`
-2. ☐ 验证环境：`mvn -v`、`node -v`、`cd perf-web && npx vue-tsc -b`（全过说明基线完好）
-3. ☐ 跑一次 `mvn test` 确认 102 个测试全绿
-4. ☐ 从 m4-ai-upgrade 开始（按 4.1 开发指导），或与用户确认任务顺序调整
+1. ☑ 读本文档 + `docs/plans/preformance-imporvement-plan-detail.md`
+2. ☑ 验证环境：`mvn -v`、`node -v`、`cd perf-web && npx vue-tsc -b`（全过说明基线完好）
+3. ☑ 跑一次 `mvn test` 确认 144 个测试全绿
+4. ☑ 完成 m4-ai-upgrade 与 m4-fix-verify（按 4.1 / 4.2 开发指导）
+5. ☐ 从 **m4-capacity-science** 开始（按 4.3 开发指导），或与用户确认任务顺序调整
+
+## 8. 本轮变更（待提交）
+
+第二轮改动文件清单（M4 前两项）：
+
+```
+sql/init.sql                                              # +ai_knowledge 表 + performance_issue 补列 + add_column_if_missing
+sql/init_empty.sql                                        # 同步（无演示数据）
+perf-server .../ai/AiRole.java                            # [NEW]
+perf-server .../ai/ReactPhase.java                        # [NEW]
+perf-server .../ai/ReactStep.java                         # [NEW]
+perf-server .../ai/AiStreamEvent.java                     # [NEW]
+perf-server .../ai/AiStreamEventType.java                 # [NEW]
+perf-server .../ai/StreamAccumulator.java                 # [NEW]
+perf-server .../ai/AiKnowledgeService.java                # [NEW]
+perf-server .../ai/AiChatStreamController.java            # [NEW]
+perf-server .../ai/AiAgentService.java                    # [REWRITE] ReAct 循环 + 流式 + 结论入库
+perf-server .../ai/PromptBuilder.java                     # [REWRITE] 三角色路由
+perf-server .../ai/LlmClient.java                         # [MODIFY] stream 模式
+perf-server .../ai/tools/SearchKnowledgeTool.java         # [NEW]
+perf-server .../controller/AiController.java              # [MODIFY] +GET /api/ai/knowledge
+perf-server .../entity/AiKnowledge.java                   # [NEW]
+perf-server .../mapper/AiKnowledgeMapper.java             # [NEW]
+perf-server .../resources/mapper/AiKnowledgeMapper.xml    # [NEW]
+perf-server .../entity/PerformanceIssue.java              # [MODIFY] +stressTaskId/verifyJson/verifyTime
+perf-server .../mapper/PerformanceIssueMapper.java        # [MODIFY] +updateStressTask/updateVerify
+perf-server .../resources/mapper/PerformanceIssueMapper.xml  # [MODIFY]
+perf-server .../service/IssueVerifyService.java           # [NEW]
+perf-server .../service/SourceIssueService.java           # [MODIFY] 场景快照 + bindStressTask
+perf-server .../controller/SourceController.java          # [MODIFY] +verify/+bind-stress
+perf-server .../resources/application.yml                 # [MODIFY] ai.stream-* / verify.timeout-sec
+perf-server/src/test/.../ai/{StreamAccumulator,PromptBuilderRole,AiAgentReactLoop,
+                             AiKnowledgeService,AiKnowledgeSqlScript}Test.java   # [NEW] 33 单测
+perf-server/src/test/.../service/IssueVerifyServiceTest.java                     # [NEW] 9 单测
+perf-web/src/views/AiAssistantView.vue                    # [MODIFY] SSE 流式渲染
+perf-web/src/views/OptimizeView.vue                       # [MODIFY] 验证修复按钮与结果卡片
+perf-web/src/api/index.ts                                 # [MODIFY] +aiApi.knowledge / verifyIssue / bindIssueStress
+perf-web/src/utils/format.ts                              # [MODIFY] +fixed/resolved 状态样式
+docs/plans/preformance-imporvement-plan-detail.md         # 进度标记
+docs/plans/performance-improvement-plan.md                # 进度标记
+docs/handoff/handoff-main.md                              # 本交接更新
+```

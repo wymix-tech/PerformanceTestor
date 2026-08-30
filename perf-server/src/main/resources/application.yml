@@ -75,8 +75,16 @@ perf:
     api-key: ${PERF_AI_API_KEY:}
     model: gpt-4o-mini
     timeout-sec: 60
+    # 流式对话（SSE）超时秒数：需覆盖多轮工具执行耗时，建议 >= 300
+    stream-timeout-sec: 300
+    # 流式对话处理线程数
+    stream-threads: 4
     # 并发限流
     max-concurrent-requests: 4
+
+  # 修复效果自动验证（一键重放压测等待超时）
+  verify:
+    timeout-sec: 300
 
   # Agent 上报接口配置
   agent:

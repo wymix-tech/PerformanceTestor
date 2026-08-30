@@ -4,6 +4,7 @@ import com.perfserver.entity.PerformanceIssue;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -25,8 +26,15 @@ public interface PerformanceIssueMapper {
                        @Param("sourceFileId") Long sourceFileId,
                        @Param("lineStart") Integer lineStart, @Param("lineEnd") Integer lineEnd);
 
-    /** 更新状态（fixed 等） */
+    /** 更新状态（fixed / resolved 等） */
     int updateStatus(@Param("id") long id, @Param("status") String status);
+
+    /** 绑定压测场景快照（一键验证的对比基线） */
+    int updateStressTask(@Param("id") long id, @Param("stressTaskId") long stressTaskId);
+
+    /** 写入重放验证结论（含达标后的状态流转） */
+    int updateVerify(@Param("id") long id, @Param("verifyJson") String verifyJson,
+                     @Param("verifyTime") LocalDateTime verifyTime, @Param("status") String status);
 
     PerformanceIssue findById(@Param("id") long id);
 

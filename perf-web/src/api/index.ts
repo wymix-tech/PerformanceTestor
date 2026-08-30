@@ -169,6 +169,11 @@ export const sourceApi = {
   // 从压测任务创建问题（可指定归属应用）
   fromStress: (params: { stressTaskId: number; repoId: number; appName?: string }) =>
     http.post('/source/issues/from-stress', null, { params }),
+  // 一键验证修复效果：重放场景快照压测 → 与基线 diff → 达标自动关闭问题
+  verifyIssue: (issueId: number) => http.post(`/source/issues/${issueId}/verify`),
+  // 补绑压测场景快照（非压测来源问题建立验证基线）
+  bindIssueStress: (issueId: number, stressTaskId: number) =>
+    http.post(`/source/issues/${issueId}/bind-stress`, null, { params: { stressTaskId } }),
   // 最近慢 SQL（源码页一键建问题用）
   recentSlowSqls: (params?: { app?: string; limit?: number }) =>
     http.get('/source/recent-slow-sqls', { params })
@@ -178,7 +183,10 @@ export const aiApi = {
   // AI 对话（Function Calling，服务端无 Key 时降级规则模式）
   chat: (data: { sessionId?: string; message: string }) => http.post('/ai/chat', data),
   // 清空会话
-  clearSession: (sessionId: string) => http.delete(`/ai/session/${sessionId}`)
+  clearSession: (sessionId: string) => http.delete(`/ai/session/${sessionId}`),
+  // 知识库检索（FULLTEXT ngram 中文检索；query 为空时返回最近结论）
+  knowledge: (params?: { query?: string; app?: string; limit?: number }) =>
+    http.get('/ai/knowledge', { params })
 }
 
 export const dbConnApi = {
