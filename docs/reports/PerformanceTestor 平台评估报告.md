@@ -1,56 +1,7 @@
 -
 四个模块的深度代码审查已完成（99 个后端 Java 文件、15 个探针文件、32 个灌数引擎文件、前端全部视图，外加设计文档与配置），以下是综合评估报告。
 
----e` 会覆盖任务 A 未消费的 hints；
-- **探针 shutdown 无 final flush**：`MetricsReporter#stop` 只 `shutdownNow()`，注释声称“冲刷剩余数据”与实现不符；`agentmain` 无幂等保护，premain+attach 双触发会产生双份采集线程。
-
-### P2 — 代码质量/工程债
-
-- **前端状态管理形同虚设**：Pinia、TDesign、vue-echarts 三个依赖**装而未用**（TDesign 全量注册拖慢构建），`sourceApi.repos()` 在 ≥6 个视图重复拉取无缓存；
-- **巨型单文件组件**：`StressCenterView.vue`（895 行）与 `QuickStartView.vue`（913 行）各自内联了一套“压测表单 + 接口选择 + 轮询”的重复实现；无 404 路由、`meta.title` 未同步 `document.title`、无单元测试；
-- **容量评估较粗糙**：QPS-RT 分段线性插值 + 阈值规则引擎，无置信区间、无回归拟合，扩容建议是规则推导而非数据驱动；
-- **杂项**：`@EnableAsync/@EnableScheduling` 开启但代码无一处使用；`JvmCollector#collectCpu` 每 5s 新建 MXBean 代理；拓扑环报错列出所有未入序表而非精确环路；实体层全手写 getter/setter 无 Lombok；`ai.api-key` 等敏感配置明文；无 CI/CD。
-
-## 四、下一步功能建议（按优先级）
-
-**第一阶段：补正确性与安全底座**
-1. **鉴权与多租户**：JWT 登录 + 接口鉴权 + 数据库连接/SSH 凭据加密存储（Jasypt/KMS），这是走向真实生产的前提；
-2. **调用链根节点改进**：探针增加 HTTP 入口标记（如拦截 `javax.servlet Filter`/Spring `DispatcherServlet` 作为 trace 起点），修复“半截链路”与采样语义稀释；
-3. **压测统计无锁化**：`LongAdder` 计数 + 分片直方图（HdrHistogram 思路），并增加 **warmup 期与 ramp-up 阶梯**配置；
-4. **GC 分类修正**：改用 `GarbageCollectorMXBean` 的 `getCollectionCount()` 差值 + 收集器名称精确映射表。
-
-**第二阶段：补齐观测盲区与压测能力**
-5. **方法级 CPU 热点采样**：agent 内置 `Thread.getStackTrace()` 弱采样（或集成 async-profiler 的 `agentpath` 模式），产出 CPU 火焰图——目前只能看“耗时树”，无法回答“CPU 烧在哪”；
-6. **真实 JMeter/Gatling 适配**：生成 JMX → CLI 调用 → 解析 JTL，兑现 SPI 承诺，支撑复杂场景（思考时间、断言、多接口混合场景编排）；
-7. **定时压测与基线对比（回归门禁）**：压测任务定时执行 + 版本间指标自动 diff + 阈值告警（webhook/钉钉/飞书），把“单次压测”升级为“持续性能守护”；
-8. **压测流量标记与隔离**：压测流量打标（header/RPC attachment），配合被测侧影子表路由，避免压测数据污染生产库。
-
-**第三阶段：AI 闭环深化**
-9. **AI 编排升级**：引入多 Agent 协作（压测 Agent / 分析 Agent / 修复 Agent）与 ReAct 循环，支持流式输出；分析结论沉淀为可检索的性能知识库（RAG）；
-10. **修复效果自动验证**：修复提示词落地后，平台一键“重新压测同场景 + 前后指标对比 + 自动关闭已解决问题”，形成真正的验证闭环；
-11. **容量评估科学化**：多项式/QTCP 拟合容量曲线，输出置信区间与拐点检测，替代分段线性插值。
-
-**第四阶段：生态扩展**
-12. **多数据库方言**：PG/Oracle 落地（SPI 已就绪，补 `PostgreSQLDialect` 即可）；ORM 扩展 JPA/Hibernate；
-13. **中间件观测**：Redis/ES/MQ 客户端拦截（沿用 JDBC 拦截模式），慢命令与慢查询统一治理；
-14. **报表导出**：性能检测报告导出 PDF/Word（AI 已能生成报告文本，缺格式化输出）。
-
-## 五、工程优化点（快速改进清单）
-
-| 项 | 改法 |
-|---|---|
-| 压测主线程忙轮询 | `Thread.sleep(50)` 改为精确的 deadline 唤醒或 `CountDownLatch` |
-| `JvmCollector#collectCpu` | 直接强转 `getOperatingSystemMXBean()`，勿每次新建代理 |
-| `MetricsReporter#stop` | 补 final flush，兑现注释承诺 |
-| 前端依赖瘦身 | 卸载未用的 TDesign/vue-echarts/Pinia（或真正用起来建 `repoStore` 消除 6 处重复拉取） |
-| 巨型组件拆分 | `StressCenterView`/`QuickStartView` 抽出公共压测表单组件 |
-| 拓扑环检测 | DFS 提取精确环路替代“列出全部未入序表” |
-| 配置安全 | `api-key`/DB 密码改环境变量或加密，scripts 中不再硬编码 root/root123 |
-| 死配置清理 | 移除无使用的 `@EnableAsync/@EnableScheduling`，或真正落地定时数据清理任务 |
-
 ---
-
-**总评**：这是一个设计意图清晰、核心链路（探针开销控制、直方图统计、灌数语义识别、EXPLAIN 安全防护）实现水准高于平均水准的项目，文档与工程质量意识好；短板集中在**安全层缺失、压测引擎成熟度（预热/限流精度/JMeter 空壳）、探针根节点语义、前端状态管理**四处。按上述优先级推进，第一阶段完成后即可具备真实团队试用的条件。
 
 # PerformanceTestor 平台评估报告
 
@@ -104,4 +55,53 @@
 - **JMeter 引擎名不副实**：`JmeterStressEngine#run` 直接抛 `UnsupportedOperationException`，仅是 SPI 骨架；
 - **压测无预热/无 ramp-up**：首波冷连接（TCP/TLS/JIT 未热）直接污染 P99，专业压测必备；
 - **QPS 限流精度差**：每 worker `Thread.sleep(1000*concurrency/qpsLimit)`，低并发高 QPS 限流误差大；主线程 `Thread.sleep(50)` 忙轮询等 deadline；sampler `shutdown()` 后未 `awaitTermination`，存在读到不完整采样的竞态；
-- **灌数引擎违反自身无状态契约**：`DefaultDataGenEngine` 持有可变 `relationResolver.ormHints`（volatile 实例字段），同一实例并发执行两个任务时任务 B 的 `registerSourc
+- **灌数引擎违反自身无状态契约**：`DefaultDataGenEngine` 持有可变 `relationResolver.ormHints`（volatile 实例字段），同一实例并发执行两个任务时任务 B 的 `registerSource` 会覆盖任务 A 未消费的 hints；
+- **探针 shutdown 无 final flush**：`MetricsReporter#stop` 只 `shutdownNow()`，注释声称“冲刷剩余数据”与实现不符；`agentmain` 无幂等保护，premain+attach 双触发会产生双份采集线程。
+
+### P2 — 代码质量/工程债
+
+- **前端状态管理形同虚设**：Pinia、TDesign、vue-echarts 三个依赖**装而未用**（TDesign 全量注册拖慢构建），`sourceApi.repos()` 在 ≥6 个视图重复拉取无缓存；
+- **巨型单文件组件**：`StressCenterView.vue`（895 行）与 `QuickStartView.vue`（913 行）各自内联了一套“压测表单 + 接口选择 + 轮询”的重复实现；无 404 路由、`meta.title` 未同步 `document.title`、无单元测试；
+- **容量评估较粗糙**：QPS-RT 分段线性插值 + 阈值规则引擎，无置信区间、无回归拟合，扩容建议是规则推导而非数据驱动；
+- **杂项**：`@EnableAsync/@EnableScheduling` 开启但代码无一处使用；`JvmCollector#collectCpu` 每 5s 新建 MXBean 代理；拓扑环报错列出所有未入序表而非精确环路；实体层全手写 getter/setter 无 Lombok；`ai.api-key` 等敏感配置明文；无 CI/CD。
+
+## 四、下一步功能建议（按优先级）
+
+**第一阶段：补正确性与安全底座**
+1. **鉴权与多租户**：JWT 登录 + 接口鉴权 + 数据库连接/SSH 凭据加密存储（Jasypt/KMS），这是走向真实生产的前提；
+2. **调用链根节点改进**：探针增加 HTTP 入口标记（如拦截 `javax.servlet Filter`/Spring `DispatcherServlet` 作为 trace 起点），修复“半截链路”与采样语义稀释；
+3. **压测统计无锁化**：`LongAdder` 计数 + 分片直方图（HdrHistogram 思路），并增加 **warmup 期与 ramp-up 阶梯**配置；
+4. **GC 分类修正**：改用 `GarbageCollectorMXBean` 的 `getCollectionCount()` 差值 + 收集器名称精确映射表。
+
+**第二阶段：补齐观测盲区与压测能力**
+5. **方法级 CPU 热点采样**：agent 内置 `Thread.getStackTrace()` 弱采样（或集成 async-profiler 的 `agentpath` 模式），产出 CPU 火焰图——目前只能看“耗时树”，无法回答“CPU 烧在哪”；
+6. **真实 JMeter/Gatling 适配**：生成 JMX → CLI 调用 → 解析 JTL，兑现 SPI 承诺，支撑复杂场景（思考时间、断言、多接口混合场景编排）；
+7. **定时压测与基线对比（回归门禁）**：压测任务定时执行 + 版本间指标自动 diff + 阈值告警（webhook/钉钉/飞书），把“单次压测”升级为“持续性能守护”；
+8. **压测流量标记与隔离**：压测流量打标（header/RPC attachment），配合被测侧影子表路由，避免压测数据污染生产库。
+
+**第三阶段：AI 闭环深化**
+9. **AI 编排升级**：引入多 Agent 协作（压测 Agent / 分析 Agent / 修复 Agent）与 ReAct 循环，支持流式输出；分析结论沉淀为可检索的性能知识库（RAG）；
+10. **修复效果自动验证**：修复提示词落地后，平台一键“重新压测同场景 + 前后指标对比 + 自动关闭已解决问题”，形成真正的验证闭环；
+11. **容量评估科学化**：多项式/QTCP 拟合容量曲线，输出置信区间与拐点检测，替代分段线性插值。
+
+**第四阶段：生态扩展**
+12. **多数据库方言**：PG/Oracle 落地（SPI 已就绪，补 `PostgreSQLDialect` 即可）；ORM 扩展 JPA/Hibernate；
+13. **中间件观测**：Redis/ES/MQ 客户端拦截（沿用 JDBC 拦截模式），慢命令与慢查询统一治理；
+14. **报表导出**：性能检测报告导出 PDF/Word（AI 已能生成报告文本，缺格式化输出）。
+
+## 五、工程优化点（快速改进清单）
+
+| 项 | 改法 |
+|---|---|
+| 压测主线程忙轮询 | `Thread.sleep(50)` 改为精确的 deadline 唤醒或 `CountDownLatch` |
+| `JvmCollector#collectCpu` | 直接强转 `getOperatingSystemMXBean()`，勿每次新建代理 |
+| `MetricsReporter#stop` | 补 final flush，兑现注释承诺 |
+| 前端依赖瘦身 | 卸载未用的 TDesign/vue-echarts/Pinia（或真正用起来建 `repoStore` 消除 6 处重复拉取） |
+| 巨型组件拆分 | `StressCenterView`/`QuickStartView` 抽出公共压测表单组件 |
+| 拓扑环检测 | DFS 提取精确环路替代“列出全部未入序表” |
+| 配置安全 | `api-key`/DB 密码改环境变量或加密，scripts 中不再硬编码 root/root123 |
+| 死配置清理 | 移除无使用的 `@EnableAsync/@EnableScheduling`，或真正落地定时数据清理任务 |
+
+---
+
+**总评**：这是一个设计意图清晰、核心链路（探针开销控制、直方图统计、灌数语义识别、EXPLAIN 安全防护）实现水准高于平均水准的项目，文档与工程质量意识好；短板集中在**安全层缺失、压测引擎成熟度（预热/限流精度/JMeter 空壳）、探针根节点语义、前端状态管理**四处。按上述优先级推进，第一阶段完成后即可具备真实团队试用的条件。
