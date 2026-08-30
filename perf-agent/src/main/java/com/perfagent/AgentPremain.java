@@ -1,6 +1,7 @@
 package com.perfagent;
 
 import com.perfagent.config.AgentConfig;
+import com.perfagent.hotspot.HotspotSampler;
 import com.perfagent.instrumentation.JdbcInterceptor;
 import com.perfagent.instrumentation.TraceEnhancer;
 import com.perfagent.jmx.JvmCollector;
@@ -10,6 +11,7 @@ import com.perfagent.trace.TraceContext;
 import com.perfagent.trace.TraceSampler;
 
 import java.lang.instrument.Instrumentation;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * perf-agent 入口（premain / agentmain）。
@@ -29,6 +31,9 @@ import java.lang.instrument.Instrumentation;
  */
 public class AgentPremain {
 
+    /** 启动幂等保护：premain 与 agentmain 双触发时仅初始化一次，防双份采集线程与重复数据 */
+    private static final AtomicBoolean STARTED = new AtomicBoolean(false);
+
     /**
      * premain 入口：JVM 启动期挂载。
      *
@@ -41,12 +46,17 @@ public class AgentPremain {
 
     /**
      * agentmain 入口：运行时 attach（预留，配合 byte-buddy-agent）。
+     * 与 premain 双触发时由 {@link #STARTED} 幂等保护，仅首次生效。
      */
     public static void agentmain(String agentArgs, Instrumentation instrumentation) {
         start(agentArgs, instrumentation);
     }
 
     private static void start(String agentArgs, Instrumentation instrumentation) {
+        if (!STARTED.compareAndSet(false, true)) {
+            System.out.println("[perf-agent] 检测到重复启动（premain/attach 双触发），跳过重复初始化");
+            return;
+        }
         AgentConfig config = AgentConfig.fromArgs(agentArgs);
         // targetProjectName 未指定时回退 appName（平台按项目名做准入校验）
         String project = config.targetProjectName.isBlank() ? config.appName : config.targetProjectName;
@@ -67,6 +77,13 @@ public class AgentPremain {
             jvmCollector.start();
         }
 
+        // 2.1) CPU 热点弱采样（默认关闭；开启后回答"CPU 烧在哪"）
+        HotspotSampler hotspotSampler = null;
+        if (config.hotspotEnabled) {
+            hotspotSampler = new HotspotSampler(config, reporter);
+            hotspotSampler.start();
+        }
+
         // 3) 注册增强规则（方法埋点 + JDBC 拦截）
         if (config.methodTraceEnabled || config.jdbcEnabled) {
             TraceEnhancer.builder(config)
@@ -75,9 +92,13 @@ public class AgentPremain {
 
         // 4) 优雅停止：JVM 退出时停采集器并冲刷剩余数据
         final JvmCollector collector = jvmCollector;
+        final HotspotSampler hotspot = hotspotSampler;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             if (collector != null) {
                 collector.stop();
+            }
+            if (hotspot != null) {
+                hotspot.stop();
             }
             reporter.stop();
         }, "perf-agent-shutdown"));
@@ -85,6 +106,7 @@ public class AgentPremain {
                 + " targetProjectName=" + config.targetProjectName
                 + " reportUrl=" + config.reportUrl
                 + " sampleRate=" + config.sampleRate
-                + " jmxCollector=" + (jvmCollector != null));
+                + " jmxCollector=" + (jvmCollector != null)
+                + " hotspotSampler=" + (hotspotSampler != null));
     }
 }

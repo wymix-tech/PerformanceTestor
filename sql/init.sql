@@ -105,6 +105,38 @@ CREATE TABLE IF NOT EXISTS slow_sql (
     KEY idx_cost (cost_ms)
 ) ENGINE = InnoDB COMMENT = '慢 SQL 记录';
 
+-- ---------------------------------------------------------------------
+-- 4.1 hotspot_method：方法级 CPU 热点（agent HotspotSampler 弱采样聚合上报）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS hotspot_method (
+    id           BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name     VARCHAR(128) NOT NULL COMMENT '应用名称',
+    method_name  VARCHAR(512) NOT NULL COMMENT '方法全限定名（class#method）',
+    samples      BIGINT       NOT NULL DEFAULT 0 COMMENT '采样命中次数（周期内帧命中计数）',
+    sample_time  DATETIME     NOT NULL COMMENT '聚合采样时间',
+    PRIMARY KEY (id),
+    KEY idx_app_time (app_name, sample_time)
+) ENGINE = InnoDB COMMENT = '方法级 CPU 热点';
+
+-- ---------------------------------------------------------------------
+-- 4.2 stress_schedule：定时压测调度（周期执行 + 版本基线对比 + webhook 回归告警）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stress_schedule (
+    id              BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    schedule_name   VARCHAR(128) NOT NULL COMMENT '调度名称',
+    task_json       TEXT         NOT NULL COMMENT '压测任务模板 JSON（StressTaskRequest）',
+    interval_minutes INT         NOT NULL DEFAULT 60 COMMENT '执行间隔（分钟）',
+    enabled         TINYINT      NOT NULL DEFAULT 1 COMMENT '是否启用：1 是 0 否',
+    baseline_task_id BIGINT      NOT NULL DEFAULT 0 COMMENT '基线任务（0=自动取同场景最近完成）',
+    webhook_url     VARCHAR(512) NOT NULL DEFAULT '' COMMENT '告警 webhook（钉钉/飞书/自定义）',
+    last_task_id    BIGINT       NOT NULL DEFAULT 0 COMMENT '上次触发任务（完成后做基线对比）',
+    last_run_time   DATETIME     NULL COMMENT '上次触发时间',
+    next_run_time   DATETIME     NULL COMMENT '下次触发时间',
+    create_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_enabled_next (enabled, next_run_time)
+) ENGINE = InnoDB COMMENT = '定时压测调度';
+
 -- 4.5 db_conn：数据库连接配置（供慢 SQL 分析时执行 EXPLAIN 等检测语句）
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS db_conn (

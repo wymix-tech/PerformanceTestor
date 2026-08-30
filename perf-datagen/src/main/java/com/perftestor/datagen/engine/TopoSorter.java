@@ -67,10 +67,64 @@ public final class TopoSorter {
         }
 
         if (order.size() != inDegree.size()) {
-            Set<String> cycle = new LinkedHashSet<>(inDegree.keySet());
-            cycle.removeAll(order);
-            throw new IllegalArgumentException("表组存在循环依赖，无法确定生成顺序: " + String.join(", ", cycle));
+            Set<String> unfinished = new LinkedHashSet<>(inDegree.keySet());
+            unfinished.removeAll(order);
+            // DFS 提取真实环路（仅环中表），替代"列出全部未入序表"的误导性报错
+            List<String> cycle = findCycle(unfinished, dependencies);
+            String target = cycle.isEmpty()
+                    ? String.join(", ", unfinished)
+                    : String.join(" -> ", cycle) + " -> " + cycle.get(0);
+            throw new IllegalArgumentException("表组存在循环依赖，无法确定生成顺序: " + target);
         }
         return order;
+    }
+
+    /**
+     * 从未完成节点中提取一条真实环路（DFS 三色标记，沿 child → parent 依赖方向）。
+     *
+     * @return 环路节点序列（如 [a, b, c] 表示 a→b→c→a）；无环（理论不可达）返回空列表
+     */
+    static List<String> findCycle(Set<String> nodes, Map<String, Set<String>> dependencies) {
+        Map<String, Integer> state = new java.util.HashMap<>(); // 0/缺失=白 1=灰(栈上) 2=黑(完成)
+        for (String start : nodes) {
+            if (state.containsKey(start)) {
+                continue;
+            }
+            List<String> path = new ArrayList<>();
+            if (dfs(start, nodes, dependencies, state, path)) {
+                return path;
+            }
+        }
+        return List.of();
+    }
+
+    /** DFS：找到环时 path 即环路节点序列（首尾相接） */
+    private static boolean dfs(String node, Set<String> nodes, Map<String, Set<String>> dependencies,
+                               Map<String, Integer> state, List<String> path) {
+        state.put(node, 1);
+        path.add(node);
+        for (String next : dependencies.getOrDefault(node, Set.of())) {
+            if (!nodes.contains(next) || next.equals(node)) {
+                continue; // 组外依赖/自引用不构成组内环
+            }
+            Integer s = state.get(next);
+            if (s != null && s == 1) {
+                // 命中灰节点：截取 path 中 next 起始的完整环（丢弃环外 DFS 前缀）
+                int from = path.indexOf(next);
+                if (from >= 0) {
+                    List<String> cycle = new ArrayList<>(path.subList(from, path.size()));
+                    path.clear();
+                    path.addAll(cycle);
+                    return true;
+                }
+                return false;
+            }
+            if (s == null && dfs(next, nodes, dependencies, state, path)) {
+                return true;
+            }
+        }
+        path.remove(path.size() - 1);
+        state.put(node, 2);
+        return false;
     }
 }

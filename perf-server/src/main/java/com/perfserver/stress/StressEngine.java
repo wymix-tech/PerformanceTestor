@@ -9,6 +9,15 @@ public interface StressEngine {
     String type();
 
     /**
+     * 引擎是否可用（外部依赖检测，如 JMeter 安装）。
+     * 不可用的引擎在任务创建时即被拒绝（见 StressTaskService.validate），
+     * 避免任务跑到一半才失败。默认可用。
+     */
+    default boolean available() {
+        return true;
+    }
+
+    /**
      * 执行压测任务。
      *
      * @param request  压测请求（并发/时长/QPS 上限/分档配置）

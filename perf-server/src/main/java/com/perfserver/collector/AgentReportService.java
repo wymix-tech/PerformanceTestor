@@ -3,11 +3,13 @@ package com.perfserver.collector;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.perfserver.entity.AppInstance;
 import com.perfserver.entity.DbConn;
+import com.perfserver.entity.HotspotMethod;
 import com.perfserver.entity.JvmMetric;
 import com.perfserver.entity.SlowSql;
 import com.perfserver.entity.TraceChain;
 import com.perfserver.mapper.AppInstanceMapper;
 import com.perfserver.mapper.DbConnMapper;
+import com.perfserver.mapper.HotspotMethodMapper;
 import com.perfserver.mapper.JvmMetricMapper;
 import com.perfserver.mapper.SlowSqlMapper;
 import com.perfserver.mapper.TraceChainMapper;
@@ -60,6 +62,7 @@ public class AgentReportService {
     private final JvmMetricMapper jvmMetricMapper;
     private final TraceChainMapper traceChainMapper;
     private final SlowSqlMapper slowSqlMapper;
+    private final HotspotMethodMapper hotspotMethodMapper;
     private final DbConnMapper dbConnMapper;
     private final ProjectRegistry projectRegistry;
     private final ObjectMapper objectMapper;
@@ -68,6 +71,7 @@ public class AgentReportService {
                               JvmMetricMapper jvmMetricMapper,
                               TraceChainMapper traceChainMapper,
                               SlowSqlMapper slowSqlMapper,
+                              HotspotMethodMapper hotspotMethodMapper,
                               DbConnMapper dbConnMapper,
                               ProjectRegistry projectRegistry,
                               ObjectMapper objectMapper) {
@@ -75,6 +79,7 @@ public class AgentReportService {
         this.jvmMetricMapper = jvmMetricMapper;
         this.traceChainMapper = traceChainMapper;
         this.slowSqlMapper = slowSqlMapper;
+        this.hotspotMethodMapper = hotspotMethodMapper;
         this.dbConnMapper = dbConnMapper;
         this.projectRegistry = projectRegistry;
         this.objectMapper = objectMapper;
@@ -121,6 +126,7 @@ public class AgentReportService {
                 case "trace" -> saveTraces(appName, items);
                 case "jvm" -> saveJvmMetrics(appName, items);
                 case "slowSql" -> saveSlowSqls(appName, items);
+                case "hotspot" -> saveHotspots(appName, items);
                 default -> log.warn("agent report ignored: unknown type={}, app={}", type, appName);
             }
         } catch (Exception e) {
@@ -251,8 +257,7 @@ public class AgentReportService {
      * 若该应用尚未关联任何连接（appName 绑定或 host 匹配），自动插入一条，
      * 便于后续 EXPLAIN 分析直接命中；已关联过则不重复插入。
      * 凭据（用户名/密码）agent 不上报，留空由用户在界面补充。
-     */
-    private void ensureAutoDbConn(String appName, String dbHost) {
+     */    private void ensureAutoDbConn(String appName, String dbHost) {
         if (dbHost == null || dbHost.isBlank()) {
             return;
         }
@@ -281,6 +286,44 @@ public class AgentReportService {
         } catch (Exception e) {
             log.warn("auto register db conn failed, app={}, host={}", appName, dbHost, e);
         }
+    }
+
+    /** CPU 热点批量入库（元素为单批聚合：{sampleTime, items:[{method, samples}]}, topN 已在 agent 侧截断） */
+    private void saveHotspots(String appName, List<?> items) {
+        List<HotspotMethod> batch = new ArrayList<>();
+        for (Object item : items) {
+            if (!(item instanceof Map<?, ?> m)) {
+                continue;
+            }
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> map = (Map<String, Object>) m;
+                LocalDateTime sampleTime = toLocalDateTime(longVal(map.get("sampleTime")));
+                Object rawMethods = map.get("items");
+                if (!(rawMethods instanceof List<?> methods) || methods.isEmpty()) {
+                    continue;
+                }
+                for (Object mo : methods) {
+                    if (!(mo instanceof Map<?, ?> mm)) {
+                        continue;
+                    }
+                    HotspotMethod h = new HotspotMethod();
+                    h.setAppName(appName);
+                    h.setMethodName(strVal(mm.get("method")));
+                    h.setSamples(longVal(mm.get("samples")));
+                    h.setSampleTime(sampleTime);
+                    if (h.getMethodName() != null && h.getSamples() > 0) {
+                        batch.add(h);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("parse hotspot failed, app={}", appName, e);
+            }
+        }
+        if (!batch.isEmpty()) {
+            hotspotMethodMapper.batchInsert(batch);
+        }
+        log.info("agent report: saved {} hotspot methods, app={}", batch.size(), appName);
     }
 
     // ===================== 类型安全取值工具 =====================

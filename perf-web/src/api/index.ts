@@ -3,6 +3,13 @@ import http from './http'
 // 各模块 API 统一封装，路径与 perf-server Controller 完全对齐
 // 后端统一返回 { code, message, data }，http 拦截器已解包为该对象
 
+export const authApi = {
+  // 登录（成功返回 token；业务失败 code=401 不触发 http 拦截器跳转）
+  login: (data: { username: string; password: string }) => http.post('/auth/login', data),
+  // 会话探测（校验当前 token 是否有效）
+  me: () => http.get('/auth/me')
+}
+
 export const appApi = {
   // 应用实例列表（在线优先，总览/应用切换用）
   list: () => http.get('/apps')
@@ -28,6 +35,12 @@ export const slowSqlApi = {
     http.get('/slow-sqls', { params })
 }
 
+export const hotspotApi = {
+  // 方法级 CPU 热点排行（命中次数降序，最近 1 小时）
+  list: (params: { app?: string; start?: string | number; end?: string | number; limit?: number }) =>
+    http.get('/hotspots', { params })
+}
+
 export const stressApi = {
   // 创建并启动压测任务（异步执行）
   create: (data: Record<string, unknown>) => http.post('/stress/tasks', data),
@@ -37,6 +50,21 @@ export const stressApi = {
   samples: (id: number, limit = 500) => http.get(`/stress/tasks/${id}/samples`, { params: { limit } }),
   // 压测报告（含统计/分档采样点/容量评估结果）
   report: (id: number) => http.get(`/stress/tasks/${id}/report`)
+}
+
+export const scheduleApi = {
+  // 定时压测调度列表
+  list: () => http.get('/stress/schedules'),
+  // 创建调度（task 为压测任务模板）
+  create: (data: Record<string, any>) => http.post('/stress/schedules', data),
+  // 启停调度
+  toggle: (id: number, enabled: boolean) =>
+    http.put(`/stress/schedules/${id}/enabled`, null, { params: { enabled } }),
+  // 删除调度
+  remove: (id: number) => http.delete(`/stress/schedules/${id}`),
+  // 基线对比（可选 taskId，默认上次触发任务）
+  diff: (id: number, taskId?: number) =>
+    http.get(`/stress/schedules/${id}/diff`, { params: taskId ? { taskId } : {} })
 }
 
 export const dataGenApi = {

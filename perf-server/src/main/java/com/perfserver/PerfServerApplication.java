@@ -2,7 +2,6 @@ package com.perfserver;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
@@ -12,8 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * 采集 API（接收 agent 远程上报）、压测引擎、数据灌入、容量分析、
  * 源码管理与 AI 智能体编排。
  */
-@EnableAsync
-@EnableScheduling
+@EnableScheduling  // 定时压测调度（StressScheduler 30s 扫描）
 @SpringBootApplication
 public class PerfServerApplication {
 

@@ -60,9 +60,17 @@
             <div
               class="w-7 h-7 rounded-full bg-gradient-to-br from-neon-blue to-neon-green flex items-center justify-center text-xs text-bg-base font-bold"
             >
-              管
+              {{ avatarChar }}
             </div>
-            <span>管理员</span>
+            <span>{{ authStore.username || '管理员' }}</span>
+            <button
+              class="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-fg-sub hover:text-red-300 hover:bg-red-400/10 transition-colors cursor-pointer"
+              title="退出登录"
+              @click="handleLogout"
+            >
+              <LogOut class="w-3.5 h-3.5" />
+              退出
+            </button>
           </div>
         </div>
       </header>
@@ -77,13 +85,23 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
-  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Bot, Server
+  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Bot, Server, LogOut
 } from 'lucide-vue-next'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const router = useRouter()
+const authStore = useAuthStore()
 const now = ref(new Date().toLocaleString('zh-CN'))
+
+const avatarChar = computed(() => (authStore.username || '管').charAt(0).toUpperCase())
+
+function handleLogout() {
+  authStore.logout()
+  router.push({ name: 'Login' })
+}
 
 const menus = [
   { path: '/dashboard', title: '总览', icon: LayoutDashboard },

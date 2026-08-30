@@ -43,11 +43,18 @@ public final class TraceContext {
     private static final class Ctx {
         final Deque<TraceNode> stack = new ArrayDeque<>();
         boolean sampled;
+        /** Filter 根模式：上下文生命周期由最外层 Filter 控制（endFilterRoot 清理） */
+        final boolean filterOwned;
+        /** 本请求主链路已提交（Filter 模式：一请求至多一条链路，抑制后置噪音） */
+        boolean chainSubmitted;
         String traceId;
         long rootStartNanos;
         int nodeCount;
-    }
 
+        Ctx(boolean filterOwned) {
+            this.filterOwned = filterOwned;
+        }
+    }
     private TraceContext() {
     }
 
@@ -74,7 +81,7 @@ public final class TraceContext {
             // 未采样：不创建 Ctx（零分配），中间方法经 isRoot/inSampledContext 判空短路
             return null;
         }
-        Ctx ctx = new Ctx();
+        Ctx ctx = new Ctx(false);
         ctx.sampled = true;
         ctx.traceId = nextTraceId();
         ctx.rootStartNanos = System.nanoTime();
@@ -91,6 +98,16 @@ public final class TraceContext {
             return;
         }
         TraceNode node = new TraceNode(method);
+        if (ctx.stack.isEmpty()) {
+            if (ctx.chainSubmitted) {
+                // 本请求主链路已提交：后置处理（afterCompletion 等）不再开启噪音链路
+                return;
+            }
+            // Filter 根模式：首个业务方法即调用链根节点（Controller 等），
+            // 重置根基准时间保证根节点 offset=0
+            ctx.rootStartNanos = System.nanoTime();
+            ctx.nodeCount = 0;
+        }
         node.offsetMs = Math.max(0.0, (System.nanoTime() - ctx.rootStartNanos) / 1_000_000.0);
         ctx.stack.push(node);
         ctx.nodeCount++;
@@ -104,7 +121,10 @@ public final class TraceContext {
         }
         Deque<TraceNode> stack = ctx.stack;
         if (stack.isEmpty()) {
-            cleanup();
+            // 防御路径：无配对 begin（增强异常等罕见场景）；Filter 模式由 Filter 退出兜底清理
+            if (!ctx.filterOwned) {
+                cleanup();
+            }
             return;
         }
         TraceNode node = stack.pop();
@@ -115,9 +135,59 @@ public final class TraceContext {
             if (reporter != null) {
                 reporter.reportTrace(ctx.traceId, appName, node, ctx.nodeCount, System.currentTimeMillis());
             }
-            cleanup();
+            ctx.chainSubmitted = true;
+            // Filter 根模式：上下文保留至 Filter 退出（sampled 标志仍有效，
+            // 后续方法不再重复成为根）；旧模式（无 Filter）：根方法退出即清理
+            if (!ctx.filterOwned) {
+                cleanup();
+            }
         } else {
             stack.peek().children.add(node);
+        }
+    }
+
+    /**
+     * Filter 根进入（HTTP 请求入口，由 {@code FilterRootAdvice} 调用）：
+     * 当前线程无上下文时做<b>一次性采样决策</b>并占位（栈暂空，等首个业务方法成为根节点）。
+     *
+     * <p>修复根语义缺陷：此前采样决策发生在"首个业务方法"，Controller 未命中采样时
+     * 下游每个方法都会重新尝试成为根（采样稀释 + 半截链路）。Filter 根模式下：
+     * <ul>
+     *   <li>命中采样：创建上下文（sampled=true，栈空），首个业务方法成为完整链路根；</li>
+     *   <li>未命中：创建 NOT_SAMPLED 占位上下文（sampled=false），下游业务方法
+     *       经 {@link #inSampledContext()} 一次判断即整链短路，不再重复采样。</li>
+     * </ul>
+     *
+     * @return true = 调用方为本链路 owner（最外层 Filter），退出时须调 {@link #endFilterRoot()}；
+     *         false = 嵌套 Filter 或上下文已存在，无需处理
+     */
+    public static boolean beginFilterRoot() {
+        Ctx existing = CTX.get();
+        if (existing != null) {
+            return false;
+        }
+        Ctx ctx = new Ctx(true);
+        if (sampler.shouldSample()) {
+            ctx.sampled = true;
+            ctx.traceId = nextTraceId();
+            ctx.rootStartNanos = System.nanoTime();
+            ctx.nodeCount = 0;
+        } else {
+            ctx.sampled = false; // NOT_SAMPLED 占位：整链短路标记
+        }
+        CTX.set(ctx);
+        return true;
+    }
+
+    /**
+     * Filter 根退出（仅 owner 调用）：清理本链路上下文。
+     *
+     * <p>栈空（未采样 / 请求未触达业务方法，如静态资源）时无 trace 提交；
+     * 栈非空说明存在未配对退出的业务方法（异常增强失败等罕见场景），直接丢弃防泄漏。
+     */
+    public static void endFilterRoot() {
+        if (CTX.get() != null) {
+            cleanup();
         }
     }
 
@@ -134,7 +204,8 @@ public final class TraceContext {
     /** 判断当前线程是否处于采样链路中（供 JDBC 拦截等复用采样标志） */
     public static boolean inSampledContext() {
         Ctx ctx = CTX.get();
-        return ctx != null && ctx.sampled && !ctx.stack.isEmpty();
+        // Filter 根模式下栈可能暂空（业务方法尚未进入），仅按 sampled 标志判断
+        return ctx != null && ctx.sampled;
     }
 
     /**

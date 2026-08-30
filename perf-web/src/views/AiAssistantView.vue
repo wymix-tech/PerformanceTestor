@@ -80,6 +80,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { Bot, Send, Zap, Database, Gauge, FileText, Wrench, Bug, Boxes } from 'lucide-vue-next'
 import { aiApi, sourceApi } from '../api'
+import { useRepoStore } from '../stores/repoStore'
 
 const route = useRoute()
 const sessionId = ref(`s-${Date.now().toString(36)}`)
@@ -119,6 +120,7 @@ const panelMode = ref<'' | 'slash' | 'project'>('')  // project 模式含项目�
 const panelQuery = ref('')
 const panelIdx = ref(0)
 const repos = ref<Array<Record<string, any>>>([])
+const repoStore = useRepoStore()
 const issues = ref<Array<Record<string, any>>>([])
 
 const panelItems = computed<PanelItem[]>(() => {
@@ -234,9 +236,11 @@ async function clearSession() {
 }
 
 onMounted(async () => {
-  // 预载项目与问题，供 @ 引用（失败静默，@ 面板显示为空）
-  const [r, i] = await Promise.allSettled([sourceApi.repos(50), sourceApi.issues({ limit: 20 })])
-  if (r.status === 'fulfilled') repos.value = r.value.data || []
+  // 预载项目与问题，供 @ 引用（项目走全局缓存；失败静默，@ 面板显示为空）
+  const [, i] = await Promise.allSettled([
+    repoStore.load().then(() => { repos.value = repoStore.repos }),
+    sourceApi.issues({ limit: 20 })
+  ])
   if (i.status === 'fulfilled') issues.value = i.value.data || []
 
   const msg = route.query.msg as string | undefined

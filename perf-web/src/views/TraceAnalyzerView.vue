@@ -3,7 +3,7 @@
     <div class="page-title">
       <GitBranch class="w-5 h-5 text-neon-green" />
       调用链分析
-      <span class="text-xs font-normal text-fg-sub ml-2">Controller → Service → DAO 耗时分布 · 火焰图 · 慢 SQL</span>
+      <span class="text-xs font-normal text-fg-sub ml-2">Controller → Service → DAO 耗时分布 · 火焰图 · 慢 SQL · CPU 热点</span>
     </div>
 
     <div class="glass-card p-4 mb-4 flex flex-wrap items-center gap-4">
@@ -64,7 +64,7 @@
       </div>
     </div>
 
-    <div v-else>
+    <div v-else-if="activeTab === 'slow'">
       <div class="glass-card p-4">
         <div class="flex items-center justify-between mb-3">
           <div class="text-sm font-medium">慢 SQL 列表</div>
@@ -100,31 +100,62 @@
         </div>
       </div>
     </div>
+
+    <!-- CPU 热点 Tab：agent 弱采样的方法级 CPU 帧命中排行（回答"CPU 烧在哪"） -->
+    <div v-else-if="activeTab === 'hotspot'">
+      <div class="glass-card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-sm font-medium">CPU 热点方法（最近 1 小时）</div>
+          <span class="text-[11px] text-fg-sub">需被测应用以 hotspotEnabled=true 启动 agent 采集</span>
+        </div>
+        <div v-if="!hotspots.length" class="text-xs text-fg-sub py-10 text-center">暂无 CPU 热点数据</div>
+        <template v-else>
+          <MetricChart :option="hotspotOption" :height="Math.max(240, hotspots.length * 26) + 'px'" />
+          <div class="mt-3 space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
+            <div v-for="(h, i) in hotspots" :key="h.methodName"
+              class="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5">
+              <span class="text-[11px] w-6 text-right text-fg-sub shrink-0">{{ i + 1 }}</span>
+              <div class="text-xs font-mono text-fg-main truncate flex-1" :title="h.methodName">{{ h.methodName }}</div>
+              <div class="text-xs text-neon-green shrink-0">{{ h.samples }} 次</div>
+              <div class="w-32 h-1.5 rounded bg-white/5 overflow-hidden shrink-0">
+                <div class="h-full bg-gradient-to-r from-neon-green to-neon-teal rounded"
+                  :style="{ width: (h.samples / hotspots[0].samples) * 100 + '%' }"></div>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { GitBranch } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import TraceTree from '../components/TraceTree.vue'
 import { fmtTime } from '../utils/format'
-import { traceApi, slowSqlApi, sourceApi } from '../api'
+import { traceApi, slowSqlApi, hotspotApi, sourceApi } from '../api'
+import { useRepoStore } from '../stores/repoStore'
 
 const tabs = [
   { key: 'trace', label: '调用链' },
-  { key: 'slow', label: '慢 SQL' }
+  { key: 'slow', label: '慢 SQL' },
+  { key: 'hotspot', label: 'CPU 热点' }
 ]
 const activeTab = ref('trace')
 const query = ref<{ app: string; method: string }>({ app: '', method: '' })
 // 项目下拉数据源 = 源码仓库名
 const projectNames = ref<string[]>([])
+const repoStore = useRepoStore()
 const traces = ref<Array<Record<string, any>>>([])
 const detail = ref<Record<string, any> | null>(null)
 const treeNode = ref<Record<string, any> | null>(null)
 const slowSqls = ref<Array<Record<string, any>>>([])
 const minCostMs = ref(0)
 const selectedId = ref<number>()
+/** CPU 热点方法排行（agent HotspotSampler 弱采样） */
+const hotspots = ref<Array<Record<string, any>>>([])
 
 // 总耗时 = 根节点（Controller 层）自身耗时；旧数据兜底用后端 totalMs
 const rootCost = computed(() => {
@@ -254,21 +285,19 @@ const flameOption = computed(() => {
 
 async function loadTraces() {
   const end = Date.now()
-  const [t, a] = await Promise.allSettled([
-    traceApi.list({ app: query.value.app || undefined, method: query.value.method || undefined, start: end - 86400000, end, limit: 50 }),
-    sourceApi.repos()
+  const [t] = await Promise.allSettled([
+    traceApi.list({ app: query.value.app || undefined, method: query.value.method || undefined, start: end - 86400000, end, limit: 50 })
   ])
   if (t.status === 'fulfilled') traces.value = t.value.data
-  // 项目下拉：首次加载后默认选中第一个项目
-  if (a.status === 'fulfilled') {
-    const names = (a.value.data || []).map((r: Record<string, any>) => r.repoName).filter(Boolean)
-    if (!projectNames.value.length) {
-      projectNames.value = names
-      if (!query.value.app && names.length) {
-        query.value.app = names[0]
-        await loadTraces()
-        return
-      }
+  // 项目下拉：全局缓存加载（消除重复拉取），首次加载后默认选中第一个项目
+  await repoStore.load().catch(() => {})
+  if (!projectNames.value.length) {
+    const names = repoStore.repos.map((r: Record<string, any>) => r.repoName).filter(Boolean)
+    projectNames.value = names
+    if (!query.value.app && names.length) {
+      query.value.app = names[0]
+      await loadTraces()
+      return
     }
   }
 }
@@ -318,6 +347,71 @@ function formatChain(chainJson: unknown): string {
     })
     .join(' → ')
 }
+
+/** CPU 热点加载（最近 1 小时 top 30） */
+async function loadHotspots() {
+  try {
+    const r = await hotspotApi.list({
+      app: query.value.app || undefined,
+      limit: 30
+    })
+    hotspots.value = r.data || []
+  } catch {
+    hotspots.value = []
+  }
+}
+
+/** CPU 热点横向条形图（命中次数降序） */
+const hotspotOption = computed(() => ({
+  backgroundColor: 'transparent',
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+  grid: { left: 8, right: 48, top: 8, bottom: 8, containLabel: true },
+  xAxis: {
+    type: 'value',
+    axisLabel: { color: '#8A94A6', fontSize: 10 },
+    splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } }
+  },
+  yAxis: {
+    type: 'category',
+    inverse: true,
+    data: hotspots.value.map((h) => shortMethod(h.methodName)),
+    axisLabel: { color: '#C8D2E0', fontSize: 10 },
+    axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } }
+  },
+  series: [{
+    type: 'bar',
+    data: hotspots.value.map((h) => h.samples),
+    itemStyle: {
+      color: {
+        type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
+        colorStops: [
+          { offset: 0, color: 'rgba(0,229,160,0.85)' },
+          { offset: 1, color: 'rgba(14,165,233,0.9)' }
+        ]
+      },
+      borderRadius: [0, 4, 4, 0]
+    },
+    label: { show: true, position: 'right', color: '#8A94A6', fontSize: 10, formatter: '{c}' },
+    barMaxWidth: 18
+  }]
+}))
+
+/** 方法全限定名 → 简短显示（com.a.b.Foo#bar → Foo#bar） */
+function shortMethod(name: string): string {
+  if (!name) return ''
+  const hash = name.indexOf('#')
+  const cls = hash > 0 ? name.slice(0, hash) : name
+  const short = cls.slice(cls.lastIndexOf('.') + 1)
+  return hash > 0 ? short + name.slice(hash) : short
+}
+
+// Tab 切换联动加载（切换项目时同步刷新）
+watch(activeTab, (tab) => {
+  if (tab === 'hotspot' && !hotspots.value.length) loadHotspots()
+})
+watch(() => query.value.app, () => {
+  if (activeTab.value === 'hotspot') loadHotspots()
+})
 
 onMounted(() => {
   loadTraces()

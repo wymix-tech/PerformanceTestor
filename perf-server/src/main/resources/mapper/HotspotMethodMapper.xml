@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.HotspotMethodMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.HotspotMethod">
+        <id column="id" property="id"/>
+        <result column="app_name" property="appName"/>
+        <result column="method_name" property="methodName"/>
+        <result column="samples" property="samples"/>
+        <result column="sample_time" property="sampleTime"/>
+    </resultMap>
+
+    <insert id="batchInsert">
+        INSERT INTO hotspot_method (app_name, method_name, samples, sample_time)
+        VALUES
+        <foreach collection="list" item="h" separator=",">
+            (#{h.appName}, #{h.methodName}, #{h.samples}, #{h.sampleTime})
+        </foreach>
+    </insert>
+
+    <!-- 时间窗内按方法聚合命中数取 topN -->
+    <select id="queryTop" resultMap="BaseResultMap">
+        SELECT method_name,
+               SUM(samples) AS samples,
+               MAX(sample_time) AS sample_time
+        FROM hotspot_method
+        WHERE sample_time &gt;= #{start} AND sample_time &lt;= #{end}
+        <if test="appName != null and appName != ''">
+            AND app_name = #{appName}
+        </if>
+        GROUP BY method_name
+        ORDER BY samples DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

@@ -1,57 +1,82 @@
 package com.perfserver.stress;
 
-import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
- * 压测统计器：累加器 + 固定桶直方图，内存 O(1)。
+ * 压测统计器：LongAdder 计数 + 分片直方图，写入无锁，内存 O(shards)。
  *
  * <p>直方图桶宽 1ms，覆盖 [0, 30000ms)，超出部分落入最后一个桶，用于
  * P50/P95/P99 分位数计算。窗口采样基于累计直方图差值，保证各采样周期独立。
+ *
+ * <p><b>无锁化设计</b>（替代旧的全局 synchronized——5000 worker 争抢一把锁，
+ * 高 QPS 下统计自身成为瓶颈）：
+ * <ul>
+ *   <li>计数器用 {@link LongAdder}（分段累加，读取时求和）；</li>
+ *   <li>直方图按线程哈希分 {@value #SHARD_COUNT} 片，每片 {@link AtomicLongArray}
+ *       独立 CAS 自增——争用面缩小为同片同桶，跨片零竞争；</li>
+ *   <li>collectWindow/stageSnapshot 无锁合并读（读取瞬间可能有微小不一致，
+ *       对监控统计可接受）；对外 API 签名与语义（30000 桶 × 1ms）保持不变。</li>
+ * </ul>
  */
 public class StressStatistician {
 
     /** 桶数量：覆盖 0-29999ms，最后一个桶收纳溢出值 */
     private static final int BUCKET_COUNT = 30000;
+    /** 直方图分片数（2 的幂，线程哈希取模） */
+    private static final int SHARD_COUNT = 16;
+    private static final int SHARD_MASK = SHARD_COUNT - 1;
 
-    /** 累计直方图 */
-    private final long[] histogram = new long[BUCKET_COUNT];
-    private long totalCount;
-    private long errorCount;
-    private long totalCostMs;
+    /** 分片累计直方图：histograms[shard][bucket] */
+    private final AtomicLongArray[] histograms = new AtomicLongArray[SHARD_COUNT];
+    /** 分片选择缓存（每线程一个下标，避免每次取 Thread.getId） */
+    private final ThreadLocal<Integer> shardHolder = ThreadLocal.withInitial(
+            () -> (int) (Thread.currentThread().getId() & SHARD_MASK));
 
-    /** 窗口基线（上次 collectWindow 时的累计快照） */
+    private final LongAdder totalCount = new LongAdder();
+    private final LongAdder errorCount = new LongAdder();
+    private final LongAdder totalCostMs = new LongAdder();
+
+    /** 窗口基线（上次 collectWindow 时的合并累计快照） */
     private final long[] lastHistogram = new long[BUCKET_COUNT];
     private long lastTotal;
     private long lastError;
     private long lastCostMs;
 
-    /** 记录一次请求耗时（毫秒）与是否错误 */
-    public synchronized void record(long costMs, boolean error) {
+    public StressStatistician() {
+        for (int i = 0; i < SHARD_COUNT; i++) {
+            histograms[i] = new AtomicLongArray(BUCKET_COUNT);
+        }
+    }
+
+    /** 记录一次请求耗时（毫秒）与是否错误（无锁：分片 CAS + LongAdder） */
+    public void record(long costMs, boolean error) {
         int idx = (int) Math.min(Math.max(costMs, 0), BUCKET_COUNT - 1);
-        histogram[idx]++;
-        totalCount++;
-        totalCostMs += costMs;
+        histograms[shardHolder.get()].incrementAndGet(idx);
+        totalCount.increment();
+        totalCostMs.add(costMs);
         if (error) {
-            errorCount++;
+            errorCount.increment();
         }
     }
 
     /**
-     * 收集自上次调用以来的窗口统计（独立周期），并更新基线。
+     * 收集自上次调用以来的窗口统计（独立周期），并更新基线（无锁合并读）。
      */
-    public synchronized WindowStats collectWindow() {
+    public WindowStats collectWindow() {
+        long[] merged = mergedHistogram();
         long[] window = new long[BUCKET_COUNT];
         for (int i = 0; i < BUCKET_COUNT; i++) {
-            window[i] = histogram[i] - lastHistogram[i];
+            window[i] = merged[i] - lastHistogram[i];
         }
-        long count = totalCount - lastTotal;
-        long errors = errorCount - lastError;
-        long costMs = totalCostMs - lastCostMs;
+        long count = totalCount.sum() - lastTotal;
+        long errors = errorCount.sum() - lastError;
+        long costMs = totalCostMs.sum() - lastCostMs;
 
-        System.arraycopy(histogram, 0, lastHistogram, 0, BUCKET_COUNT);
-        lastTotal = totalCount;
-        lastError = errorCount;
-        lastCostMs = totalCostMs;
+        System.arraycopy(merged, 0, lastHistogram, 0, BUCKET_COUNT);
+        lastTotal = totalCount.sum();
+        lastError = errorCount.sum();
+        lastCostMs = totalCostMs.sum();
 
         WindowStats stats = new WindowStats();
         stats.count = count;
@@ -61,14 +86,29 @@ public class StressStatistician {
         return stats;
     }
 
-    /** 当前累计快照（用于分档统计与最终结果） */
-    public synchronized StageSnapshot stageSnapshot() {
+    /** 当前累计快照（用于分档统计与最终结果；无锁合并读） */
+    public StageSnapshot stageSnapshot() {
         StageSnapshot snap = new StageSnapshot();
-        snap.total = totalCount;
-        snap.errorCount = errorCount;
-        snap.totalCostMs = totalCostMs;
-        snap.histogram = Arrays.copyOf(histogram, BUCKET_COUNT);
+        snap.total = totalCount.sum();
+        snap.errorCount = errorCount.sum();
+        snap.totalCostMs = totalCostMs.sum();
+        snap.histogram = mergedHistogram();
         return snap;
+    }
+
+    /** 合并全部分片直方图为单份数组（读取路径，调用频率低） */
+    private long[] mergedHistogram() {
+        long[] merged = new long[BUCKET_COUNT];
+        for (int s = 0; s < SHARD_COUNT; s++) {
+            AtomicLongArray shard = histograms[s];
+            for (int i = 0; i < BUCKET_COUNT; i++) {
+                long v = shard.get(i);
+                if (v != 0) {
+                    merged[i] += v;
+                }
+            }
+        }
+        return merged;
     }
 
     /** 从直方图计算分位数（毫秒）：p 取值 50/95/99 等 */

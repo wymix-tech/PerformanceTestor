@@ -254,53 +254,18 @@
     <!-- Step 4 压测 -->
     <div v-else-if="step === 3" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">配置并发起压测 <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
-      <div class="text-[11px] text-fg-sub mb-4">参数与压测中心一致（接口/方法/引擎/分档并发）。需要完整配置？<router-link class="text-neon-blue hover:underline" to="/stress">打开压测中心</router-link></div>
+      <div class="text-[11px] text-fg-sub mb-4">参数与压测中心一致（接口/方法/引擎/预热/分档并发）。需要完整配置？<router-link class="text-neon-blue hover:underline" to="/stress">打开压测中心</router-link></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs text-fg-sub">接口</label>
-            <select v-model="endpointIdx" class="input-select w-full" @change="selectEndpoint">
-              <option :value="-1">— {{ endpoints.length ? '选择接口' : '无扫描结果（手填路径）' }} —</option>
-              <option v-for="(e, i) in endpoints" :key="i" :value="i">[{{ e.httpMethod }}] {{ e.path }}（{{ e.className }}#{{ e.methodName || '?' }}）</option>
-            </select>
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">服务地址（选项目后按 agent 上报自动带出，可修改）</label>
-            <input v-model="stressBaseUrl" class="input-text w-full" placeholder="http://127.0.0.1:8081" @input="composeStressUrl()" />
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">目标 URL（选接口自动拼接，可微调）</label>
-            <input v-model="stressUrl" class="input-text w-full" placeholder="http://host:port/api/xxx" />
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="text-xs text-fg-sub">方法</label>
-              <select v-model="stressMethod" class="input-select w-full">
-                <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
-              </select>
-            </div>
-            <div>
-              <label class="text-xs text-fg-sub">引擎</label>
-              <select v-model="stressEngine" class="input-select w-full">
-                <option value="http">http（内置）</option>
-                <option value="jmeter" disabled title="jmeter 引擎尚未实现，敬请期待">jmeter（未实现）</option>
-              </select>
-            </div>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-fg-sub">并发数</label><input v-model.number="stressConcurrency" type="number" class="input-text w-full" min="1" max="1000" /></div>
-            <div><label class="text-xs text-fg-sub">时长（秒）</label><input v-model.number="stressDuration" type="number" class="input-text w-full" min="1" max="3600" /></div>
-          </div>
-          <div v-if="stressMethod !== 'GET'">
-            <label class="text-xs text-fg-sub">请求体 Body（JSON，可选）</label>
-            <textarea v-model="stressBody" class="input-text w-full font-mono" rows="3" placeholder='{"key": "value"}'></textarea>
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">分档并发（逗号分隔，容量曲线）</label>
-            <input v-model="stressStages" class="input-text w-full" placeholder="如 10,50,100" />
-          </div>
-          <button class="btn-primary w-full justify-center" :disabled="busy || !stressUrl.trim()" @click="startStress">发起压测</button>
-        </div>
+        <!-- 压测参数公共组件（与压测中心共用同一表单实现） -->
+        <StressForm
+          ref="stressFormRef"
+          :endpoints="endpoints"
+          :auto-base-url="instBaseUrl"
+          default-target-url="http://127.0.0.1:8081/api/user/list?limit=200"
+          :disabled="busy"
+          submit-label="发起压测"
+          @submit="startStress"
+        />
         <div class="rounded-xl bg-white/5 p-4 text-xs space-y-1.5">
           <div class="text-fg-sub font-medium mb-1">任务状态</div>
           <div v-if="!stressTask" class="text-fg-sub">尚未发起</div>
@@ -378,11 +343,14 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
+import StressForm from '../components/stress/StressForm.vue'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi, deployApi, slowSqlApi } from '../api'
+import { useRepoStore } from '../stores/repoStore'
 
 const route = useRoute()
 const router = useRouter()
+const repoStore = useRepoStore()
 
 const stepDefs = [
   { title: '选择项目' }, { title: '部署(可选)' }, { title: '灌注数据' },
@@ -391,7 +359,8 @@ const stepDefs = [
 
 const step = ref(0)
 const busy = ref(false)
-const repos = ref<Array<Record<string, any>>>([])
+/** 项目列表共享缓存（repoStore 消除各视图重复拉取） */
+const repos = computed(() => repoStore.repos)
 const repoId = ref<number>(0)
 const conns = ref<Array<Record<string, any>>>([])
 const connId = ref<number>(0)
@@ -451,16 +420,12 @@ function copyText(t: string) {
   })
 }
 const endpoints = ref<Array<Record<string, any>>>([])
-const endpointIdx = ref(-1)
-/** 压测参数（与压测中心 StressCenterView 表单对齐：默认值/范围/方法/引擎/分档并发） */
-const stressBaseUrl = ref('')
-const stressUrl = ref('http://127.0.0.1:8081/api/user/list?limit=200')
-const stressMethod = ref('GET')
-const stressBody = ref('')
-const stressEngine = ref('http')
-const stressConcurrency = ref(50)
-const stressDuration = ref(30)
-const stressStages = ref('10,50,100')
+const stressFormRef = ref<InstanceType<typeof StressForm> | null>(null)
+/** agent 上报的服务地址（StressForm 自动预填；模板命令与预填共用实例探测） */
+const instBaseUrl = computed(() => {
+  const inst = appInstances.value.find((a) => a.appName === appName.value || a.appName === repoName.value)
+  return inst?.appHost ? 'http://' + inst.appHost + (inst.appPort ? ':' + inst.appPort : '') : ''
+})
 const stressTask = ref<any>(null)
 const report = ref<any>(null)
 const capacityText = ref('')
@@ -538,21 +503,6 @@ const repoName = computed(() => repos.value.find((r) => r.id === repoId.value)?.
 const appName = computed(() => repos.value.find((r) => r.id === repoId.value)?.appName || repoName.value)
 
 /** 选中接口：自动带出方法与 URL（服务地址 + path）——与压测中心 applyEndpoint 一致 */
-function selectEndpoint() {
-  const e = endpoints.value[endpointIdx.value]
-  if (!e) return
-  // 直接采用扫描出的方法（GET/POST/PUT/DELETE/PATCH），未知时回退 GET
-  stressMethod.value = e.httpMethod || 'GET'
-  composeStressUrl(e.path)
-}
-
-/** 拼接完整目标 URL；显式传 path（选接口时）优先 */
-function composeStressUrl(pathOverride?: string) {
-  const e = endpoints.value[endpointIdx.value]
-  const base = (stressBaseUrl.value || '').replace(/\/+$/, '')
-  const p = pathOverride !== undefined ? pathOverride : (e ? e.path : '')
-  if (base && p) stressUrl.value = base + p
-}
 
 /** 打勾只认本轮向导内亲自完成的动作（浏览型步骤以到达为完成） */
 function done(i: number) {
@@ -615,7 +565,6 @@ function selectRepo(r: any) {
     repoId.value = 0
     sessionDone.value[0] = false
     endpoints.value = []
-    endpointIdx.value = -1
     traces.value = []
     issues.value = []
     return
@@ -628,9 +577,8 @@ function selectRepo(r: any) {
 
 /** zip 同步导入：刷新列表并自动选中新项目 */
 async function reloadReposAndSelect(text: string) {
-  const r = await sourceApi.repos(50)
-  repos.value = r.data || []
-  const newest = repos.value[0]
+  await repoStore.reload()
+  const newest = repoStore.repos[0]
   if (newest) {
     selectRepo(newest)
     importMsg.value = { ok: true, text: `「${newest.repoName}」${text}，已自动选中，可进入下一步` }
@@ -696,15 +644,14 @@ async function doImportLocal() {
 function afterImportStarted(fallbackName: string) {
   importMsg.value = { ok: true, text: `${fallbackName}导入请求已提交，正在拉取源码并建立索引（完成后自动选中）…` }
   stopImportPoll()
-  const known = new Set(repos.value.map((r) => r.id))
+  const known = new Set(repoStore.repos.map((r) => r.id))
   let waited = 0
   importPoll = setInterval(async () => {
     waited += 2000
     try {
-      const r = await sourceApi.repos(50)
-      const fresh = (r.data || []).find((x: any) => !known.has(x.id))
+      await repoStore.load(true)
+      const fresh = repoStore.repos.find((x: any) => !known.has(x.id))
       if (fresh) {
-        repos.value = r.data || []
         selectRepo(fresh)
         importMsg.value = { ok: true, text: `「${fresh.repoName}」导入完成，已自动选中，可进入下一步` }
         stopImportPoll()
@@ -722,19 +669,14 @@ function stopImportPoll() {
 
 async function loadEndpoints() {
   endpoints.value = []
-  endpointIdx.value = -1
   if (!repoId.value) return
   try {
-    // agent 上报的应用实例自动预填服务地址（host + 可选端口）
-    const inst = appInstances.value.find((a) => a.appName === appName.value)
-    if (inst?.appHost) {
-      stressBaseUrl.value = 'http://' + inst.appHost + (inst.appPort ? ':' + inst.appPort : '')
-    }
+    // agent 上报的应用实例自动预填服务地址（host + 可选端口，经 StressForm autoBaseUrl）
     const r = await sourceApi.endpoints(repoId.value)
     endpoints.value = r.data || [] // GET/POST 全保留（与压测中心一致）
     if (endpoints.value.length) {
-      endpointIdx.value = 0
-      selectEndpoint()
+      // 自动选中首个接口（表单内完成方法与 URL 拼接）
+      stressFormRef.value?.selectFirstEndpoint()
     }
   } catch { /* 扫描失败不阻断 */ }
 }
@@ -777,23 +719,15 @@ async function checkGen() {
   }
 }
 
-async function startStress() {
-  if (!stressUrl.value.trim()) return
+/** 发起压测：StressForm 提交标准请求体，向导补充任务名与应用归属 */
+async function startStress(payload: Record<string, unknown>) {
   busy.value = true
   try {
-    const stageList = stressStages.value.split(',').map((s) => Number(s.trim())).filter((n) => n > 0)
-    const e = endpointIdx.value >= 0 ? endpoints.value[endpointIdx.value] : null
-    const body: Record<string, unknown> = {
-      taskName: e ? `${e.className}#${e.methodName || e.path}` : `向导压测-${repoName.value}`,
-      targetUrl: stressUrl.value.trim(),
-      method: stressMethod.value,
-      engineType: stressEngine.value,
-      concurrency: stressConcurrency.value,
-      durationSec: stressDuration.value,
+    const body = {
+      ...payload,
+      taskName: `向导压测-${repoName.value}`,
       appName: appName.value || undefined
     }
-    if (stageList.length > 1) body.stageConcurrencies = stageList
-    if (stressBody.value.trim()) body.body = stressBody.value.trim()
     const r = await stressApi.create(body)
     stressTask.value = r.data
     sessionDone.value[3] = true // 本轮压测已发起
@@ -897,13 +831,11 @@ function onEnterStep() {
 onMounted(async () => {
   // 快速开始 = 每次全新流程：固定第 1 步，不预选项目、不载入历史任务（打勾只认本轮操作）
   step.value = 0
-  const [r, c, a] = await Promise.allSettled([
-    sourceApi.repos(50), dbConnApi.list(), appApi.list()
+  const [c, a] = await Promise.allSettled([
+    dbConnApi.list(), appApi.list()
   ])
-  if (r.status === 'fulfilled') {
-    repos.value = r.value.data || []
-    importPanelOpen.value = repos.value.length === 0 // 无项目自动展开导入面板
-  }
+  await repoStore.load().catch(() => {})
+  importPanelOpen.value = repoStore.repos.length === 0 // 无项目自动展开导入面板
   if (c.status === 'fulfilled') conns.value = c.value.data || []
   if (a.status === 'fulfilled') appInstances.value = a.value.data || []
   loadDeployConns()

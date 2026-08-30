@@ -12,6 +12,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
+import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
 import static net.bytebuddy.matcher.ElementMatchers.isAbstract;
 import static net.bytebuddy.matcher.ElementMatchers.isAnnotatedWith;
 import static net.bytebuddy.matcher.ElementMatchers.isInterface;
@@ -66,6 +67,23 @@ public class TraceEnhancer {
             agentBuilder = agentBuilder
                     .type(businessTypeMatcher(config))
                     .transform(TraceEnhancer::transformMethodAdvice);
+        }
+
+        // 1.1) Servlet Filter 根拦截：以最外层 Filter#doFilter 作为唯一采样决策点，
+        //      修复"Controller 未采样时下游方法重复成为根"导致的采样稀释与半截链路。
+        //      按类型名匹配（jakarta/javax 双协议，hasSuperType 走名称匹配无需加载 Servlet 类）。
+        if (config.methodTraceEnabled && config.filterRootEnabled) {
+            agentBuilder = agentBuilder
+                    .type(hasSuperType(named("jakarta.servlet.Filter"))
+                            .or(hasSuperType(named("javax.servlet.Filter")))
+                            .and(not(isInterface()))
+                            .and(not(isAbstract()))
+                            .and(not(nameStartsWith("com.perfagent.")))
+                            .and(not(nameStartsWith("net.bytebuddy."))))
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(FilterRootAdvice.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on(named("doFilter").and(not(isStatic())))));
         }
 
         // 2) JDBC 执行拦截

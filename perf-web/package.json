@@ -16,9 +16,7 @@
     "pinia": "^2.1.7",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
-    "tdesign-vue-next": "^1.9.9",
     "vue": "^3.4.27",
-    "vue-echarts": "^7.0.3",
     "vue-router": "^4.3.2"
   },
   "devDependencies": {

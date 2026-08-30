@@ -126,6 +126,7 @@ import { onMounted, ref } from 'vue'
 import { FolderGit } from 'lucide-vue-next'
 import { repoStatusClass as statusClass } from '../utils/format'
 import { sourceApi } from '../api'
+import { useRepoStore } from '../stores/repoStore'
 
 const importForm = ref<{ repoName: string }>({ repoName: '' })
 const zipFile = ref<File | null>(null)
@@ -152,6 +153,7 @@ async function fetchRemoteBranches() {
 }
 const localPath = ref('')
 const repos = ref<Array<Record<string, any>>>([])
+const repoStore = useRepoStore()
 const fileList = ref<Array<Record<string, any>>>([])
 const currentRepo = ref<Record<string, any> | null>(null)
 const currentFile = ref<Record<string, any> | null>(null)
@@ -168,8 +170,9 @@ function formatSize(n: number) {
 }
 
 async function loadRepos() {
-  const r = await sourceApi.repos()
-  repos.value = r.data
+  // 项目管理页为权威视图：强制刷新全局缓存，导入/删除后其他视图立即可见
+  await repoStore.reload()
+  repos.value = repoStore.repos
   currentRepo.value = repos.value[0] || null
 }
 

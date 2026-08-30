@@ -37,11 +37,17 @@ export default {
         pulseGlow: {
           '0%, 100%': { boxShadow: '0 0 12px rgba(0,229,160,0.15)' },
           '50%': { boxShadow: '0 0 28px rgba(0,229,160,0.45)' }
+        },
+        shake: {
+          '0%, 100%': { transform: 'translateX(0)' },
+          '20%, 60%': { transform: 'translateX(-6px)' },
+          '40%, 80%': { transform: 'translateX(6px)' }
         }
       },
       animation: {
         float: 'float 4s ease-in-out infinite',
-        pulseGlow: 'pulseGlow 3s ease-in-out infinite'
+        pulseGlow: 'pulseGlow 3s ease-in-out infinite',
+        shake: 'shake 0.4s ease-in-out'
       }
     }
   },

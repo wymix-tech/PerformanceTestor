@@ -29,6 +29,16 @@ public class StressTaskRequest {
     private int durationSec = 60;
     /** QPS 上限（0 不限制） */
     private int qpsLimit;
+    /**
+     * 预热时长秒（默认 10）：warmup 期发压但不计入正式统计——
+     * 消除首波冷连接（TCP/TLS 握手、目标 JIT 未热）对 P99 的污染。设 0 关闭。
+     */
+    private int warmupSec = 10;
+    /**
+     * 并发爬坡时长秒（默认 0 即全量并发立即启动）：worker 按序号在爬坡期内
+     * 依次激活（线性阶梯升并发），避免瞬时连接风暴。建议 ≤ warmupSec 以获得干净统计。
+     */
+    private int rampUpSec;
     /** 请求头 */
     private Map<String, String> headers = new HashMap<>();
     /** 请求体（POST 等） */
@@ -131,6 +141,22 @@ public class StressTaskRequest {
 
     public void setQpsLimit(int qpsLimit) {
         this.qpsLimit = qpsLimit;
+    }
+
+    public int getWarmupSec() {
+        return warmupSec;
+    }
+
+    public void setWarmupSec(int warmupSec) {
+        this.warmupSec = warmupSec;
+    }
+
+    public int getRampUpSec() {
+        return rampUpSec;
+    }
+
+    public void setRampUpSec(int rampUpSec) {
+        this.rampUpSec = rampUpSec;
     }
 
     public Map<String, String> getHeaders() {

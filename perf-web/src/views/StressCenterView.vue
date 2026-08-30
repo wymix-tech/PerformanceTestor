@@ -9,7 +9,7 @@
     <div class="flex gap-1 mb-4">
       <button
         v-for="tab in tabs" :key="tab.key"
-        class="px-5 py-2 rounded-lg text-sm transition-all"
+        class="px-5 py-2 rounded-lg text-sm transition-all cursor-pointer"
         :class="activeTab === tab.key ? 'bg-neon-green/15 text-neon-green border border-neon-green/30' : 'text-fg-sub border border-white/10 hover:text-fg-main'"
         @click="activeTab = tab.key"
       >{{ tab.label }}</button>
@@ -25,15 +25,15 @@
         <div class="space-y-3">
           <div>
             <label class="text-xs text-fg-sub">项目</label>
-            <select v-model="form.repoId" class="input-select w-full" @change="loadEndpoints">
+            <select v-model="repoId" class="input-select w-full" @change="loadEndpoints">
               <option :value="0">— 手动填写 URL —</option>
-              <option v-for="r in repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
+              <option v-for="r in repoStore.repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
             </select>
           </div>
-          <div v-if="form.repoId > 0">
+          <div v-if="repoId > 0">
             <label class="text-xs text-fg-sub flex items-center justify-between">
               <span>{{ currentRepoType === 'git' ? '分支与接口' : '接口' }}</span>
-              <button class="text-neon-blue hover:underline text-[11px]" :disabled="resyncing" @click="resyncAndScan">
+              <button class="text-neon-blue hover:underline text-[11px] cursor-pointer" :disabled="resyncing" @click="resyncAndScan">
                 {{ resyncing ? '同步中…' : '↻ 与源码重新同步' }}
               </button>
             </label>
@@ -56,64 +56,24 @@
                 <option v-else value="">{{ currentRepoBranch || '分支加载中…' }}</option>
               </select>
             </div>
-            <select v-model="form.endpointIdx" class="input-select w-full" @change="applyEndpoint">
-              <option :value="-1">— 选择接口（{{ endpoints.length }} 个）—</option>
-              <option v-for="(e, i) in endpoints" :key="i" :value="i">
-                [{{ e.httpMethod }}] {{ e.path }}（{{ e.className }}#{{ e.methodName || '?' }}）
-              </option>
-            </select>
           </div>
-          <div>
-            <label class="text-xs text-fg-sub">服务地址（选项目后按 agent 上报自动带出，可修改）</label>
-            <input v-model="form.baseUrl" class="input-text w-full" placeholder="http://127.0.0.1:8081" @input="composeUrl()" />
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">目标 URL（{{ form.repoId > 0 ? '自动拼接，可微调' : 'http/https' }}）</label>
-            <input v-model="form.targetUrl" class="input-text w-full" placeholder="http://host:port/api/xxx" />
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="text-xs text-fg-sub">方法</label>
-              <select v-model="form.method" class="input-select w-full">
-                <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
-              </select>
-            </div>
-            <div>
-              <label class="text-xs text-fg-sub">引擎</label>
-              <select v-model="form.engineType" class="input-select w-full">
-                <option value="http">http（内置）</option>
-                <option value="jmeter" disabled title="jmeter 引擎尚未实现，敬请期待">jmeter（未实现）</option>
-              </select>
-            </div>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="text-xs text-fg-sub">并发数</label>
-              <input v-model.number="form.concurrency" type="number" class="input-text w-full" min="1" max="1000" />
-            </div>
-            <div>
-              <label class="text-xs text-fg-sub">时长（秒）</label>
-              <input v-model.number="form.durationSec" type="number" class="input-text w-full" min="1" max="3600" />
-            </div>
-          </div>
-          <div v-if="form.method !== 'GET'">
-            <label class="text-xs text-fg-sub">请求体 Body（JSON，可选）</label>
-            <textarea v-model="form.body" class="input-text w-full font-mono" rows="3" placeholder='{"key": "value"}'></textarea>
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">分档并发（逗号分隔，容量曲线）</label>
-            <input v-model="form.stageConcurrencies" class="input-text w-full" placeholder="如 10,50,100" />
-          </div>
-          <button class="btn-primary w-full justify-center" :disabled="running" @click="startStress">
-            {{ running ? '压测进行中…' : '开始压测' }}
-          </button>
+          <!-- 压测参数公共组件（接口选择/URL 拼接/并发/时长/预热/QPS/分档） -->
+          <StressForm
+            ref="stressFormRef"
+            :endpoints="endpoints"
+            :auto-base-url="autoBaseUrl"
+            :disabled="running"
+            submit-label="开始压测"
+            @submit="startStress"
+            @endpoint-selected="onEndpointSelected"
+          />
         </div>
       </div>
 
       <div class="glass-card p-5 xl:col-span-2">
         <div class="text-sm font-medium mb-3 flex items-center justify-between">
           <span>最近任务</span>
-          <button class="text-xs text-neon-blue hover:underline" @click="loadTasks">刷新</button>
+          <button class="text-xs text-neon-blue hover:underline cursor-pointer" @click="loadTasks">刷新</button>
         </div>
         <div v-if="!tasks.length" class="text-xs text-fg-sub py-8 text-center">暂无压测任务</div>
         <div v-else class="space-y-2 max-h-[430px] overflow-y-auto pr-1">
@@ -136,80 +96,52 @@
       </div>
     </div>
 
-    <!-- 压测报告 -->
-    <div v-if="activeTab === 'stress' && report" class="glass-card p-5 mt-4">
-      <div class="text-sm font-medium mb-4 flex items-center justify-between">
-        <span class="flex items-center gap-2">
-          压测报告 — {{ report.task.taskName || report.task.targetUrl }}
-          <span v-if="report.task.appVersion" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-purple/10 text-neon-purple">v{{ report.task.appVersion }}</span>
-        </span>
-        <span class="flex items-center gap-3">
-          <button v-if="taskFinished" class="text-xs text-neon-green hover:underline" @click="rerunTask">↻ 再来一次</button>
-          <button class="text-xs text-neon-blue hover:underline" @click="runCapacity">容量评估 →</button>
-        </span>
-      </div>
-      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-4">
-        <div class="metric-card"><div class="text-xs text-fg-sub">总请求</div><div class="text-lg font-bold">{{ report.result?.totalRequests ?? '—' }}</div></div>
-        <div class="metric-card"><div class="text-xs text-fg-sub">QPS</div><div class="text-lg font-bold neon-text">{{ report.result?.qps ?? '—' }}</div></div>
-        <div class="metric-card"><div class="text-xs text-fg-sub">P50</div><div class="text-lg font-bold">{{ report.result?.p50Ms ?? '—' }}ms</div></div>
-        <div class="metric-card"><div class="text-xs text-fg-sub">P95</div><div class="text-lg font-bold">{{ report.result?.p95Ms ?? '—' }}ms</div></div>
-        <div class="metric-card"><div class="text-xs text-fg-sub">P99</div><div class="text-lg font-bold">{{ report.result?.p99Ms ?? '—' }}ms</div></div>
-        <div class="metric-card"><div class="text-xs text-fg-sub">错误率</div><div class="text-lg font-bold" :class="(report.result?.errorRate ?? 0) > 5 ? 'text-red-400' : 'text-neon-green'">{{ report.result?.errorRate ?? 0 }}%</div></div>
-      </div>
-
-      <!-- 版本对比：选择同应用历史任务，比对核心指标（版本间性能回归/提升一目了然） -->
-      <div v-if="compareCandidates.length" class="mb-4 p-4 rounded-lg bg-white/5 border border-white/10">
-        <div class="flex items-center gap-3 mb-3">
-          <span class="text-xs text-fg-sub shrink-0">版本对比</span>
-          <select v-model.number="compareTaskId" class="input-select flex-1" @change="loadCompare(compareTaskId)">
-            <option :value="0">选择要对比的历史任务…</option>
-            <option v-for="t in compareCandidates" :key="t.id" :value="t.id">
-              {{ compareLabel(t) }}
-            </option>
-          </select>
-          <span v-if="compareLoading" class="text-[11px] text-fg-sub">加载中…</span>
+    <!-- 压测报告（公共组件；版本对比经 #extra 插槽注入） -->
+    <StressReport
+      v-if="activeTab === 'stress' && report"
+      :report="report"
+      :samples="samples"
+      :capacity="capacity"
+      class="mt-4"
+      @rerun="rerunTask"
+      @run-capacity="runCapacity"
+    >
+      <template #extra>
+        <!-- 版本对比：选择同应用历史任务，比对核心指标（版本间性能回归/提升一目了然） -->
+        <div v-if="compareCandidates.length" class="mb-4 p-4 rounded-lg bg-white/5 border border-white/10">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-xs text-fg-sub shrink-0">版本对比</span>
+            <select v-model.number="compareTaskId" class="input-select flex-1" @change="loadCompare(compareTaskId)">
+              <option :value="0">选择要对比的历史任务…</option>
+              <option v-for="t in compareCandidates" :key="t.id" :value="t.id">
+                {{ compareLabel(t) }}
+              </option>
+            </select>
+            <span v-if="compareLoading" class="text-[11px] text-fg-sub">加载中…</span>
+          </div>
+          <div v-if="compareReport" class="overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-fg-sub border-b border-white/10">
+                  <th class="text-left py-1.5 font-normal">指标</th>
+                  <th class="text-right py-1.5 font-normal">基线 {{ compareReport.task.appVersion ? 'v' + compareReport.task.appVersion : '未知版本' }}</th>
+                  <th class="text-right py-1.5 font-normal">当前 {{ report.task.appVersion ? 'v' + report.task.appVersion : '未知版本' }}</th>
+                  <th class="text-right py-1.5 font-normal">变化</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in compareRows" :key="row.label" class="border-b border-white/5">
+                  <td class="py-1.5 text-fg-dim">{{ row.label }}</td>
+                  <td class="text-right text-fg-sub">{{ row.base }}</td>
+                  <td class="text-right text-fg-main font-medium">{{ row.cur }}</td>
+                  <td class="text-right font-medium" :class="row.cls || 'text-fg-sub'">{{ row.delta || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div v-if="compareReport" class="overflow-x-auto">
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="text-fg-sub border-b border-white/10">
-                <th class="text-left py-1.5 font-normal">指标</th>
-                <th class="text-right py-1.5 font-normal">基线 {{ compareReport.task.appVersion ? 'v' + compareReport.task.appVersion : '未知版本' }}</th>
-                <th class="text-right py-1.5 font-normal">当前 {{ report.task.appVersion ? 'v' + report.task.appVersion : '未知版本' }}</th>
-                <th class="text-right py-1.5 font-normal">变化</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in compareRows" :key="row.label" class="border-b border-white/5">
-                <td class="py-1.5 text-fg-dim">{{ row.label }}</td>
-                <td class="text-right text-fg-sub">{{ row.base }}</td>
-                <td class="text-right text-fg-main font-medium">{{ row.cur }}</td>
-                <td class="text-right font-medium" :class="row.cls || 'text-fg-sub'">{{ row.delta || '—' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <div>
-          <div class="text-xs text-fg-sub mb-2">QPS 实时曲线</div>
-          <MetricChart :option="sampleOption" height="220px" />
-        </div>
-        <div>
-          <div class="text-xs text-fg-sub mb-2">分档并发容量曲线（QPS / P95）</div>
-          <MetricChart :option="stageOption" height="220px" />
-        </div>
-      </div>
-      <div v-if="capacity" class="mt-4 p-4 rounded-lg bg-neon-green/5 border border-neon-green/20">
-        <div class="text-sm font-medium text-neon-green mb-2">容量评估：目标 P95 ≤ {{ capacity.targetP95Ms }}ms</div>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-          <div>最大可承受并发：<b class="text-lg text-neon-green">{{ capacity.maxConcurrency }}</b></div>
-          <div>对应最大 QPS：<b class="text-lg text-neon-green">{{ capacity.maxQps }}</b></div>
-          <div>采样档位：{{ capacity.curve?.length ?? 0 }} 个</div>
-          <div v-if="capacity.extrapolated" class="text-amber-400">外推估算（超出实测范围）</div>
-        </div>
-      </div>
-    </div>
+      </template>
+    </StressReport>
 
     <!-- 容量建议 Tab -->
     <div v-else-if="activeTab === 'capacity'" class="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -283,13 +215,13 @@
                 <option value="">— 先读取表清单 —</option>
                 <option v-for="t in tables" :key="t" :value="t">{{ t }}</option>
               </select>
-              <button class="text-xs text-neon-blue hover:underline mt-1" @click="loadTables">读取表清单</button>
+              <button class="text-xs text-neon-blue hover:underline mt-1 cursor-pointer" @click="loadTables">读取表清单</button>
             </div>
             <div>
               <label class="text-xs text-fg-sub">源码项目（魔法值/关联识别，可选）</label>
               <select v-model="gen.repoId" class="input-select w-full">
                 <option :value="0">— 不使用源码分析 —</option>
-                <option v-for="r in repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
+                <option v-for="r in repoStore.repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
               </select>
             </div>
           </div>
@@ -306,7 +238,7 @@
           <div>
             <div class="flex items-center justify-between">
               <label class="text-xs text-fg-sub">联表表组(JSON，可选 — 填写后按表组拓扑排序灌数)</label>
-              <button class="text-xs text-neon-blue hover:underline" @click="fillTableGroupExample">填入示例</button>
+              <button class="text-xs text-neon-blue hover:underline cursor-pointer" @click="fillTableGroupExample">填入示例</button>
             </div>
             <textarea v-model="gen.tablesJson" rows="3" class="input-text w-full font-mono text-xs"
               placeholder='[{"tableName":"user","rowCount":10000},{"tableName":"order","rowCount":100000,"fields":{"user_id":{"type":"ref","table":"user","column":"id"}}}]'></textarea>
@@ -331,8 +263,8 @@
                 </template>
               </div>
               <div class="flex gap-2">
-                <button class="text-[11px] text-neon-green hover:underline" @click="adoptHint(s.id, true)">采纳</button>
-                <button class="text-[11px] text-fg-sub hover:underline" @click="adoptHint(s.id, false)">忽略</button>
+                <button class="text-[11px] text-neon-green hover:underline cursor-pointer" @click="adoptHint(s.id, true)">采纳</button>
+                <button class="text-[11px] text-fg-sub hover:underline cursor-pointer" @click="adoptHint(s.id, false)">忽略</button>
               </div>
             </div>
           </div>
@@ -373,29 +305,126 @@
         </div>
       </div>
     </div>
+
+    <!-- 定时压测 Tab：调度管理 + 版本基线对比（回归门禁） -->
+    <div v-else-if="activeTab === 'schedule'" class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+      <div class="glass-card p-5">
+        <div class="text-sm font-medium mb-4">新建定时压测</div>
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs text-fg-sub">调度名称</label>
+            <input v-model="sch.name" class="input-text w-full" placeholder="如：核心接口回归门禁" />
+          </div>
+          <div>
+            <label class="text-xs text-fg-sub">压测模板（基于当前表单参数）</label>
+            <div class="text-[11px] text-fg-sub bg-white/5 rounded-lg px-3 py-2 font-mono break-all">
+              {{ sch.templatePreview || '在「压测」Tab 配置参数后回到此处（或直接填下方模板 JSON）' }}
+            </div>
+            <textarea v-model="sch.taskJson" rows="4" class="input-text w-full font-mono text-xs mt-2"
+              placeholder='{"targetUrl":"http://127.0.0.1:8081/api/user/list?limit=200","concurrency":20,"durationSec":30}'></textarea>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-fg-sub">间隔（分钟）</label>
+              <input v-model.number="sch.intervalMinutes" type="number" class="input-text w-full" min="1" max="10080" />
+            </div>
+            <div>
+              <label class="text-xs text-fg-sub">基线任务 ID（0=自动）</label>
+              <input v-model.number="sch.baselineTaskId" type="number" class="input-text w-full" min="0" />
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-fg-sub">告警 Webhook（钉钉/飞书/自定义，可选）</label>
+            <input v-model="sch.webhookUrl" class="input-text w-full" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" />
+            <div class="text-[11px] text-fg-sub mt-1">回归阈值：QPS↓&gt;10% / P95↑&gt;20% / 错误率↑&gt;5pct 任一命中即告警</div>
+          </div>
+          <button class="btn-primary w-full justify-center" :disabled="creatingSchedule" @click="createSchedule">
+            {{ creatingSchedule ? '创建中…' : '创建调度' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="glass-card p-5 xl:col-span-2">
+        <div class="text-sm font-medium mb-3 flex items-center justify-between">
+          <span>调度列表</span>
+          <button class="text-xs text-neon-blue hover:underline cursor-pointer" @click="loadSchedules">刷新</button>
+        </div>
+        <div v-if="!schedules.length" class="text-xs text-fg-sub py-8 text-center">暂无定时压测调度</div>
+        <div v-else class="space-y-2 max-h-[430px] overflow-y-auto pr-1">
+          <div v-for="s in schedules" :key="s.id" class="px-4 py-3 rounded-lg bg-white/5">
+            <div class="flex items-center justify-between">
+              <div class="text-sm text-fg-main">{{ s.scheduleName }}</div>
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] px-2 py-0.5 rounded-full" :class="s.enabled ? 'bg-neon-green/10 text-neon-green' : 'bg-white/5 text-fg-sub'">
+                  {{ s.enabled ? '运行中' : '已暂停' }}
+                </span>
+                <button class="text-[11px] text-neon-blue hover:underline cursor-pointer" @click="toggleSchedule(s)">
+                  {{ s.enabled ? '暂停' : '启用' }}
+                </button>
+                <button class="text-[11px] text-neon-green hover:underline cursor-pointer" @click="loadDiff(s)">基线对比</button>
+                <button class="text-[11px] text-red-400 hover:underline cursor-pointer" @click="removeSchedule(s)">删除</button>
+              </div>
+            </div>
+            <div class="text-[11px] text-fg-sub mt-1.5 flex flex-wrap gap-3">
+              <span>每 {{ s.intervalMinutes }} 分钟</span>
+              <span v-if="s.lastRunTime">上次触发 {{ fmtTime(s.lastRunTime) }}</span>
+              <span v-if="s.nextRunTime">下次 {{ fmtTime(s.nextRunTime) }}</span>
+              <span v-if="s.lastTaskId">任务 #{{ s.lastTaskId }}</span>
+            </div>
+            <!-- 基线对比结果 -->
+            <div v-if="diffOf[s.id]" class="mt-3">
+              <div v-if="diffOf[s.id].noBaseline" class="text-[11px] text-amber-400">暂无可用基线（首次执行或历史任务缺失）</div>
+              <template v-else>
+                <div class="flex items-center gap-2 mb-1.5">
+                  <span class="text-[11px] text-fg-sub">基线 #{{ diffOf[s.id].baseline?.id }}</span>
+                  <span class="text-fg-sub">→</span>
+                  <span class="text-[11px] text-fg-sub">当前 #{{ diffOf[s.id].current?.id }}</span>
+                  <span v-if="diffOf[s.id].regressed" class="text-[11px] px-2 py-0.5 rounded-full bg-red-400/10 text-red-400">⚠ 检测到性能回归</span>
+                  <span v-else class="text-[11px] px-2 py-0.5 rounded-full bg-neon-green/10 text-neon-green">✓ 指标正常</span>
+                </div>
+                <table class="w-full text-[11px]">
+                  <tbody>
+                    <tr v-for="r in diffOf[s.id].rows" :key="r.label" class="border-b border-white/5">
+                      <td class="py-1 text-fg-dim">{{ r.label }}</td>
+                      <td class="text-right text-fg-sub">{{ r.base }}</td>
+                      <td class="text-right text-fg-main">{{ r.cur }}</td>
+                      <td class="text-right font-medium" :class="r.regressed ? 'text-red-400' : r.improved ? 'text-neon-green' : 'text-fg-sub'">{{ r.deltaPct || '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Gauge } from 'lucide-vue-next'
-import MetricChart from '../components/charts/MetricChart.vue'
+import StressForm from '../components/stress/StressForm.vue'
+import StressReport from '../components/stress/StressReport.vue'
 import { taskStatusClass as statusClass, fmtTime } from '../utils/format'
-import { stressApi, dataGenApi, capacityApi, sourceApi, appApi, dbConnApi } from '../api'
+import { stressApi, dataGenApi, capacityApi, sourceApi, appApi, dbConnApi, scheduleApi } from '../api'
+import { useRepoStore } from '../stores/repoStore'
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
+const repoStore = useRepoStore()
 
 const tabs = [
   { key: 'datagen', label: '数据准备' },
   { key: 'stress', label: '压测' },
-  { key: 'capacity', label: '容量建议' }
+  { key: 'capacity', label: '容量建议' },
+  { key: 'schedule', label: '定时压测' }
 ]
 const activeTab = ref(['stress', 'capacity', 'datagen'].includes(String(route.query.tab))
   ? String(route.query.tab) : 'stress')
 // 支持外部（总览快速开始引导等）通过 /stress?tab=datagen 直达指定 Tab
 watch(() => route.query.tab, (t) => {
-  if (t && ['stress', 'capacity', 'datagen'].includes(String(t))) activeTab.value = String(t)
+  if (t && ['stress', 'capacity', 'datagen', 'schedule'].includes(String(t))) activeTab.value = String(t)
 })
 const running = ref(false)
 const tasks = ref<Array<Record<string, any>>>([])
@@ -407,76 +436,55 @@ const genTasks = ref<Array<Record<string, any>>>([])
 const tables = ref<string[]>([])
 const columns = ref<Array<{ name: string; type: string; suggestedValues?: any[]; suspectEnum?: boolean }>>([])
 
-const form = ref({
-  taskName: '',
-  targetUrl: '',
-  repoId: 0,
-  endpointIdx: -1,
-  baseUrl: '',
-  method: 'GET',
-  body: '',
-  concurrency: 50,
-  durationSec: 30,
-  engineType: 'http',
-  stageConcurrencies: '10,50,100'
-})
-// 项目/应用/接口扫描
-const repos = ref<Array<Record<string, any>>>([])
-const appInstances = ref<Array<Record<string, any>>>([])
+// ---------- 项目选择与接口扫描（视图特有逻辑，表单细节在 StressForm 公共组件） ----------
+const repoId = ref(0)
 const endpoints = ref<Array<Record<string, any>>>([])
+const appInstances = ref<Array<Record<string, any>>>([])
+const stressFormRef = ref<InstanceType<typeof StressForm> | null>(null)
+// 任务名（选中接口时自动派生）
+const taskName = ref('')
 
-// 当前项目归属应用（压测任务 appName 取值）
+/** 当前项目归属应用（压测任务 appName 取值） */
 const currentRepoApp = computed(() => {
-  const r = repos.value.find((x) => x.id === form.value.repoId)
+  const r = repoStore.repos.find((x) => x.id === repoId.value)
   if (!r) return ''
   return r.appName || r.repoName || ''
 })
 
-// 当前项目类型：分支切换框仅对 git 项目展示（zip/local 无分支概念）
+/** 当前项目类型：分支切换框仅对 git 项目展示（zip/local 无分支概念） */
 const currentRepoType = computed(() => {
-  const r = repos.value.find((x) => x.id === form.value.repoId)
+  const r = repoStore.repos.find((x) => x.id === repoId.value)
   return r ? (r.repoType || '') : ''
+})
+
+/** agent 上报的服务地址（StressForm 自动预填） */
+const autoBaseUrl = computed(() => {
+  const inst = appInstances.value.find((x) => x.appName === currentRepoApp.value)
+  if (!inst || !inst.appHost) return ''
+  return 'http://' + inst.appHost + (inst.appPort ? ':' + inst.appPort : '')
 })
 
 async function loadEndpoints() {
   endpoints.value = []
-  form.value.endpointIdx = -1
   branchOptions.value = []
-  if (!form.value.repoId) return
+  if (!repoId.value) return
   try {
-    const r = await sourceApi.endpoints(form.value.repoId)
+    const r = await sourceApi.endpoints(repoId.value)
     endpoints.value = r.data || []
   } catch { /* 扫描失败保持空列表 */ }
   // 选定 git 项目后自动同步分支列表（zip/local 项目无分支，不请求）
   if (currentRepoType.value === 'git') {
     loadBranchOptions()
   }
-  // 选定项目后按 agent 上报的应用实例自动预填服务地址
-  prefillBaseUrl()
-}
-
-// 服务地址自动预填：agent 上报注册的应用实例（host + 可选端口），
-// 用户手动修改过后不再覆盖（仅空值或上次自动值时刷新）
-let autoBaseUrl = ''
-function prefillBaseUrl() {
-  const app = currentRepoApp.value
-  const inst = appInstances.value.find((x) => x.appName === app)
-  if (!inst || !inst.appHost) return
-  const url = 'http://' + inst.appHost + (inst.appPort ? ':' + inst.appPort : '')
-  if (!form.value.baseUrl || form.value.baseUrl === autoBaseUrl) {
-    form.value.baseUrl = url
-    autoBaseUrl = url
-    composeUrl()
-  }
 }
 
 // 与源码重新同步：重新拉取源码 → 重建索引 → 重扫接口（源码更新后点击）
 const resyncing = ref(false)
 async function resyncAndScan() {
-  if (!form.value.repoId || resyncing.value) return
+  if (!repoId.value || resyncing.value) return
   resyncing.value = true
   try {
-    await sourceApi.resync(form.value.repoId)
+    await sourceApi.resync(repoId.value)
     await loadEndpoints()
   } finally {
     resyncing.value = false
@@ -485,14 +493,14 @@ async function resyncAndScan() {
 
 // 分支切换：当前仓库分支 + 分支列表缓存 + 切换（重同步 + 重扫接口）
 const currentRepoBranch = computed(() => {
-  const r = repos.value.find((x) => x.id === form.value.repoId)
+  const r = repoStore.repos.find((x) => x.id === repoId.value)
   return r ? r.branch || '' : ''
 })
 const branchOptions = ref<string[]>([])
 async function loadBranchOptions() {
-  if (!form.value.repoId) return
+  if (!repoId.value) return
   try {
-    const r = await sourceApi.branches(form.value.repoId)
+    const r = await sourceApi.branches(repoId.value)
     branchOptions.value = r.data || []
   } catch { /* 拉取失败保持空 */ }
 }
@@ -500,40 +508,22 @@ async function changeBranch(branch: string) {
   if (!branch || branch === currentRepoBranch.value || resyncing.value) return
   resyncing.value = true
   try {
-    await sourceApi.switchBranch(form.value.repoId, branch)
-    await loadRepos()
+    await sourceApi.switchBranch(repoId.value, branch)
+    await repoStore.reload()
     await loadEndpoints()
   } finally {
     resyncing.value = false
   }
 }
 
-// 选中接口：自动填 method 与 URL（baseUrl + path），用户只需提供 host:port
-function applyEndpoint() {
-  const e = endpoints.value[form.value.endpointIdx]
-  if (!e) return
-  // 直接采用扫描出的方法（GET/POST/PUT/DELETE/PATCH），未知时回退 GET
-  form.value.method = e.httpMethod || 'GET'
-  composeUrl(e.path)
-  if (!form.value.taskName) {
-    form.value.taskName = `${e.className}#${e.methodName || e.path}`
+/** 选中接口回调：自动派生任务名 */
+function onEndpointSelected(e: Record<string, any>) {
+  if (!taskName.value) {
+    taskName.value = `${e.className}#${e.methodName || e.path}`
   }
 }
 
-// 拼接完整目标 URL；显式传入 path（选接口时）优先于当前输入
-function composeUrl(pathOverride?: string) {
-  if (form.value.repoId <= 0) return
-  const base = (form.value.baseUrl || '').replace(/\/+$/, '')
-  const p = pathOverride !== undefined ? pathOverride : currentPath()
-  if (base && p) {
-    form.value.targetUrl = base + p
-  }
-}
-
-function currentPath(): string {
-  const e = endpoints.value[form.value.endpointIdx]
-  return e ? e.path : ''
-}
+// ---------- 灌数（数据准备 Tab） ----------
 const gen = ref({
   connId: 0,
   dbUrl: '',
@@ -592,37 +582,6 @@ async function adoptHint(id: number, adopt: boolean) {
   await loadSuggestions()
 }
 
-const sampleOption = computed(() => ({
-  backgroundColor: 'transparent',
-  tooltip: { trigger: 'axis' },
-  grid: { left: 40, right: 12, top: 12, bottom: 20 },
-  xAxis: { type: 'category', data: samples.value.map((s) => `#${s.id}`), axisLabel: { color: '#8A94A6', fontSize: 10 }, axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } } },
-  yAxis: { type: 'value', axisLabel: { color: '#8A94A6', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } } },
-  series: [
-    { name: 'QPS', type: 'line', smooth: true, showSymbol: false, data: samples.value.map((s) => s.qps), lineStyle: { color: '#00E5A0', width: 2 }, areaStyle: { color: 'rgba(0,229,160,0.12)' } },
-    { name: 'P95(ms)', type: 'line', smooth: true, showSymbol: false, data: samples.value.map((s) => s.p95Ms), lineStyle: { color: '#FAAD14', width: 1.5 }, yAxisIndex: 0 }
-  ]
-}))
-
-const stageOption = computed(() => {
-  const pts = report.value?.result?.stagePoints || []
-  return {
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
-    legend: { textStyle: { color: '#8A94A6', fontSize: 11 }, top: 0 },
-    grid: { left: 40, right: 40, top: 26, bottom: 20 },
-    xAxis: { type: 'category', data: pts.map((p: any) => `${p.concurrency} 并发`), axisLabel: { color: '#8A94A6', fontSize: 10 }, axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } } },
-    yAxis: [
-      { type: 'value', name: 'QPS', axisLabel: { color: '#8A94A6', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } } },
-      { type: 'value', name: 'P95ms', axisLabel: { color: '#8A94A6', fontSize: 10 }, splitLine: { show: false } }
-    ],
-    series: [
-      { name: 'QPS', type: 'bar', data: pts.map((p: any) => p.qps), itemStyle: { color: '#0EA5E9', borderRadius: [4, 4, 0, 0] } },
-      { name: 'P95(ms)', type: 'line', yAxisIndex: 1, data: pts.map((p: any) => p.p95Ms), lineStyle: { color: '#00E5A0', width: 2 }, itemStyle: { color: '#00E5A0' } }
-    ]
-  }
-})
-
 function riskClass(r: string) {
   return r === 'high'
     ? 'border-red-400/30 bg-red-400/5 text-red-300'
@@ -650,22 +609,14 @@ function stopPolling() {
   }
 }
 
-async function startStress() {
-  if (!form.value.targetUrl) return
-  const stageList = form.value.stageConcurrencies
-    .split(',').map((s) => Number(s.trim())).filter((n) => n > 0)
-  const body: Record<string, unknown> = {
-    taskName: form.value.taskName || undefined,
-    targetUrl: form.value.targetUrl,
+/** 发起压测：StressForm 提交标准请求体，本视图补充任务名与应用归属 */
+async function startStress(payload: Record<string, unknown>) {
+  const body = {
+    ...payload,
+    taskName: taskName.value || undefined,
     // 压测任务归属应用 = 项目的应用
-    appName: currentRepoApp.value || undefined,
-    method: form.value.method,
-    concurrency: form.value.concurrency,
-    durationSec: form.value.durationSec,
-    engineType: form.value.engineType
+    appName: currentRepoApp.value || undefined
   }
-  if (stageList.length > 1) body.stageConcurrencies = stageList
-  if (form.value.body.trim()) body.body = form.value.body.trim()
   running.value = true
   try {
     await stressApi.create(body)
@@ -686,12 +637,6 @@ async function showReport(id: number) {
   const s = await stressApi.samples(id)
   samples.value = s.data
 }
-
-// 报告任务是否已执行完（完成或失败均可"再来一次"）
-const taskFinished = computed(() => {
-  const s = report.value?.task?.status
-  return s === 'finished' || s === 'failed'
-})
 
 // ---------- 版本对比 ----------
 // 可对比候选：同应用（或双方均无应用）的其他已完成任务
@@ -756,35 +701,19 @@ const compareRows = computed(() => {
 // "再来一次"回填提示（短暂展示）
 const rerunFilled = ref(false)
 
-// 再来一次：把已完成任务的配置回填到左侧表单，由用户点击「开始压测」重新发起
+// 再来一次：把已完成任务的配置回填到表单，由用户点击「开始压测」重新发起
 function rerunTask() {
   const t = report.value?.task
-  if (!t) return
-  // 基本配置回填
-  form.value.taskName = t.taskName || ''
-  form.value.targetUrl = t.targetUrl || ''
-  form.value.method = t.method || 'GET'
-  form.value.concurrency = t.concurrency ?? 50
-  form.value.durationSec = t.durationSec ?? 30
-  form.value.engineType = t.engineType || 'http'
-  // 服务地址：取 URL origin（http://host:port），便于后续选接口重新拼接
-  try {
-    form.value.baseUrl = new URL(t.targetUrl).origin
-  } catch { /* 非标准 URL 保持原样 */ }
-  // 分档并发：从报告分档采样点还原
-  const pts = report.value?.result?.stagePoints || []
-  if (pts.length) {
-    form.value.stageConcurrencies = pts.map((p: any) => p.concurrency).join(',')
-  }
+  if (!t || !stressFormRef.value) return
+  stressFormRef.value.fillFrom(t, report.value?.result?.stagePoints || [])
   // 项目联动：按任务应用匹配项目（恢复接口列表；无匹配则手动 URL 模式）
-  const repo = repos.value.find((r) => t.appName && r.appName === t.appName)
+  const repo = repoStore.repos.find((r) => t.appName && r.appName === t.appName)
   if (repo) {
-    form.value.repoId = repo.id
+    repoId.value = repo.id
     loadEndpoints()
   } else {
     // 无匹配项目：退回手动 URL 模式（targetUrl 已完整填入，可直接压测）
-    form.value.repoId = 0
-    form.value.endpointIdx = -1
+    repoId.value = 0
     endpoints.value = []
     branchOptions.value = []
   }
@@ -853,21 +782,17 @@ onMounted(() => {
   loadTasks()
   startPolling()
   loadAdvice()
-  loadRepos()
+  repoStore.load()
   loadApps()
   loadConns()
   dataGenApi.list().then((r) => { genTasks.value = r.data }).catch(() => {})
+  loadSchedules()
 })
 
 onUnmounted(stopPolling)
 
 // 项目/应用/连接配置（数据准备 Tab 复用连接配置）
 const conns = ref<Array<Record<string, any>>>([])
-
-async function loadRepos() {
-  const r = await sourceApi.repos()
-  repos.value = r.data
-}
 
 async function loadApps() {
   try {
@@ -891,5 +816,86 @@ function applyConn() {
     gen.value.dbUser = c.username
     gen.value.dbPassword = c.password || ''
   }
+}
+
+// ---------- 定时压测（调度管理 + 基线对比） ----------
+const schedules = ref<Array<Record<string, any>>>([])
+const diffOf = ref<Record<number, any>>({})
+const creatingSchedule = ref(false)
+const sch = ref({
+  name: '',
+  intervalMinutes: 60,
+  baselineTaskId: 0,
+  webhookUrl: '',
+  taskJson: '',
+  /** 表单模板预览（当前压测表单快照派生） */
+  templatePreview: ''
+})
+
+// 切到定时 Tab 时，用当前表单快照预填模板
+watch(activeTab, (tab) => {
+  if (tab === 'schedule' && !sch.value.taskJson) {
+    const snap = stressFormRef.value?.snapshot()
+    if (snap?.targetUrl) {
+      sch.value.templatePreview = `${snap.method} ${snap.targetUrl} · ${snap.concurrency}并发 × ${snap.durationSec}s`
+      sch.value.taskJson = JSON.stringify(snap)
+    }
+  }
+})
+
+async function loadSchedules() {
+  try {
+    const r = await scheduleApi.list()
+    schedules.value = r.data || []
+  } catch { /* 列表加载失败静默 */ }
+}
+
+async function createSchedule() {
+  if (!sch.value.name.trim() || !sch.value.taskJson.trim()) return
+  let task: Record<string, unknown>
+  try {
+    task = JSON.parse(sch.value.taskJson)
+  } catch {
+    alert('压测模板 JSON 解析失败，请检查格式')
+    return
+  }
+  creatingSchedule.value = true
+  try {
+    const r = await scheduleApi.create({
+      scheduleName: sch.value.name.trim(),
+      intervalMinutes: sch.value.intervalMinutes,
+      baselineTaskId: sch.value.baselineTaskId,
+      webhookUrl: sch.value.webhookUrl.trim(),
+      task
+    })
+    // http 拦截器已解包为 { code, message, data }（类型断言与现有视图模式一致）
+    const res = r as unknown as { code: number; message: string; data: unknown }
+    if (res.code === 0) {
+      sch.value.name = ''
+      await loadSchedules()
+    } else {
+      alert(res.message || '创建失败')
+    }
+  } finally {
+    creatingSchedule.value = false
+  }
+}
+
+async function toggleSchedule(s: Record<string, any>) {
+  await scheduleApi.toggle(s.id, !s.enabled)
+  await loadSchedules()
+}
+
+async function removeSchedule(s: Record<string, any>) {
+  if (!confirm(`确认删除调度「${s.scheduleName}」？`)) return
+  await scheduleApi.remove(s.id)
+  await loadSchedules()
+}
+
+async function loadDiff(s: Record<string, any>) {
+  try {
+    const r = await scheduleApi.diff(s.id)
+    diffOf.value = { ...diffOf.value, [s.id]: r.data }
+  } catch { /* 对比失败静默 */ }
 }
 </script>

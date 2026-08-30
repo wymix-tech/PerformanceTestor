@@ -13,9 +13,10 @@ spring:
     name: perf-server
   datasource:
     # 平台库：存元数据 / 时序指标 / 任务 / 源码索引 / 问题与方案
-    url: jdbc:mysql://127.0.0.1:3306/performance_testor?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&allowMultiQueries=true
-    username: root
-    password: root123
+    # 敏感信息支持环境变量覆盖（MYSQL_USER / MYSQL_PASSWORD）
+    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/performance_testor?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&allowMultiQueries=true}
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:root123}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 20
@@ -31,6 +32,14 @@ mybatis:
 
 # ===== 平台业务配置 =====
 perf:
+  # 轻量 JWT 鉴权（管理员账号支持环境变量注入：PERF_ADMIN_USER / PERF_ADMIN_PASSWORD / PERF_JWT_SECRET）
+  # 白名单：/api/auth/**（登录）与 /api/agent/**（探针上报，被测侧无 JWT 能力）
+  auth:
+    enabled: true
+    username: ${PERF_ADMIN_USER:admin}
+    password: ${PERF_ADMIN_PASSWORD:admin123}
+    secret: ${PERF_JWT_SECRET:perf-testor-default-jwt-secret-please-change-in-production}
+    expire-hours: 12
   # 源码文件存储根目录（平台服务器磁盘）
   source:
     storage-dir: /data/perf-source
@@ -44,6 +53,8 @@ perf:
     max-concurrency: 5000      # 并发上限保护
     max-duration-sec: 3600     # 时长上限保护
     qps-sampling-interval-sec: 2  # QPS 采样周期
+    # JMeter 安装目录（bin/jmeter 的父目录，空则探测 PATH；未安装时 jmeter 引擎任务创建即被拒绝）
+    jmeter-home: ${JMETER_HOME:}
     # 压测请求客户端配置
     connect-timeout-ms: 3000
     read-timeout-ms: 30000
@@ -60,8 +71,8 @@ perf:
   # AI 大模型配置（OpenAI 兼容 API；无 key 时自动降级规则示例模式）
   ai:
     enabled: true
-    base-url: https://api.openai.com/v1
-    api-key: ""
+    base-url: ${PERF_AI_BASE_URL:https://api.openai.com/v1}
+    api-key: ${PERF_AI_API_KEY:}
     model: gpt-4o-mini
     timeout-sec: 60
     # 并发限流

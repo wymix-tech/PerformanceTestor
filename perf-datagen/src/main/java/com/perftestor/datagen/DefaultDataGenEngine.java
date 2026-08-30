@@ -47,7 +47,6 @@ public class DefaultDataGenEngine implements DataGenEngine {
     private final DatabaseDialect dialect;
     private final BatchExecutor executor;
     private final OrmSourceParser ormParser;
-    private final RelationResolver relationResolver = new RelationResolver();
     private final EnumValueDiscoverer enumDiscoverer = new EnumValueDiscoverer();
 
     public DefaultDataGenEngine(DatabaseDialect dialect, BatchExecutor executor, OrmSourceParser ormParser) {
@@ -86,11 +85,12 @@ public class DefaultDataGenEngine implements DataGenEngine {
                         }
                     }
                 }
-                relationResolver.registerSource(ormHints);
 
-                // 3. 关联识别（四级合并）与枚举建议
+                // 3. 关联识别（四级合并，orm 语义参数化传递）与枚举建议
+                //    解析器为 execute 内局部对象：引擎无状态，同一实例可并发执行多任务
+                RelationResolver relationResolver = new RelationResolver();
                 RelationResolver.RelationResolution rel =
-                        relationResolver.resolve(metas.values(), spec, conn, dialect);
+                        relationResolver.resolve(metas.values(), spec, conn, dialect, ormHints);
                 if (!rel.getPendingSuggestions().isEmpty()) {
                     listener.onWarn("存在基于命名约定推断的关联（低置信度），请在建议面板确认后采纳");
                 }

@@ -41,6 +41,7 @@ public class MetricsReporter {
     public static final String TYPE_TRACE = "trace";
     public static final String TYPE_JVM = "jvm";
     public static final String TYPE_SLOW_SQL = "slowSql";
+    public static final String TYPE_HOTSPOT = "hotspot";
 
     /** 单条 trace 字节估算：节点数 × 256B（Map + 装箱 + 字符串的保守均值），下限 1KB */
     private static final int BYTES_PER_NODE = 256;
@@ -85,6 +86,8 @@ public class MetricsReporter {
     private final Deque<Object> traceQueue = new ArrayDeque<>();
     private final Deque<Object> jvmQueue = new ArrayDeque<>();
     private final Deque<Object> slowSqlQueue = new ArrayDeque<>();
+    /** CPU 热点批量队列（元素为单批聚合结果 Map；新批次取代旧批次） */
+    private final Deque<Object> hotspotQueue = new ArrayDeque<>();
     /** trace 队列当前估算字节数（仅在 traceQueue 锁内变更） */
     private long traceQueueBytes = 0;
 
@@ -131,6 +134,97 @@ public class MetricsReporter {
     public void stop() {
         running.set(false);
         scheduler.shutdownNow();
+        // 优雅停机：尽力冲刷剩余数据（单次尝试、无退避睡眠，3s 总预算兜底）
+        try {
+            finalFlush();
+        } catch (Throwable t) {
+            // 冲刷失败不影响 JVM 退出
+        }
+    }
+
+    /** 停机冲刷：逐类型检查总预算（3s），超预算类型跳过 */
+    private void finalFlush() {
+        if (stoppedByProjectGate.get()) {
+            return;
+        }
+        long deadline = System.currentTimeMillis() + 3000;
+        finalFlushTrace();
+        if (System.currentTimeMillis() < deadline) {
+            finalFlushSimple(TYPE_JVM, jvmQueue);
+        }
+        if (System.currentTimeMillis() < deadline) {
+            finalFlushSimple(TYPE_SLOW_SQL, slowSqlQueue);
+        }
+        if (System.currentTimeMillis() < deadline) {
+            finalFlushSimple(TYPE_HOTSPOT, hotspotQueue);
+        }
+    }
+
+    /** 停机冲刷 trace 队列（每类型至多 batchSize 条，尽力上报） */
+    private void finalFlushTrace() {
+        List<TraceItem> items;
+        synchronized (traceQueue) {
+            if (traceQueue.isEmpty()) {
+                return;
+            }
+            int count = Math.min(batchSize, traceQueue.size());
+            items = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                TraceItem t = (TraceItem) traceQueue.pollFirst();
+                traceQueueBytes -= t.estBytes;
+                items.add(t);
+            }
+        }
+        List<Map<String, Object>> converted = new ArrayList<>(items.size());
+        for (TraceItem t : items) {
+            converted.add(toTraceItemMap(t));
+        }
+        postOnce(TYPE_TRACE, converted);
+    }
+
+    /** 停机冲刷 jvm/slowSql 队列 */
+    private void finalFlushSimple(String type, Deque<Object> queue) {
+        List<Map<String, Object>> items;
+        synchronized (queue) {
+            if (queue.isEmpty()) {
+                return;
+            }
+            int count = Math.min(batchSize, queue.size());
+            items = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                items.add((Map<String, Object>) queue.pollFirst());
+            }
+        }
+        postOnce(type, items);
+    }
+
+    /** 单次上报（停机路径）：无退避、无停报逻辑，失败即丢弃 */
+    private void postOnce(String type, List<Map<String, Object>> items) {
+        try {
+            Map<String, Object> body = buildBody(type, items);
+            http.postJson(reportUrl, JsonUtil.serialize(body));
+        } catch (Throwable ignored) {
+            // 停机兜底：序列化/发送失败即丢弃
+        }
+    }
+
+    /** 诊断/测试用：各队列待上报条数 */
+    public int pendingTraceCount() {
+        synchronized (traceQueue) {
+            return traceQueue.size();
+        }
+    }
+
+    public int pendingJvmCount() {
+        synchronized (jvmQueue) {
+            return jvmQueue.size();
+        }
+    }
+
+    public int pendingSlowSqlCount() {
+        synchronized (slowSqlQueue) {
+            return slowSqlQueue.size();
+        }
     }
 
     // ===================== 上报入口（业务线程调用，非阻塞 O(1)） =====================
@@ -193,6 +287,23 @@ public class MetricsReporter {
         }
     }
 
+    /**
+     * 上报一批 CPU 热点方法聚合（{@link com.perfagent.hotspot.HotspotSampler} 周期产出）。
+     * 周期聚合数据具有时效性：新批次直接取代队列中未送达的旧批次。
+     */
+    public void reportHotspot(List<Map<String, Object>> topMethods) {
+        if (!running.get() || topMethods == null || topMethods.isEmpty()) {
+            return;
+        }
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("sampleTime", System.currentTimeMillis());
+        item.put("items", topMethods);
+        synchronized (hotspotQueue) {
+            hotspotQueue.clear();
+            hotspotQueue.addLast(item);
+        }
+    }
+
     /** 条数超限丢最旧（jvm/slowSql 队列，条数即体积的良好代理） */
     private void dropOldest(Deque<Object> queue, AtomicLong dropped) {
         if (queue.size() >= bufferSize) {
@@ -212,7 +323,8 @@ public class MetricsReporter {
         boolean okTrace = flushTrace();
         boolean okJvm = flushSimple(TYPE_JVM, jvmQueue);
         boolean okSql = flushSimple(TYPE_SLOW_SQL, slowSqlQueue);
-        if (okTrace && okJvm && okSql) {
+        boolean okHotspot = flushSimple(TYPE_HOTSPOT, hotspotQueue);
+        if (okTrace && okJvm && okSql && okHotspot) {
             backoffMs = 1000;
         }
     }
@@ -241,16 +353,7 @@ public class MetricsReporter {
         // 树转 Map 在 reporter 线程（业务线程只入队原生树）
         List<Map<String, Object>> converted = new ArrayList<>(items.size());
         for (TraceItem t : items) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("traceId", t.traceId);
-            item.put("appName", t.app);
-            item.put("targetProjectName", targetProjectName);
-            item.put("rootMethod", t.root.method);
-            // 链路总耗时 = 根节点自身耗时（父节点耗时已包含子调用，不应逐层相加）
-            item.put("totalMs", t.root.costMs);
-            item.put("startTime", t.startTimeMs);
-            item.put("tree", toTreeMap(t.root));
-            converted.add(item);
+            converted.add(toTraceItemMap(t));
         }
         return post(TYPE_TRACE, converted);
     }
@@ -277,9 +380,22 @@ public class MetricsReporter {
         return post(type, items);
     }
 
-    /** 组装 body 并 POST；失败进入退避；平台判定项目不存在则永久停报 */
-    @SuppressWarnings("unchecked")
-    private boolean post(String type, List<Map<String, Object>> items) {
+    /** TraceItem 转上报 Map（reporter 线程执行） */
+    private Map<String, Object> toTraceItemMap(TraceItem t) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("traceId", t.traceId);
+        item.put("appName", t.app);
+        item.put("targetProjectName", targetProjectName);
+        item.put("rootMethod", t.root.method);
+        // 链路总耗时 = 根节点自身耗时（父节点耗时已包含子调用，不应逐层相加）
+        item.put("totalMs", t.root.costMs);
+        item.put("startTime", t.startTimeMs);
+        item.put("tree", toTreeMap(t.root));
+        return item;
+    }
+
+    /** 组装上报 body（含 appPort/appVersion 与丢弃计数） */
+    private Map<String, Object> buildBody(String type, List<Map<String, Object>> items) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", type);
         body.put("appName", appName);
@@ -300,7 +416,12 @@ public class MetricsReporter {
         if (dt > 0 || dj > 0 || ds > 0) {
             body.put("dropped", Map.of("trace", dt, "jvm", dj, "slowSql", ds));
         }
+        return body;
+    }
 
+    /** 组装 body 并 POST；失败进入退避；平台判定项目不存在则永久停报 */
+    private boolean post(String type, List<Map<String, Object>> items) {
+        Map<String, Object> body = buildBody(type, items);
         HttpReporter.PostResult result = http.postJson(reportUrl, JsonUtil.serialize(body));
         if (!result.ok()) {
             // 平台明确告知项目不存在（业务拒绝，body 含关键字）：清空队列并永久停报

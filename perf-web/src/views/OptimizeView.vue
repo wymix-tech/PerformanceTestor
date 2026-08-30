@@ -234,8 +234,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Target } from 'lucide-vue-next'
 import { issueStatusClass as statusClass } from '../utils/format'
 import { sourceApi, slowSqlApi, stressApi, dbConnApi } from '../api'
+import { useRepoStore } from '../stores/repoStore'
 
 const repos = ref<Array<Record<string, any>>>([])
+const repoStore = useRepoStore()
 const currentRepo = ref<Record<string, any> | null>(null)
 // 项目名集合（仓库名），连接绑定的可选值
 const projectNames = computed(() => (repos.value || []).map((r: Record<string, any>) => r.repoName).filter(Boolean))
@@ -272,8 +274,8 @@ const hotClass = ref('')
 const hotMethod = ref('')
 
 async function loadRepos() {
-  const r = await sourceApi.repos()
-  repos.value = r.data
+  await repoStore.load()
+  repos.value = repoStore.repos
   currentRepo.value = repos.value[0] || null
 }
 

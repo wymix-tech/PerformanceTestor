@@ -14,20 +14,40 @@ import java.sql.Connection;
 /**
  * 关联关系解析：四级来源合并（explicit &gt; db_fk &gt; orm_join &gt; naming）。
  * naming 系不自动生效，经 pendingSuggestions 交宿主确认采纳。
+ *
+ * <p><b>无状态契约</b>：orm_join 语义经 {@link #resolve(Collection, DataGenSpec, Connection,
+ * com.perftestor.datagen.spi.DatabaseDialect, List)} 参数传入，解析器实例可安全并发复用
+ * （修复旧实现 registerSource 实例字段在同一引擎并发执行多任务时的状态互踩）。
  */
 public class RelationResolver {
 
     private final NamingRelationResolver namingResolver = new NamingRelationResolver();
-    /** ORM 解析器注入的关联语义（orm_join 来源） */
+    /** 旧路径兼容：registerSource 注入的 orm 语义（仅 4 参 resolve 读取） */
     private volatile List<RelationHint> ormHints = List.of();
 
+    /**
+     * @deprecated 状态注入破坏无状态契约（并发任务互踩）。请改用
+     * {@link #resolve(Collection, DataGenSpec, Connection, com.perftestor.datagen.spi.DatabaseDialect, List)}
+     * 直接传参。保留仅为兼容既有调用方。
+     */
+    @Deprecated
     public void registerSource(List<RelationHint> hints) {
         this.ormHints = hints == null ? List.of() : hints;
     }
 
-    /** 解析表组关联，产出自动生效边集与待确认建议 */
+    /**
+     * 解析表组关联（orm_join 来源为空），产出自动生效边集与待确认建议。
+     */
     public RelationResolution resolve(Collection<SchemaMetadata> metas, DataGenSpec spec,
                                       Connection conn, com.perftestor.datagen.spi.DatabaseDialect dialect) {
+        return resolve(metas, spec, conn, dialect, List.of());
+    }
+
+    /** 解析表组关联，产出自动生效边集与待确认建议（orm_join 语义参数化，无共享状态） */
+    public RelationResolution resolve(Collection<SchemaMetadata> metas, DataGenSpec spec,
+                                      Connection conn, com.perftestor.datagen.spi.DatabaseDialect dialect,
+                                      List<RelationHint> ormHints) {
+        List<RelationHint> safeOrmHints = ormHints == null ? List.of() : ormHints;
         Map<String, SchemaMetadata> metaMap = new LinkedHashMap<>();
         for (SchemaMetadata m : metas) {
             metaMap.put(m.getTableName(), m);
@@ -44,8 +64,8 @@ public class RelationResolver {
             }
         }
 
-        // 来源 3：orm_join 源码语义（自动应用）
-        for (RelationHint h : ormHints) {
+        // 来源 3：orm_join 源码语义（自动应用，参数化传入）
+        for (RelationHint h : safeOrmHints) {
             best.merge(edgeKey(h), h, (a, b) -> better(a, b));
         }
 

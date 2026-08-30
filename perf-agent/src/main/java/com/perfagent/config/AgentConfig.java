@@ -63,6 +63,19 @@ public class AgentConfig {
     public boolean jdbcEnabled = true;
     /** 是否启用 JMX 采集 */
     public boolean jmxEnabled = true;
+    /**
+     * 是否启用 Servlet Filter 根模式（默认 true）：以最外层 Filter#doFilter 作为
+     * 调用链唯一采样决策点，消除采样稀释与半截链路。非 Servlet 应用无匹配类，零影响。
+     */
+    public boolean filterRootEnabled = true;
+    /** 是否启用方法级 CPU 热点采样（默认 false，需要时开启控制常态开销） */
+    public boolean hotspotEnabled = false;
+    /** CPU 热点采样周期毫秒（默认 10ms = 每秒 100 样本/线程） */
+    public int hotspotIntervalMs = 10;
+    /** CPU 热点聚合上报周期秒 */
+    public int hotspotReportSec = 30;
+    /** 每次上报的热点方法数上限 */
+    public int hotspotTopN = 50;
 
     /** 由 agentArgs 与默认值构造配置 */
     public static AgentConfig fromArgs(String agentArgs) {
@@ -95,6 +108,11 @@ public class AgentConfig {
         if (kv.containsKey("methodTraceEnabled")) cfg.methodTraceEnabled = Boolean.parseBoolean(kv.get("methodTraceEnabled"));
         if (kv.containsKey("jdbcEnabled")) cfg.jdbcEnabled = Boolean.parseBoolean(kv.get("jdbcEnabled"));
         if (kv.containsKey("jmxEnabled")) cfg.jmxEnabled = Boolean.parseBoolean(kv.get("jmxEnabled"));
+        if (kv.containsKey("filterRootEnabled")) cfg.filterRootEnabled = Boolean.parseBoolean(kv.get("filterRootEnabled"));
+        if (kv.containsKey("hotspotEnabled")) cfg.hotspotEnabled = Boolean.parseBoolean(kv.get("hotspotEnabled"));
+        if (kv.containsKey("hotspotIntervalMs")) cfg.hotspotIntervalMs = Integer.parseInt(kv.get("hotspotIntervalMs"));
+        if (kv.containsKey("hotspotReportSec")) cfg.hotspotReportSec = Integer.parseInt(kv.get("hotspotReportSec"));
+        if (kv.containsKey("hotspotTopN")) cfg.hotspotTopN = Integer.parseInt(kv.get("hotspotTopN"));
         return cfg;
     }
 }

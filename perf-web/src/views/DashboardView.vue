@@ -128,10 +128,12 @@ import { useRouter } from 'vue-router'
 import { LayoutDashboard, Gauge, Database, Bug, Bot, Users, Zap, Boxes, DatabaseZap, Rocket } from 'lucide-vue-next'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, stressApi, slowSqlApi, sourceApi, traceApi, dataGenApi } from '../api'
+import { useRepoStore } from '../stores/repoStore'
 
 const router = useRouter()
 const apps = ref<Array<{ appName: string; status: string }>>([])
 const repos = ref<Array<Record<string, any>>>([])
+const repoStore = useRepoStore()
 const stressTasks = ref<Array<Record<string, any>>>([])
 const genTasks = ref<Array<Record<string, any>>>([])
 const traces = ref<Array<Record<string, any>>>([])
@@ -170,13 +172,14 @@ const quickActions = [
 ]
 
 async function refresh() {
-  const [a, r, t, g, tr, s, i] = await Promise.allSettled([
-    appApi.list(), sourceApi.repos(50), stressApi.list({ limit: 5 }),
+  const [a, t, g, tr, s, i] = await Promise.allSettled([
+    appApi.list(), stressApi.list({ limit: 5 }),
     dataGenApi.list(10), traceApi.list({ limit: 5 }),
     slowSqlApi.list({ limit: 5 }), sourceApi.issues({ limit: 5 })
   ])
+  // 项目列表走全局缓存（首次加载后不再重复拉取）
+  repoStore.load().then(() => { repos.value = repoStore.repos }).catch(() => {})
   if (a.status === 'fulfilled') apps.value = a.value.data
-  if (r.status === 'fulfilled') repos.value = r.value.data
   if (t.status === 'fulfilled') stressTasks.value = t.value.data
   if (g.status === 'fulfilled') genTasks.value = g.value.data
   if (tr.status === 'fulfilled') traces.value = tr.value.data

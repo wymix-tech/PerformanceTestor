@@ -13,6 +13,10 @@ public class StressTaskResult {
     private String targetUrl;
     private int concurrency;
     private int durationSec;
+    /** 预热时长秒（该期请求不计入统计） */
+    private int warmupSec;
+    /** 并发爬坡时长秒（0 = 全量并发立即启动） */
+    private int rampUpSec;
     /** 总请求数 */
     private long totalRequests;
     /** 错误数 */
@@ -195,6 +199,22 @@ public class StressTaskResult {
 
     public void setConcurrency(int concurrency) {
         this.concurrency = concurrency;
+    }
+
+    public int getWarmupSec() {
+        return warmupSec;
+    }
+
+    public void setWarmupSec(int warmupSec) {
+        this.warmupSec = warmupSec;
+    }
+
+    public int getRampUpSec() {
+        return rampUpSec;
+    }
+
+    public void setRampUpSec(int rampUpSec) {
+        this.rampUpSec = rampUpSec;
     }
 
     public int getDurationSec() {

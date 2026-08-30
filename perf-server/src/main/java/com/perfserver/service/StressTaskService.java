@@ -170,6 +170,21 @@ public class StressTaskService {
         if (request.getQpsLimit() < 0 || request.getQpsLimit() > 100_000) {
             throw new IllegalArgumentException("QPS 上限必须在 0-100000 之间");
         }
+        if (request.getWarmupSec() < 0 || request.getWarmupSec() > 300) {
+            throw new IllegalArgumentException("预热时长必须在 0-300 秒之间");
+        }
+        if (request.getRampUpSec() < 0 || request.getRampUpSec() > 600) {
+            throw new IllegalArgumentException("并发爬坡时长必须在 0-600 秒之间");
+        }
+        // 引擎可用性前置校验（如 JMeter 未安装时任务创建即拒绝，给出安装指引）
+        String engineType = request.getEngineType() == null || request.getEngineType().isBlank()
+                ? "http" : request.getEngineType();
+        StressEngine engine = engineRegistry.get(engineType);
+        if (!engine.available()) {
+            throw new IllegalArgumentException("压测引擎「" + engineType + "」不可用："
+                    + "JMeter 需配置 perf.stress.jmeter-home（或环境变量 JMETER_HOME）指向安装目录，"
+                    + "或将 jmeter 加入 PATH；也可改用默认 http 引擎");
+        }
         if (request.getStages() != null) {
             if (request.getStages().size() > 10) {
                 throw new IllegalArgumentException("分档数量不能超过 10");

@@ -2,6 +2,12 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 const routes = [
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { title: '登录', public: true }
+  },
+  {
     path: '/',
     component: () => import('@/layouts/MainLayout.vue'),
     redirect: '/dashboard',
@@ -61,12 +67,36 @@ const routes = [
         meta: { title: 'AI 助手' }
       }
     ]
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    name: 'NotFound',
+    component: () => import('@/views/NotFoundView.vue'),
+    meta: { title: '页面不存在', public: true }
   }
 ]
 
 const router = createRouter({
   history: createWebHistory(),
   routes
+})
+
+// 路由守卫：未登录跳转登录页（携带回跳地址），已登录访问登录页跳总览
+// 直接读 localStorage 避免依赖 Pinia 实例（守卫执行时 store 可能未就绪）
+router.beforeEach((to) => {
+  const token = localStorage.getItem('perf_token')
+  if (!to.meta.public && !token) {
+    return { name: 'Login', query: { redirect: to.fullPath } }
+  }
+  if (to.name === 'Login' && token) {
+    return { name: 'Dashboard' }
+  }
+  return true
+})
+
+// 路由标题同步：meta.title → document.title（浏览器标签页/书签可辨识）
+router.afterEach((to) => {
+  document.title = to.meta.title ? `${to.meta.title} · PerformanceTestor` : 'PerformanceTestor'
 })
 
 export default router
