@@ -1,7 +1,7 @@
 ## 产品概述
 基于前期对 PerformanceTestor（Java 性能测试智能体平台，四模块）的深度代码评估，实施全面改进：修复 P0/P1/P2 三级缺陷、完成 8 项工程快速优化、并按四阶段落地全部新功能，最终通过端到端全链路验证。
 
-## 执行进度（2026-08-30 更新）
+## 执行进度（2026-08-31 更新）
 
 | 里程碑 | 状态 | 说明 |
 | --- | --- | --- |
@@ -9,12 +9,12 @@
 | M1 灌数引擎修复 | ✅ 完成 | 引擎无状态化 + 拓扑精确环路，7 个新单测 |
 | M2 前端工程优化 | ✅ 完成 | 依赖瘦身 / Pinia stores / 组件拆分 / 404+title |
 | M3 二阶段功能 | ✅ 完成 | CPU 热点采样 / JMeter 适配 / 定时压测基线告警 / 流量标记，11 个新单测 |
-| M4 三阶段功能 | 🚧 进行中（2/3） | ✅ AI ReAct+SSE+知识库 / ✅ 修复效果自动验证 / ⏸️ 容量科学化 |
-| M5 四阶段功能 | ⏸️ 待执行 | PG 方言 / 中间件观测 / 报告导出 |
-| M6 端到端验证 | ⏸️ 待执行 | 全量构建 + start-all.sh 全链路压测验证 |
+| M4 三阶段功能 | ✅ 完成（3/3） | ✅ AI ReAct+SSE+知识库 / ✅ 修复效果自动验证 / ✅ 容量科学化（拟合+R²+拐点+置信区间，14 个新单测） |
+| M5 四阶段功能 | ✅ 完成（3/3） | ✅ PG 方言+JPA 解析 / ✅ 中间件观测 / ✅ 报告导出（PDF/Word，15 个新单测） |
+| M6 端到端验证 | ✅ 完成 | 全量构建（228 测试）+ 真实 MySQL/PG 容器全链路验证；E2E 修复 3 个真实缺陷 |
 
-验证状态：后端全模块 `mvn test` 通过（144 个测试，0 失败）；前端 `vue-tsc` + `vite build` 通过。
-（M4 前两项已完成，下一轮从 m4-capacity-science 接续）
+验证状态：后端全模块 `mvn test` 通过（228 个测试，0 失败）；前端 `vue-tsc` + `vite build` 通过。
+**M0–M6 全部 16 项任务已完成**，端到端验证细节见 `docs/handoff/handoff-main.md` 第 2.2 节。
 
 ## 核心功能
 - **安全鉴权**：管理员登录、平台接口统一鉴权（被测探针上报通道免鉴权）、前端登录页与路由守卫、未授权统一跳转、敏感密码与密钥安全化
@@ -53,18 +53,20 @@
 8. **JMeter 真实适配**：`JmeterStressEngine#run` 实现——JMX 模板生成（ThreadGroup/RampUp/ConstantThroughputTimer 映射现有参数）→ `ProcessBuilder` 调 `jmeter -n -t plan.jmx -l result.jtl` → 解析 JTL CSV（timeStamp/elapsed/success）回填 StressStatistician 重建分位统计；`jmeterHome` 可配，启动检测未安装时该引擎标记不可用并明确提示（不影响默认 http 引擎）
 9. **定时压测/基线/告警**：新表 `stress_schedule`（调度表达式、任务模板 JSON、启用状态、基线版本、webhook 配置）+ `StressScheduler`（@Scheduled 30s 扫描到期任务，恢复 @EnableScheduling）；同场景（同 URL/并发/时长）按 appVersion 自动 diff QPS/P95/错误率；`NotifyService` 支持自定义 webhook 与钉钉/飞书消息模板（复用 capacity 阈值配置触发）；压测请求注入 `X-Perf-Test: 1` 标记头，perf-demo 演示 header 检测切影子表路由
 
-### M4 — 三阶段功能 🚧（已完成 2/3）
+### M4 — 三阶段功能 ✅（已完成 3/3）
 10. **AI 编排升级** ✅：`AiAgentService` 升级 ReAct 显式循环（Thought/Action/Observation，`ReactStep` 结构化留痕，Observation 截断到 2000 字符防上下文膨胀，轮次上限 10 收尾摘要）；`PromptBuilder` 增 `AiRole` 三角色（压测执行/根因分析/修复建议）+ `detectRole(intent)` 路由，角色切换时 system prompt 原地替换保留历史；`LlmClient` 增 stream 模式（`StreamAccumulator` 合并 delta 与分片 tool_calls）；新增 `AiChatStreamController`（`POST /api/ai/chat/stream`，SseEmitter 300s，事件 token/thought/tool/observation/done/error）；新表 `ai_knowledge`（FULLTEXT ngram 中文检索）+ `AiKnowledgeService`（结论自动入库，正文 ≥40 字）+ `SearchKnowledgeTool`；前端 AiAssistantView 改 fetch+ReadableStream 逐 token 渲染（含停止按钮、ReAct 过程留痕）
 11. **修复效果自动验证** ✅：`performance_issue` 加列 `stress_task_id`/`verify_json`/`verify_time`（两份脚本 + `add_column_if_missing` 幂等补列）；`createFromStress` 自动快照场景、`bindStressTask` 支持补绑；新增 `IssueVerifyService.verify()`——重放同场景压测（同 URL/方法/并发/时长/限流）→ `BaselineCompareService.diff(重放, 快照)` → P95 降幅 ≥30% 且无回归则自动 `resolved` 并写 `verify_json`；接口 `POST /api/source/issues/{id}/verify` 与 `/bind-stress`；前端 OptimizeView 加"验证修复"按钮与结果卡片（前后指标 + 基线对比表格 + 无快照补绑入口）
-12. **容量科学化** ⏸️：CapacityAnalyzer 在分段插值之上增加二项式/指数拟合 + RT-并发二阶导拐点检测 + 基于分档采样方差的置信区间；结果 JSON 增加 model/r2/fittedCurve 字段（向后兼容）
+12. **容量科学化** ✅：新增 `capacity/CurveFitter`（二项式最小二乘解 3×3 正规方程组、`qps = a·c² + b·c + k`、R²=1-SSE/SST、a<0 时顶点 `c*=-b/2a` 为理论最大并发、非均匀网格二阶差分拐点检测、QPS 泊松 σ=√qps 与 P95 分位数反推 σ 的 95% CI）；`CapacityAnalyzer` 拆为插值（原判定逻辑零改动）+ `fillScience` 补充模型（过载档位截断、<3 档静默跳过）；`CapacityResult` 向后兼容新增 `model/r2/fittedCurve/confidenceInterval/rtKneeConcurrency`（CurvePoint 补 `p50Ms`/`totalRequests`）；前端 StressReport 容量卡片展示拟合公式/R²/理论拐点/RT 拐点/分档置信区间表，并新增拟合曲线图（实测散点+拟合虚线+95% 置信带+拐点 diamond+RT 拐点 markLine）
 
-### M5 — 四阶段功能 ⏸️（待执行）
-13. **PG 方言**：perf-datagen 新增 `PostgreSQLDialect`（information_schema 元数据、双引号标识符、CHECK 约束枚举发现、SERIAL 识别）+ `JpaSourceParser`（JavaParser 解析 @Entity/@ManyToOne/@OneToMany 构建 relationHints）；H2 `MODE=PostgreSQL` 单测复用现有 SPI 测试模式；DataGenService 按 JDBC URL 自动路由 `supports()`
-14. **中间件观测**：TraceEnhancer 沿用 JDBC 拦截模式新增 Redis（Lettuce sync/Jedis 命令接口）、ES client、RabbitMQ Channel 拦截；超阈值入新表 `slow_command`（type/command/costMs/traceId 关联调用链）；`middlewareEnabled` 默认关控制开销；前端慢 SQL Tab 扩展为慢命令合并视图
-15. **报告导出**：`ReportPrintView` 打印友好页（Tailwind `print:` 变体，屏幕深色/打印白底 A4）；后端 openhtmltopdf 生成 PDF（`GET /api/reports/export?stressTaskId=&format=pdf|doc`，Word 用 HTML 兼容 .doc 输出零额外依赖）
+### M5 — 四阶段功能 ✅（已完成 3/3）
+13. **PG 方言** ✅：perf-datagen 新增 `PostgreSQLDialect`（information_schema 元数据、双引号标识符、CHECK 约束枚举发现、SERIAL 识别）+ `JpaSourceParser`（JavaParser 解析 @Entity/@ManyToOne/@OneToMany 构建 relationHints）；H2 `MODE=PostgreSQL` 单测复用现有 SPI 测试模式；DataGenService 按 JDBC URL 自动路由 `supports()`
+14. **中间件观测** ✅：TraceEnhancer 沿用 JDBC 拦截模式新增 Redis（Lettuce sync/Jedis 命令接口）、ES client、RabbitMQ Channel 拦截；超阈值入新表 `slow_command`（type/command/costMs/traceId 关联调用链）；`middlewareEnabled` 默认关控制开销；前端慢 SQL Tab 扩展为慢命令合并视图
+15. **报告导出** ✅：`ReportHtmlRenderer` 渲染自包含 HTML（内联 CSS：A4/白底黑字/表格边框/分页控制，须输出**良构 XHTML**——openhtmltopdf 用 TRaX XML 解析器，void 元素未自闭合会直接抛 SAXParseException）；`ReportExportService` 支持 html/pdf/doc 三格式（PDF 走 openhtmltopdf 1.0.10 + PDFBox 后端 `PdfRendererBuilder`，探测并注册系统中文字体避免中文变方块；Word 用 MHTML/Office XML 命名空间头 + `.doc` 扩展名的 HTML 兼容方案，**不引入 Apache POI**）；`ReportExportController` 提供 `GET /api/reports/export?stressTaskId=&format=&printMode=`，直接返回 `ResponseEntity<byte[]>` 绕过 `ApiResponse` 包壳，文件名按 RFC 5987 编码；前端 `StressReport` 头部新增「打印预览 / 导出 PDF / 导出 Word」（服务端渲染统一报告，前端不重复实现打印样式）
 
-### M6 — 端到端验证 ⏸️（待执行）
-16. `mvn test` 全模块（为 GC 映射/无锁统计/精确环路/无状态引擎补新单测）+ `npm run build`（vue-tsc）+ `scripts/build.sh`；`scripts/start-all.sh` 拉起 MySQL+server+demo+web 后验证：登录流程（未登录 401 → 登录取 token → 携带访问）、agent 免鉴权上报正常、压测 `GET /api/user/list?limit=200` 20 并发复现基线（QPS≈300/P95≈135ms）且 warmup 生效（首秒 P99 无冷启动尖刺）、CPU 热点/基线 diff/报告导出冒烟（无 jmeter 环境时该项降级跳过）
+### M6 — 端到端验证 ✅（已完成）
+16. `mvn test` 全模块（为 GC 映射/无锁统计/精确环路/无状态引擎补新单测）+ `npm run build`（vue-tsc）+ `scripts/build.sh`；`scripts/start-all.sh` 拉起 MySQL+server+demo+web 后验证：登录流程（未登录 401 → 登录取 token → 携带访问）✅、agent 免鉴权上报正常 ✅、压测 `GET /api/user/list?limit=200` 20 并发复现基线（QPS≈300/P95≈135ms，实测 QPS 323.9/P95 112ms/错误率 0%）且 warmup 生效（首秒 P99 无冷启动尖刺）✅、CPU 热点/基线 diff/报告导出冒烟 ✅（无 jmeter 环境时该项降级跳过）
+
+**E2E 暴露并修复的 3 个真实缺陷**（纯单测无法发现）：① 全项目缺失 PostgreSQL JDBC 驱动 → 父 pom 托管 `postgresql:42.7.3`（server runtime / datagen test）；② 枚举发现值未参与值生成，枚举列被填随机长串 → `DefaultDataGenEngine` 增加 `dbEnumValues` 缓存（键 `表名.列名`，单例 Bean 每次 execute 清空）；③ PG 严格类型致枚举/JSON 列写入失败 → `PostgreSQLDialect.enrichJdbcUrl` 追加 `stringtype=unspecified`。新增真实 PG 冒烟用例 `PostgreSQLDialectLiveTest`（5 例）+ `PostgresEnumGenerationLiveTest`（2 例），无 PG 实例时自动跳过。
 
 ## 架构设计（新增部分）
 ```mermaid
@@ -180,8 +182,8 @@ public class StressStatistician {
 - [x] 定时压测调度+版本基线 diff+webhook 告警+压测流量标记（6 单测）
 - [x] AI ReAct 多角色编排+SSE 流式输出+知识库 FULLTEXT 检索工具（33 新单测）
 - [x] 问题场景快照+一键重放压测+指标 diff+达标自动关闭（9 新单测）
-- [ ] 容量评估非线性拟合+置信区间+拐点检测
-- [ ] PostgreSQLDialect+JpaSourceParser+H2 PG 模式单测+URL 路由
-- [ ] 用 [subagent:code-explorer] 实现 Redis/ES/MQ 拦截+慢命令上报与前端视图
-- [ ] 报告打印页+openhtmltopdf PDF 导出接口
-- [ ] 全量构建+单测+start-all.sh 全链路压测验证与新功能冒烟
+- [x] 容量评估非线性拟合+置信区间+拐点检测（CurveFitter 二项式最小二乘+R²+二阶导拐点+95% CI，结果 JSON 向后兼容加 model/r2/fittedCurve/confidenceInterval/rtKneeConcurrency，14 单测）
+- [x] PostgreSQLDialect+JpaSourceParser+H2 PG 模式单测+URL 路由（PostgreSQLDialect：URL 路由 supports(jdbc:postgresql:)、reWriteBatchedInserts 增强、JDBC DatabaseMetaData 元数据、双引号标识符、pg_enum 原生枚举 + CHECK 约束文本解析双通道枚举发现、SERIAL/BIGSERIAL（nextval 默认值）识别；JpaSourceParser：解析 @Entity/@Table/@ManyToOne/@OneToOne/@JoinColumn/@ManyToMany/@JoinTable 产出 relationHints（SRC_ORM_JOIN 0.9），mappedBy 反向声明跳过；公共片段抽取为 orm/support/JavaSourceHints 供 MyBatis/JPA 复用；DefaultDataGenEngine 改造为多方言 List<DatabaseDialect>（按 URL 路由）+ 多解析器 List<OrmSourceParser>（特征检测 + order 排序合并）；DataGenEngineConfig 注册 MySQL+PG / MyBatis+JPA；DataGenService.validateDbUrl 改为按已注册方言 supports 判别、connect 的 URL 增强改为走方言 enrichJdbcUrl（原硬编码 MySQL 参数会污染 PG 连接串）；22 新单测）
+- [x] Redis/ES/MQ 拦截+慢命令上报与前端视图（agent：`MiddlewareSupport` 命令渲染（字符串/数字/byte[] 带长度前缀且仅解码前 256B/数组集合限 4 元素/复杂对象仅记类型名避免大序列化/超 6 参记 +n more/命令总长截断 1000；enter 仅记 nanoTime+参数引用，exit 先判阈值未超直接返回）+ `RedisInterceptor`/`EsInterceptor`/`MqInterceptor` 三个 Advice；`TraceEnhancer` 注册三类类型匹配器（Lettuce/Jedis 按 `hasSuperType(named(...))` 类型名匹配故 agent 零 Redis 依赖、ES RestClient 含自身、RabbitMQ Channel 的 basicPublish 等 11 个命令方法）+ 复用 `middlewareMethods()` 统一排除静态/抽象/合成/桥接/close/生命周期；`AgentConfig` 新增 `middlewareEnabled`（默认 false）与 `slowCommandThresholdMs`（默认 100）；`MetricsReporter` 新增 slowCommand 队列 `reportSlowCommand` + `dropped.slowCommand` + 未知项目/停机时清理队列；`TraceContext.currentTraceId()` 补齐链路关联。server：`SlowCommand` 实体 + `slow_command` 表（idx_app_time/idx_type/idx_trace/idx_cost）+ `SlowCommandMapper`（batchInsert/query/findByTraceId）+ `AgentReportService.saveSlowCommands`（类型归一小写、command 截断 1000 防超 VARCHAR(1024)、缺 type 跳过）+ `MetricQueryService.slowCommands` + `GET /api/slow-commands` + DataCleanup 级联清理。前端：慢 SQL 列表升级为「慢命令」合并视图（SQL/Redis/ES/MQ 统一结构按耗时倒序 + 类型徽标配色 + 类型筛选，选定具体中间件类型时交由后端过滤减少传输）；`scripts/start-agent.sh` 新增 `MIDDLEWARE_ENABLED`/`SLOW_COMMAND_THRESHOLD_MS` 开关；21 新单测）
+- [x] 报告打印页+PDF/Word 导出（`ReportHtmlRenderer` 自包含 HTML 渲染（内联 CSS：A4/白底黑字/表格边框/卡片不跨页断裂，须为良构 XHTML 否则 openhtmltopdf 的 TRaX 解析器直接报错）+ `ReportExportService`（html/pdf/doc 三格式；PDF 走 openhtmltopdf+PDFBox 并探测注册系统中文字体；Word 用 MHTML/Office XML 头 + .doc 扩展名的 HTML 兼容方案，零 Apache POI 依赖）+ `ReportExportController`（`GET /api/reports/export?stressTaskId=&format=&printMode=`，直接返回 ResponseEntity 绕过 ApiResponse 包壳，RFC 5987 中文文件名）+ 前端 StressReport 头部「打印预览 / 导出 PDF / 导出 Word」三按钮（打印预览与下载均用裸 axios 携带 token，因封装实例响应拦截器会解包丢失 Content-Disposition，且 window.open 直开无 JWT 会被 401）；15 单测）
+- [x] 全量构建+单测+start-all.sh 全链路压测验证与新功能冒烟（228 测试全过；真实 MySQL 8.0 + PostgreSQL 16 容器端到端：登录鉴权/agent 免鉴权上报/基线压测复现 QPS 323.9 P95 112ms 错误率 0%/warmup 生效/分档压测拟合 R²=0.9558/报告导出三格式/数据清理级联/11 个接口冒烟全 200/PG 方言与灌数；E2E 暴露并修复 3 个真实缺陷：缺失 PG JDBC 驱动、枚举发现值未参与生成、PG 严格类型致枚举列写入失败）
