@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * AI 编排服务：ReAct（Thought → Action → Observation）显式多轮循环。
@@ -74,8 +75,7 @@ public class AiAgentService {
     private final SourceIssueService sourceIssueService;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, AiTool> toolIndex = new ConcurrentHashMap<>();
-    private final Map<String, List<ObjectNode>> sessions = new ConcurrentHashMap<>();
-    private final Map<String, AiRole> sessionRoles = new ConcurrentHashMap<>();
+    private final Map<String, AiSession> sessions = new ConcurrentHashMap<>();
 
     public AiAgentService(LlmClient llmClient, PromptBuilder promptBuilder, List<AiTool> tools,
                           AiKnowledgeService knowledgeService,
@@ -115,10 +115,21 @@ public class AiAgentService {
     public Map<String, Object> chat(String sessionId, String message, String appName,
                                     Consumer<AiStreamEvent> sink) {
         String sid = sessionId == null || sessionId.isBlank() ? "default" : sessionId;
+        AiSession session = sessions.computeIfAbsent(sid, k -> new AiSession());
+        // 会话级串行：消息历史与角色是同一 sessionId 的共享状态，/ai/chat 与 /ai/chat/stream
+        // 双通道并发进入时若各自读写，会丢消息或破坏上下文顺序（ArrayList 亦非线程安全）
+        synchronized (session) {
+            return doChat(session, message, appName, sink);
+        }
+    }
+
+    /** 单轮对话实现（调用方需持有 {@code session} 监视器） */
+    private Map<String, Object> doChat(AiSession session, String message, String appName,
+                                       Consumer<AiStreamEvent> sink) {
         AiRole role = promptBuilder.detectRole(message);
-        List<ObjectNode> messages = sessions.computeIfAbsent(sid, k -> new ArrayList<>());
+        session.role = role;
+        List<ObjectNode> messages = session.messages;
         applySystemPrompt(messages, role);
-        sessionRoles.put(sid, role);
 
         ObjectNode user = mapper.createObjectNode();
         user.put("role", "user");
@@ -162,10 +173,12 @@ public class AiAgentService {
                 break;
             }
             if (!thought.isBlank()) {
+                steps.add(new ReactStep(ReactPhase.THINK, thought, null, null, null));
                 emit(sink, AiStreamEvent.thought(thought));
             }
             // ACT：回填 assistant（含 tool_calls）后逐个执行
             appendAssistantWithCalls(messages, thought, calls);
+            steps.add(new ReactStep(ReactPhase.ACT, thought, joinToolNames(calls), joinToolArgs(calls), null));
             for (ToolCall tc : calls) {
                 usedTools.add(tc.getName());
                 emit(sink, AiStreamEvent.tool(json(Map.of("name", tc.getName(), "arguments",
@@ -217,12 +230,22 @@ public class AiAgentService {
     /** 清空会话历史（含角色状态） */
     public void clear(String sessionId) {
         sessions.remove(sessionId);
-        sessionRoles.remove(sessionId);
     }
 
     /** 当前会话角色（无记录时返回 GENERAL） */
     public AiRole roleOf(String sessionId) {
-        return sessionRoles.getOrDefault(sessionId, AiRole.GENERAL);
+        AiSession session = sessions.get(sessionId);
+        return session == null ? AiRole.GENERAL : session.role;
+    }
+
+    /**
+     * 会话上下文：消息历史 + 当前角色（二者需一起变更，故封装为同一对象加锁）。
+     *
+     * <p>{@code role} 用 volatile：{@link #roleOf} 不持锁读取，保证跨线程可见。
+     */
+    private static final class AiSession {
+        private final List<ObjectNode> messages = new ArrayList<>();
+        private volatile AiRole role = AiRole.GENERAL;
     }
 
     // ---------------- ReAct 内部实现 ----------------
@@ -272,6 +295,18 @@ public class AiAgentService {
         toolMsg.put("tool_call_id", toolCallId);
         toolMsg.put("content", observation);
         messages.add(toolMsg);
+    }
+
+    /** ACT 步骤：本轮并行调用的工具名（逗号连接） */
+    private static String joinToolNames(List<ToolCall> calls) {
+        return calls.stream().map(ToolCall::getName).collect(Collectors.joining(","));
+    }
+
+    /** ACT 步骤：本轮各工具入参（顺序与 {@link #joinToolNames} 一致） */
+    private static String joinToolArgs(List<ToolCall> calls) {
+        return calls.stream()
+                .map(tc -> tc.getArguments() == null || tc.getArguments().isBlank() ? "{}" : tc.getArguments())
+                .collect(Collectors.joining(", "));
     }
 
     private String executeTool(String name, String args) {

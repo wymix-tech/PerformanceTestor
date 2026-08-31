@@ -33,6 +33,9 @@ class IssueVerifyServiceTest {
     private StressTaskMapper taskMapper;
     private StressTaskService stressTaskService;
     private IssueVerifyService service;
+    /** 重放任务状态查询次数（轮询推进用例使用） */
+    private final java.util.concurrent.atomic.AtomicInteger pollCount =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -42,6 +45,53 @@ class IssueVerifyServiceTest {
         BaselineCompareService baseline = new BaselineCompareService(taskMapper, new ObjectMapper());
         service = new IssueVerifyService(issueMapper, taskMapper, stressTaskService, baseline,
                 new ObjectMapper(), 300);
+    }
+
+    /**
+     * 等待预算取「配置超时」与「时长+收尾缓冲」的较小值（短任务不必空等满 300s）。
+     *
+     * <p>deadline 计算抽为纯函数后可直接断言，无需真实等待 30s+。
+     */
+    @Test
+    void waitsOnlyForTaskDurationPlusBuffer() {
+        // 时长 10s + 缓冲 60s = 70s，远小于配置的 300s → 取 70s
+        assertEquals(70_000L, IssueVerifyService.deadlineMs(0L, 300, 10));
+        // 时长缺失：按缓冲 60s 兜底
+        assertEquals(60_000L, IssueVerifyService.deadlineMs(0L, 300, null));
+        // 时长为 0：仍受 30s 下限保护
+        assertEquals(60_000L, IssueVerifyService.deadlineMs(0L, 300, 0));
+        // 基准时间需叠加而非替换（否则 deadline 落在过去，任务被秒判超时）
+        assertEquals(1_070_000L, IssueVerifyService.deadlineMs(1_000_000L, 300, 10));
+    }
+
+    /** 任务时长超过超时配置时以配置为准，避免无限等待 */
+    @Test
+    void capsWaitAtConfiguredTimeoutForLongTask() {
+        assertEquals(300_000L, IssueVerifyService.deadlineMs(0L, 300, 600));
+        // 配置本身小于 30s 下限：按下限 30s 保护，避免误配导致秒超时
+        assertEquals(30_000L, IssueVerifyService.deadlineMs(0L, 10, 60));
+    }
+
+    /** 重放任务运行中：轮询直到终态，而非一次查不到就判失败 */
+    @Test
+    void pollsUntilReplayTaskReachesTerminalState() {
+        when(issueMapper.findById(70L)).thenReturn(issue(70, "fixed", 1L));
+        when(taskMapper.findById(1L)).thenReturn(finishedTask(1, "{\"qps\":100,\"p95Ms\":200}"));
+        StressTask running = pendingTask(2);
+        when(taskMapper.findById(2L)).thenAnswer(inv -> {
+            // 前两次仍在运行，第三次完成：验证轮询真的在推进
+            pollCount.incrementAndGet();
+            return pollCount.get() >= 3 ? finishedTask(2, "{\"qps\":120,\"p95Ms\":100}") : running;
+        });
+        when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
+                .thenReturn(pendingTask(2));
+
+        IssueVerifyService.VerifyResult r = service.verify(70);
+
+        assertFalse(r.isReplayFailed(), "任务最终完成不应记为重放失败");
+        assertTrue(pollCount.get() >= 3, "应在任务运行期间持续轮询，实际查询 " + pollCount.get() + " 次");
+        assertEquals(2L, r.getReplayTaskId());
+        verify(taskMapper, org.mockito.Mockito.atLeast(3)).findById(2L);
     }
 
     /** 达标：P95 降幅 ≥ 30% 且无回归 → 自动 resolved */

@@ -51,14 +51,6 @@ public class DefaultDataGenEngine implements DataGenEngine {
     /** 注册 ORM 解析器（按 supports(files) + order() 路由，支持多 ORM 共存） */
     private final List<OrmSourceParser> ormParsers;
     private final EnumValueDiscoverer enumDiscoverer = new EnumValueDiscoverer();
-    /**
-     * DB 枚举发现值缓存（{@code 表名.列名 → 候选值}），由 {@link #collectEnumSuggestions} 填充。
-     *
-     * <p>关键：枚举列若未配置规则又无此缓存，会被填入随机长串，
-     * 对 PG 原生枚举列直接触发「column is of type X but expression is of type character varying」，
-     * 对 MySQL ENUM 列则写入空串或报错。引擎为有状态组件（每次 execute 重建缓存）。
-     */
-    private final Map<String, List<Object>> dbEnumValues = new HashMap<>();
 
     /** 单方言/单解析器构造（兼容既有调用方） */
     public DefaultDataGenEngine(DatabaseDialect dialect, BatchExecutor executor, OrmSourceParser ormParser) {
@@ -107,8 +99,6 @@ public class DefaultDataGenEngine implements DataGenEngine {
         result.setTotalRows(spec.getTables().stream().mapToLong(TableSpec::getRowCount).sum());
         try {
             validate(spec);
-            // 引擎为单例 Bean：每次执行前清空上一次的 DB 枚举缓存（避免跨任务串用与内存增长）
-            dbEnumValues.clear();
             // 方言按 JDBC URL 路由（MySQL/PG/…；新增库种仅注册实现类）
             DatabaseDialect dialect = resolveDialect(spec.getJdbcUrl());
             try (Connection conn = connect(spec, dialect)) {
@@ -157,7 +147,9 @@ public class DefaultDataGenEngine implements DataGenEngine {
                 List<String> order = TopoSorter.sort(metas.keySet(), deps);
 
                 // 5. 枚举建议注入（未配置 enum 规则的列，用发现值生成建议提示）
-                collectEnumSuggestions(conn, spec, metas, javaEnums, result, dialect);
+                //    缓存为 execute 内局部对象：引擎无状态，同一实例可并发执行多任务
+                Map<String, List<Object>> enumValues = new HashMap<>();
+                collectEnumSuggestions(conn, spec, metas, javaEnums, result, dialect, enumValues);
 
                 // 6. Dry-Run：估算后返回；正式：执行写入
                 long estMs = estimateMaxTxnMs(spec);
@@ -171,7 +163,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
                     result.setSuccess(true);
                     return result;
                 }
-                long inserted = insertAll(spec, conn, metas, rel, order, listener, result, dialect);
+                long inserted = insertAll(spec, conn, metas, rel, order, listener, result, dialect, enumValues);
                 result.setInsertedRows(inserted);
                 result.setSuccess(true);
                 return result;
@@ -187,7 +179,8 @@ public class DefaultDataGenEngine implements DataGenEngine {
 
     private long insertAll(DataGenSpec spec, Connection conn, Map<String, SchemaMetadata> metas,
                            RelationResolver.RelationResolution rel, List<String> order,
-                           EngineListener listener, EngineResult result, DatabaseDialect dialect) throws Exception {
+                           EngineListener listener, EngineResult result, DatabaseDialect dialect,
+                           Map<String, List<Object>> enumValues) throws Exception {
         long totalInserted = 0;
         long totalRows = result.getTotalRows();
 
@@ -214,7 +207,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
             }
 
             long inserted = insertTable(spec, conn, meta, ts, tableEdges, pools, listener,
-                    totalInserted, totalRows, dialect);
+                    totalInserted, totalRows, dialect, enumValues);
             totalInserted += inserted;
             result.getTableStats().add(new EngineResult.TableStat(tableName, inserted));
 
@@ -279,7 +272,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
     private long insertTable(DataGenSpec spec, Connection conn, SchemaMetadata meta, TableSpec ts,
                              Map<String, RelationHint> tableEdges, Map<String, Map<String, IdPool>> pools,
                              EngineListener listener, long insertedBefore, long totalRows,
-                             DatabaseDialect dialect) throws Exception {
+                             DatabaseDialect dialect, Map<String, List<Object>> enumValues) throws Exception {
         List<String> insertColumns = new ArrayList<>();
         List<SchemaMetadata.ColumnMeta> cols = new ArrayList<>();
         for (SchemaMetadata.ColumnMeta c : meta.getColumns()) {
@@ -330,7 +323,8 @@ public class DefaultDataGenEngine implements DataGenEngine {
         try {
             List<Object[]> batch = new ArrayList<>(batchSize);
             for (int row = 0; row < ts.getRowCount(); row++) {
-                batch.add(buildRow(conn, meta, ts, insertColumns, cols, tableEdges, pools, pk, selfRef, orphanRate));
+                batch.add(buildRow(conn, meta, ts, insertColumns, cols, tableEdges, pools, pk, selfRef,
+                        orphanRate, enumValues));
                 if (batch.size() >= batchSize) {
                     executor.executeBatch(conn, sql, batch);
                     inserted += batch.size();
@@ -358,7 +352,8 @@ public class DefaultDataGenEngine implements DataGenEngine {
     private Object[] buildRow(Connection conn, SchemaMetadata meta, TableSpec ts,
                               List<String> insertColumns, List<SchemaMetadata.ColumnMeta> cols,
                               Map<String, RelationHint> tableEdges, Map<String, Map<String, IdPool>> pools,
-                              String pk, boolean selfRef, double orphanRate) {
+                              String pk, boolean selfRef, double orphanRate,
+                              Map<String, List<Object>> enumValues) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
         Object[] row = new Object[insertColumns.size()];
         boolean orphan = r.nextDouble() < orphanRate;
@@ -384,7 +379,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
             } else {
                 // 未配置规则：优先用 DB 发现的枚举值（PG 原生枚举 / MySQL ENUM / CHECK 约束），
                 // 否则随机生成——否则枚举列会被填入随机长串，直接触发类型/约束错误。
-                List<Object> discovered = dbEnumValues.get(enumKey(meta.getTableName(), colName));
+                List<Object> discovered = enumValues.get(enumKey(meta.getTableName(), colName));
                 value = discovered != null && !discovered.isEmpty()
                         ? discovered.get(ThreadLocalRandom.current().nextInt(discovered.size()))
                         : RuleEngine.generateDefault(col);
@@ -482,10 +477,14 @@ public class DefaultDataGenEngine implements DataGenEngine {
         return deps;
     }
 
+    /**
+     * 枚举建议注入：把 DB 发现值写入 {@code enumValues}（{@code 表名.列名 → 候选值}，execute 内局部缓存），
+     * 未配置规则的枚举列据此取值，避免被填入随机长串。
+     */
     private void collectEnumSuggestions(Connection conn, DataGenSpec spec,
                                         Map<String, SchemaMetadata> metas,
                                         Map<String, List<String>> javaEnums, EngineResult result,
-                                        DatabaseDialect dialect) {
+                                        DatabaseDialect dialect, Map<String, List<Object>> enumValues) {
         for (TableSpec ts : spec.getTables()) {
             SchemaMetadata m = metas.get(ts.getTableName().toLowerCase(Locale.ROOT));
             if (m == null) {
@@ -498,7 +497,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
                 List<Object> values = enumDiscoverer.discover(conn, dialect, m.getTableName(), col, javaEnums);
                 if (!values.isEmpty()) {
                     // 缓存 DB 发现值：未配置规则时直接用于生成，避免枚举列被填入随机长串
-                    dbEnumValues.put(enumKey(m.getTableName(), col.getName()), values);
+                    enumValues.put(enumKey(m.getTableName(), col.getName()), values);
                 } else if (EnumValueDiscoverer.suspectEnumColumn(col)) {
                     result.getWarnings().add("列 " + m.getTableName() + "." + col.getName()
                             + " 疑似枚举列（列名特征），建议人工配置 enum 规则");

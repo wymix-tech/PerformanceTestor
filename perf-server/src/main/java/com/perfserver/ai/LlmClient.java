@@ -142,7 +142,10 @@ public class LlmClient {
     /**
      * 流式对话：逐行读取 SSE，正文增量经 tokenSink 实时回调，工具调用增量累加后一次性返回。
      *
-     * @return 合并后的完整回复；连接失败/非 200 返回 null（调用方降级规则模式）
+     * <p>降级：连接中断/读流异常时，若已累积到正文则返回部分结果（token 已推给前端，
+     * 丢弃会与前端已渲染内容不一致）；无任何内容时返回 null，由调用方降级规则模式。
+     *
+     * @return 合并后的完整回复；无可用内容时返回 null（调用方降级规则模式）
      */
     private ChatResult postChatStream(ObjectNode body, Consumer<String> tokenSink) {
         StreamAccumulator accumulator = new StreamAccumulator();
@@ -184,6 +187,13 @@ public class LlmClient {
             return accumulator.toResult();
         } catch (Exception e) {
             log.warn("llm stream api call failed: {}", e.getMessage());
+            // 已推给前端的 token 不能丢弃：有部分正文时降级返回，保持与前端已渲染内容一致
+            String partial = accumulator.partialContent();
+            if (partial != null && !partial.isBlank()) {
+                ChatResult partialResult = new ChatResult();
+                partialResult.setContent(partial);
+                return partialResult;
+            }
             return null;
         }
     }

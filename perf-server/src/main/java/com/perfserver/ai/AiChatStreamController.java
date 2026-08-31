@@ -12,8 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -32,6 +34,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>超时取 {@code perf.ai.stream-timeout-sec}（默认 300s），需 ≥ 工具执行耗时；
  * 前端用 fetch + ReadableStream 读取（axios 不支持流式）。
+ *
+ * <p>并发取 {@code perf.ai.stream-threads}（默认 4）固定线程 + 无界队列；线程满载时请求需排队，
+ * 入队前先推一条 {@code thought} 排队提示，否则期间无任何事件，前端表现为"发了消息没反应"。
  */
 @RestController
 @RequestMapping("/api/ai")
@@ -41,7 +46,7 @@ public class AiChatStreamController {
 
     private final AiAgentService agent;
     private final ObjectMapper mapper = new ObjectMapper();
-    private final ExecutorService executor;
+    private final ThreadPoolExecutor executor;
     private final long timeoutMillis;
 
     public AiChatStreamController(AiAgentService agent,
@@ -50,11 +55,14 @@ public class AiChatStreamController {
         this.agent = agent;
         // 下限 30s：避免因误配导致正常对话被秒断
         this.timeoutMillis = Math.max(30L, streamTimeoutSec) * 1000L;
-        this.executor = Executors.newFixedThreadPool(Math.max(1, streamThreads), r -> {
+        int poolSize = Math.max(1, streamThreads);
+        ThreadFactory factory = r -> {
             Thread t = new Thread(r, "ai-chat-stream");
             t.setDaemon(true);
             return t;
-        });
+        };
+        this.executor = new ThreadPoolExecutor(poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(), factory);
     }
 
     @PreDestroy
@@ -79,6 +87,12 @@ public class AiChatStreamController {
             emitter.complete();
         });
 
+        // 排队感知：固定线程池满载时新请求要在队列里等待（最长 300s），期间前端收不到任何事件，
+        // 会被误认为"发了消息没反应"，故入队前先推一条 thought 提示
+        if (executor.getActiveCount() >= executor.getPoolSize()) {
+            send(emitter, AiStreamEvent.thought("当前并发已满，请求已排队，请稍候…"));
+        }
+
         executor.execute(() -> {
             if (closed.get()) {
                 return;
@@ -88,13 +102,9 @@ public class AiChatStreamController {
                     if (closed.get()) {
                         return;
                     }
-                    try {
-                        String data = mapper.writeValueAsString(event.payload());
-                        emitter.send(SseEmitter.event().name(event.type().eventName()).data(data));
-                    } catch (Exception e) {
-                        // 客户端断开/连接已关闭：停止后续推送，避免刷日志
+                    // 推送失败即视为客户端断开：停止后续推送，避免刷日志
+                    if (!send(emitter, event)) {
                         closed.set(true);
-                        log.debug("sse send failed: {}", e.getMessage());
                     }
                 });
                 // done 事件由 AiAgentService 在返回前推送（携带 mode/role/rounds），此处仅收尾连接
@@ -108,5 +118,21 @@ public class AiChatStreamController {
             }
         });
         return emitter;
+    }
+
+    /**
+     * 推送单个 SSE 事件。
+     *
+     * @return 是否推送成功；失败（客户端断开/连接已关闭）由调用方决定是否停止后续推送
+     */
+    private boolean send(SseEmitter emitter, AiStreamEvent event) {
+        try {
+            String data = mapper.writeValueAsString(event.payload());
+            emitter.send(SseEmitter.event().name(event.type().eventName()).data(data));
+            return true;
+        } catch (Exception e) {
+            log.debug("sse send failed: {}", e.getMessage());
+            return false;
+        }
     }
 }

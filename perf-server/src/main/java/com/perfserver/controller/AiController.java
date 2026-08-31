@@ -66,6 +66,16 @@ public class AiController {
         return ApiResponse.ok(knowledgeService.search(query, app, limit));
     }
 
+    /**
+     * 删除单条沉淀结论（前端知识库列表的删除入口；已在检索结果中被模型引用过的结论也可清理）。
+     *
+     * @return 是否删除成功（id 不存在时返回 false）
+     */
+    @DeleteMapping("/knowledge/{id}")
+    public ApiResponse<Boolean> deleteKnowledge(@PathVariable long id) {
+        return ApiResponse.ok(knowledgeService.delete(id));
+    }
+
     /** 清空会话历史 */
     @DeleteMapping("/session/{sessionId}")
     public ApiResponse<String> clear(@PathVariable String sessionId) {

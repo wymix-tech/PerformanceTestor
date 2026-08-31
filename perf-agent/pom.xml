@@ -36,6 +36,33 @@
     <build>
         <finalName>perf-agent</finalName>
         <plugins>
+            <!-- PIT 突变测试：mvn -pl perf-agent org.pitest:pitest-maven:mutationCoverage -->
+            <!-- 暂不设 mutationThreshold：当前 26%（reporter/jmx/hotspot 大面积无覆盖），
+                 设阈值会常态化失败，先按报告补测试再启用门禁 -->
+            <plugin>
+                <groupId>org.pitest</groupId>
+                <artifactId>pitest-maven</artifactId>
+                <configuration>
+                    <targetClasses>
+                        <param>com.perfagent.*</param>
+                    </targetClasses>
+                    <targetTests>
+                        <param>com.perfagent.*</param>
+                    </targetTests>
+                    <!-- 排除 Agent 入口：premain 只做参数解析与 ByteBuddy 安装，需 JVM attach 环境才有意义 -->
+                    <excludedClasses>
+                        <param>com.perfagent.AgentPremain</param>
+                    </excludedClasses>
+                    <outputFormats>
+                        <outputFormat>XML</outputFormat>
+                        <outputFormat>HTML</outputFormat>
+                    </outputFormats>
+                    <timestampedReports>false</timestampedReports>
+                    <jvmArgs>
+                        <jvmArg>-XX:+EnableDynamicAgentLoading</jvmArg>
+                    </jvmArgs>
+                </configuration>
+            </plugin>
             <!-- 打 fat jar 并配置 Agent Manifest（Premain-Class / Agent-Class） -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Agent 上报采集服务：接收远程探针批量上报（trace / jvm / slowSql / slowCommand / hotspot）并落库。
@@ -53,6 +54,8 @@ public class AgentReportService {
 
     /** slow_command.command 列宽（VARCHAR(1024)，含截断后缀需留余量） */
     private static final int MAX_COMMAND_LEN = 1000;
+    /** 单条 INSERT 语句的行数上限（分片提交，防 max_allowed_packet 超限） */
+    private static final int INSERT_CHUNK = 200;
 
     /** 限频告警：未知项目上报被丢弃 */
     private void warnUnknownProjectOnce(String project, String type) {
@@ -256,9 +259,8 @@ public class AgentReportService {
                 log.warn("parse slow sql failed, app={}", appName, e);
             }
         }
-        if (!batch.isEmpty()) {
-            slowSqlMapper.batchInsert(batch);
-        }
+        // 分片提交：单批 items 最多 500 条，一次性 VALUES 过大会超出 max_allowed_packet 导致整批报错
+        insertInChunks(batch, slowSqlMapper::batchInsert);
         log.info("agent report: saved {} slow sqls, app={}", batch.size(), appName);
     }
 
@@ -290,10 +292,22 @@ public class AgentReportService {
                 log.warn("parse slow command failed, app={}", appName, e);
             }
         }
-        if (!batch.isEmpty()) {
-            slowCommandMapper.batchInsert(batch);
-        }
+        // 同慢 SQL：分片提交，避免单批 VALUES 超出 max_allowed_packet
+        insertInChunks(batch, slowCommandMapper::batchInsert);
         log.info("agent report: saved {} slow commands, app={}", batch.size(), appName);
+    }
+
+    /**
+     * 分片批量入库：整批一次性 INSERT 会拼出超长 VALUES 语句，超出 MySQL
+     * {@code max_allowed_packet} 时整批失败（agent 单批最多 500 条），故按 {@value #INSERT_CHUNK} 条提交。
+     *
+     * @return 提交的总条数（供日志统计）
+     */
+    private static <T> int insertInChunks(List<T> batch, Consumer<List<T>> inserter) {
+        for (int from = 0; from < batch.size(); from += INSERT_CHUNK) {
+            inserter.accept(batch.subList(from, Math.min(from + INSERT_CHUNK, batch.size())));
+        }
+        return batch.size();
     }
 
     /** 命令文本落库截断（command 列 VARCHAR(1024)，超长会直接报错） */

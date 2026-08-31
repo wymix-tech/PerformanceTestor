@@ -70,6 +70,8 @@
                     <excludedClasses>
                         <param>com.perftestor.datagen.model.*</param>
                     </excludedClasses>
+                    <!-- 质量门禁：突变分低于阈值即构建失败（当前实测 75%，收敛后再逐步上调） -->
+                    <mutationThreshold>75</mutationThreshold>
                     <outputFormats>
                         <outputFormat>XML</outputFormat>
                         <outputFormat>HTML</outputFormat>

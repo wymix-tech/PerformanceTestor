@@ -41,7 +41,9 @@ public class IssueVerifyService {
     /** 轮询间隔毫秒 */
     private static final long POLL_INTERVAL_MS = 500L;
     /** 轮询等待完成时，在压测时长之上额外预留的收尾时间（秒） */
-    private static final long WAIT_BUFFER_SEC = 60L;
+    static final long WAIT_BUFFER_SEC = 60L;
+    /** 等待预算下限（秒）：防止 timeoutSec / durationSec 误配为 0 导致正常任务被秒判超时 */
+    static final long MIN_WAIT_SEC = 30L;
 
     private final PerformanceIssueMapper issueMapper;
     private final StressTaskMapper taskMapper;
@@ -235,11 +237,13 @@ public class IssueVerifyService {
         return r;
     }
 
-    /** 轮询等待压测任务完成（finished/failed）；超时返回 null */
+    /**
+     * 轮询等待压测任务完成（finished/failed）；超时返回 null。
+     *
+     * <p>等待上限见 {@link #deadlineMs}，到达上限任务仍未终态时返回 null（调用方记为重放失败）。
+     */
     private StressTask awaitFinished(long taskId, Integer durationSec) {
-        long budgetMs = Math.max(30L, timeoutSec) * 1000L;
-        long warmupBufferMs = (durationSec == null ? 60L : durationSec + WAIT_BUFFER_SEC) * 1000L;
-        long deadline = System.currentTimeMillis() + Math.min(budgetMs, warmupBufferMs + budgetMs);
+        long deadline = deadlineMs(System.currentTimeMillis(), timeoutSec, durationSec);
         for (;;) {
             StressTask t = taskMapper.findById(taskId);
             if (t != null && ("finished".equals(t.getStatus()) || "failed".equals(t.getStatus()))) {
@@ -255,6 +259,24 @@ public class IssueVerifyService {
                 return null;
             }
         }
+    }
+
+    /**
+     * 轮询等待的绝对截止时间戳（毫秒）。
+     *
+     * <p>取「配置超时」与「压测时长 + 收尾缓冲」两者的较小值：短任务不必空等满
+     * {@code perf.verify.timeout-sec}；任务时长本身超过超时配置时以配置为准，避免无限等待。
+     * 两侧均有 {@value #MIN_WAIT_SEC} 秒下限，防止误配成 0 导致正常任务被秒判超时。
+     *
+     * @param nowMs      当前时间戳（注入而非内部取 {@code currentTimeMillis}，便于单测断言，无需真实等待）
+     * @param timeoutSec 配置的等待上限（秒）
+     * @param durationSec 重放压测时长（秒，为空时按 {@value #WAIT_BUFFER_SEC} 秒兜底）
+     */
+    static long deadlineMs(long nowMs, int timeoutSec, Integer durationSec) {
+        long budgetMs = Math.max(MIN_WAIT_SEC, timeoutSec) * 1000L;
+        long warmupBudgetMs = Math.max(MIN_WAIT_SEC, durationSec == null ? WAIT_BUFFER_SEC
+                : durationSec + WAIT_BUFFER_SEC) * 1000L;
+        return nowMs + Math.min(budgetMs, warmupBudgetMs);
     }
 
     /** 快照任务 → 重放请求（同场景：URL/方法/并发/时长/限流/应用一致） */
