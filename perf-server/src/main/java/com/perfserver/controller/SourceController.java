@@ -245,10 +245,24 @@ public class SourceController {
         return ApiResponse.ok(sourceIssueService.createFromHotMethod(appName, className, methodName, repoId));
     }
 
-    /** 一键验证修复效果：重放场景快照压测 → 与基线 diff → 达标自动关闭问题 */
+    /**
+     * 一键验证修复效果（异步）：发起重放压测后立即返回"进行中"结论，
+     * 由 {@code GET /issues/{issueId}/verify} 轮询最终结果。
+     */
     @PostMapping("/issues/{issueId}/verify")
     public ApiResponse<IssueVerifyService.VerifyResult> verify(@PathVariable long issueId) {
         return ApiResponse.ok(issueVerifyService.verify(issueId));
+    }
+
+    /**
+     * 查询最近一次验证结论（含进行中状态）。
+     *
+     * <p>一键验证会重放一次完整压测（数十秒到数分钟），同步等待会占死 HTTP 工作线程，
+     * 故由前端在收到 {@code running=true} 后按秒级间隔轮询本接口取结论。
+     */
+    @GetMapping("/issues/{issueId}/verify")
+    public ApiResponse<Map<String, Object>> verifyStatus(@PathVariable long issueId) {
+        return ApiResponse.ok(issueVerifyService.verifyStatus(issueId));
     }
 
     /** 补绑压测场景快照（非压测来源问题建立验证基线） */

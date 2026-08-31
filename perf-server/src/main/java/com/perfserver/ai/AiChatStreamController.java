@@ -13,6 +13,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -35,14 +36,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>超时取 {@code perf.ai.stream-timeout-sec}（默认 300s），需 ≥ 工具执行耗时；
  * 前端用 fetch + ReadableStream 读取（axios 不支持流式）。
  *
- * <p>并发取 {@code perf.ai.stream-threads}（默认 4）固定线程 + 无界队列；线程满载时请求需排队，
- * 入队前先推一条 {@code thought} 排队提示，否则期间无任何事件，前端表现为"发了消息没反应"。
+ * <p>并发取 {@code perf.ai.stream-threads}（默认 4）固定线程 + <b>有界队列</b>（容量 2×线程数）。
+ * 线程满载时请求先入队等待，入队前推一条 {@code thought} 排队提示（否则期间无任何事件，
+ * 前端表现为"发了消息没反应"）；队列也满时立即推 {@code error} 并关闭流，
+ * 避免无界排队让客户端挂满 {@code perf.ai.stream-timeout-sec} 后才超时。
  */
 @RestController
 @RequestMapping("/api/ai")
 public class AiChatStreamController {
 
     private static final Logger log = LoggerFactory.getLogger(AiChatStreamController.class);
+
+    /** 排队容量系数：允许少量请求排队吸收抖动，但不做无界堆积 */
+    private static final int QUEUE_FACTOR = 2;
 
     private final AiAgentService agent;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -61,8 +67,10 @@ public class AiChatStreamController {
             t.setDaemon(true);
             return t;
         };
+        // 有界队列 + 默认 AbortPolicy：满载时 execute 抛 RejectedExecutionException，
+        // 由调用方立即反馈，而不是让请求在队列里静默堆积到超时
         this.executor = new ThreadPoolExecutor(poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(), factory);
+                new LinkedBlockingQueue<>(Math.max(1, poolSize * QUEUE_FACTOR)), factory);
     }
 
     @PreDestroy
@@ -93,30 +101,38 @@ public class AiChatStreamController {
             send(emitter, AiStreamEvent.thought("当前并发已满，请求已排队，请稍候…"));
         }
 
-        executor.execute(() -> {
-            if (closed.get()) {
-                return;
-            }
-            try {
-                agent.chat(sessionId, message, appName, event -> {
-                    if (closed.get()) {
-                        return;
-                    }
-                    // 推送失败即视为客户端断开：停止后续推送，避免刷日志
-                    if (!send(emitter, event)) {
-                        closed.set(true);
-                    }
-                });
-                // done 事件由 AiAgentService 在返回前推送（携带 mode/role/rounds），此处仅收尾连接
-                if (!closed.get()) {
-                    emitter.complete();
+        try {
+            executor.execute(() -> {
+                if (closed.get()) {
+                    return;
                 }
-            } catch (Exception e) {
-                log.warn("ai chat stream error: {}", e.getMessage());
-                closed.set(true);
-                emitter.completeWithError(e);
-            }
-        });
+                try {
+                    agent.chat(sessionId, message, appName, event -> {
+                        if (closed.get()) {
+                            return;
+                        }
+                        // 推送失败即视为客户端断开：停止后续推送，避免刷日志
+                        if (!send(emitter, event)) {
+                            closed.set(true);
+                        }
+                    });
+                    // done 事件由 AiAgentService 在返回前推送（携带 mode/role/rounds），此处仅收尾连接
+                    if (!closed.get()) {
+                        emitter.complete();
+                    }
+                } catch (Exception e) {
+                    log.warn("ai chat stream error: {}", e.getMessage());
+                    closed.set(true);
+                    emitter.completeWithError(e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            // 线程与队列均满：立即告知用户，避免客户端挂着等待直到超时
+            log.warn("ai chat stream rejected, pool={}, queued={}, sessionId={}",
+                    executor.getPoolSize(), executor.getQueue().size(), sessionId);
+            send(emitter, AiStreamEvent.error("当前对话请求过多，请稍后再试"));
+            emitter.complete();
+        }
         return emitter;
     }
 

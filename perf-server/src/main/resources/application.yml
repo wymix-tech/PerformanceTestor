@@ -82,9 +82,12 @@ perf:
     # 并发限流
     max-concurrent-requests: 4
 
-  # 修复效果自动验证（一键重放压测等待超时）
+  # 修复效果自动验证
   verify:
+    # 等待重放压测完成的超时（秒）
     timeout-sec: 300
+    # 并发等待验证的线程数（每次验证会重放一次完整压测，放宽会同时占用目标服务压测资源）
+    max-concurrent: 2
 
   # Agent 上报接口配置
   agent:

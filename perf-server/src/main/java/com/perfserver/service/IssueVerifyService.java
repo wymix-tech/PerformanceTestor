@@ -1,5 +1,6 @@
 package com.perfserver.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -9,13 +10,23 @@ import com.perfserver.entity.StressTask;
 import com.perfserver.mapper.PerformanceIssueMapper;
 import com.perfserver.mapper.StressTaskMapper;
 import com.perfserver.stress.StressTaskRequest;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 修复效果自动验证：以问题创建时的压测场景快照为基线，重放同场景压测并判定修复是否达标。
@@ -28,8 +39,11 @@ import java.util.Map;
  * </ol>
  * 达标则问题自动流转到 {@code resolved}，并写入 {@code verify_json} 结论。
  *
- * <p>重放压测复用 {@link StressTaskService#createAndRun}（异步执行），
- * 本服务轮询等待其完成（超时按 {@code perf.verify.timeout-sec} 配置，默认 300s）。
+ * <p><b>异步执行</b>：重放压测由 {@link StressTaskService#createAndRun} 异步执行，等待其完成最长
+ * {@code perf.verify.timeout-sec}（默认 300s）。若在本服务的 HTTP 调用线程上轮询等待，
+ * 多人同时点"一键验证"会占满 Tomcat 工作线程导致整个服务无响应，故 {@link #verify}
+ * 只做"校验快照 + 启动重放"（耗时在毫秒级），随后把轮询等待与达标判定交给独立的验证线程池，
+ * 立即返回进行中结论；前端凭 {@link #verifyStatus} 轮询 {@code verify_json} 取最终结论。
  */
 @Service
 public class IssueVerifyService {
@@ -44,6 +58,8 @@ public class IssueVerifyService {
     static final long WAIT_BUFFER_SEC = 60L;
     /** 等待预算下限（秒）：防止 timeoutSec / durationSec 误配为 0 导致正常任务被秒判超时 */
     static final long MIN_WAIT_SEC = 30L;
+    /** 验证线程池排队容量：超出的请求直接拒绝，不做无界堆积 */
+    private static final int QUEUE_CAPACITY = 32;
 
     private final PerformanceIssueMapper issueMapper;
     private final StressTaskMapper taskMapper;
@@ -51,18 +67,35 @@ public class IssueVerifyService {
     private final BaselineCompareService baselineCompareService;
     private final ObjectMapper objectMapper;
     private final int timeoutSec;
+    /** 等待重放完成的线程池（轮询等待最长 timeoutSec，绝不能跑在 HTTP 工作线程上） */
+    private final ExecutorService executor;
+    /** 正在验证的问题 ID：防止同一问题被重复发起重放压测 */
+    private final Set<Long> runningIssueIds = ConcurrentHashMap.newKeySet();
 
     public IssueVerifyService(PerformanceIssueMapper issueMapper, StressTaskMapper taskMapper,
                               StressTaskService stressTaskService,
                               BaselineCompareService baselineCompareService, ObjectMapper objectMapper,
-                              @org.springframework.beans.factory.annotation.Value("${perf.verify.timeout-sec:300}")
-                              int timeoutSec) {
+                              @Value("${perf.verify.timeout-sec:300}") int timeoutSec,
+                              @Value("${perf.verify.max-concurrent:2}") int maxConcurrent) {
         this.issueMapper = issueMapper;
         this.taskMapper = taskMapper;
         this.stressTaskService = stressTaskService;
         this.baselineCompareService = baselineCompareService;
         this.objectMapper = objectMapper;
         this.timeoutSec = timeoutSec;
+        int poolSize = Math.max(1, maxConcurrent);
+        ThreadFactory factory = r -> {
+            Thread t = new Thread(r, "issue-verify");
+            t.setDaemon(true);
+            return t;
+        };
+        this.executor = new ThreadPoolExecutor(poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(QUEUE_CAPACITY), factory);
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        executor.shutdownNow();
     }
 
     /** 验证结果 */
@@ -72,6 +105,8 @@ public class IssueVerifyService {
         public boolean noSnapshot;
         /** 重放压测失败（引擎异常/超时未完成） */
         public boolean replayFailed;
+        /** 验证进行中（重放压测已发起，结论待落库——前端需轮询 {@code verifyStatus}） */
+        public boolean running;
         /** 达标（P95 降幅达标且无回归） */
         public boolean passed;
         public Long snapshotTaskId;
@@ -101,6 +136,10 @@ public class IssueVerifyService {
 
         public boolean isReplayFailed() {
             return replayFailed;
+        }
+
+        public boolean isRunning() {
+            return running;
         }
 
         public boolean isPassed() {
@@ -157,67 +196,117 @@ public class IssueVerifyService {
     }
 
     /**
-     * 一键验证修复效果：重放快照场景压测 → 与快照基线 diff → 达标自动关闭问题。
+     * 一键验证修复效果（异步）：校验快照 → 发起重放压测 → 立即返回进行中结论。
+     *
+     * <p>重放压测的等待与达标判定在验证线程池中完成，结论落库后由 {@link #verifyStatus} 读取，
+     * HTTP 请求线程在毫秒级内释放，不再被最长 {@code perf.verify.timeout-sec} 的轮询占死。
      *
      * @throws IllegalArgumentException 问题不存在
      */
     public VerifyResult verify(long issueId) {
-        PerformanceIssue issue = issueMapper.findById(issueId);
-        if (issue == null) {
-            throw new IllegalArgumentException("问题不存在: " + issueId);
+        PerformanceIssue issue = requireIssue(issueId);
+        Snapshot resolved = resolveSnapshot(issue);
+        if (resolved.error() != null) {
+            return resolved.error();
         }
-        Long snapshotId = issue.getStressTaskId();
-        if (snapshotId == null || snapshotId <= 0) {
-            return noSnapshot(issueId, snapshotId, issue.getStatus(), "该问题未关联压测场景快照，无法自动验证；"
-                    + "可从压测任务创建问题以建立场景快照");
-        }
-        StressTask snapshot = taskMapper.findById(snapshotId);
-        if (snapshot == null) {
-            return noSnapshot(issueId, snapshotId, issue.getStatus(),
-                    "场景快照压测任务 #" + snapshotId + " 已不存在，无法自动验证");
+        StressTask snapshot = resolved.task();
+        Long snapshotId = snapshot.getId();
+        // 同一问题重复点击：直接返回已有状态，避免并发发起多份重放压测
+        if (!runningIssueIds.add(issueId)) {
+            return pending(issue, snapshotId, null, "已有一次验证在进行中，请勿重复发起");
         }
 
         StressTask replay;
         try {
             replay = stressTaskService.createAndRun(toRequest(snapshot));
         } catch (Exception e) {
+            runningIssueIds.remove(issueId);
             log.warn("verify replay start failed, issue={}: {}", issueId, e.getMessage());
-            VerifyResult r = new VerifyResult();
-            r.issueId = issueId;
-            r.snapshotTaskId = snapshotId;
-            r.replayFailed = true;
-            r.status = issue.getStatus();
-            r.message = "重放压测启动失败：" + e.getMessage();
-            r.verifyTime = LocalDateTime.now();
+            VerifyResult r = replayFailed(issue, snapshotId, null, "重放压测启动失败：" + e.getMessage());
             persist(issue, r);
             return r;
         }
 
+        VerifyResult started = pending(issue, snapshotId, replay.getId(),
+                "已发起重放压测（任务 #" + replay.getId() + "），完成后自动给出验证结论");
+        // 进行中状态也要落库：进程重启或前端刷新后仍能查到"有验证在跑"
+        persist(issue, started);
+        try {
+            executor.execute(() -> {
+                try {
+                    persist(issue, judge(issue, snapshot, replay));
+                } catch (Exception e) {
+                    log.warn("verify issue {} failed: {}", issueId, e.getMessage());
+                    persist(issue, replayFailed(issue, snapshotId, replay.getId(),
+                            "验证过程异常：" + e.getMessage()));
+                } finally {
+                    runningIssueIds.remove(issueId);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            runningIssueIds.remove(issueId);
+            VerifyResult r = replayFailed(issue, snapshotId, replay.getId(),
+                    "当前等待验证的任务过多，请稍后再试");
+            persist(issue, r);
+            return r;
+        }
+        return started;
+    }
+
+    /**
+     * 同步执行完整验证（发起重放 + 轮询等待 + 判定 + 落库）。
+     *
+     * <p>仅供单测直接驱动判定逻辑：线上入口必须是异步的 {@link #verify}，
+     * 否则一次验证最长会占死 HTTP 工作线程 {@code perf.verify.timeout-sec} 秒。
+     *
+     * @throws IllegalArgumentException 问题不存在
+     */
+    VerifyResult runVerify(long issueId) {
+        PerformanceIssue issue = requireIssue(issueId);
+        Snapshot resolved = resolveSnapshot(issue);
+        if (resolved.error() != null) {
+            return resolved.error();
+        }
+        StressTask snapshot = resolved.task();
+        StressTask replay;
+        try {
+            replay = stressTaskService.createAndRun(toRequest(snapshot));
+        } catch (Exception e) {
+            log.warn("verify replay start failed, issue={}: {}", issueId, e.getMessage());
+            VerifyResult r = replayFailed(issue, snapshot.getId(), null,
+                    "重放压测启动失败：" + e.getMessage());
+            persist(issue, r);
+            return r;
+        }
+        VerifyResult r = judge(issue, snapshot, replay);
+        persist(issue, r);
+        return r;
+    }
+
+    /**
+     * 轮询等待重放任务完成 → 与快照基线 diff → 达标判定（<b>阻塞</b>，最长等待见
+     * {@link #deadlineMs}）。
+     *
+     * <p>只允许运行在验证线程池（{@link #verify}）或单测线程（{@link #runVerify}）上；
+     * 不落库，落库由调用方负责（进行中结论与最终结论需分别写入）。
+     */
+    private VerifyResult judge(PerformanceIssue issue, StressTask snapshot, StressTask replay) {
         StressTask finished = awaitFinished(replay.getId(), replay.getDurationSec());
         if (finished == null || !"finished".equals(finished.getStatus())) {
             String reason = finished == null ? "重放压测在 " + timeoutSec + " 秒内未完成"
                     : "重放压测失败：" + finished.getErrorMsg();
-            VerifyResult r = new VerifyResult();
-            r.issueId = issueId;
-            r.snapshotTaskId = snapshotId;
-            r.replayTaskId = replay.getId();
-            r.replayFailed = true;
-            r.status = issue.getStatus();
-            r.message = reason;
-            r.verifyTime = LocalDateTime.now();
-            persist(issue, r);
-            return r;
+            return replayFailed(issue, snapshot.getId(), replay.getId(), reason);
         }
 
         BaselineCompareService.BaselineDiff diff =
-                baselineCompareService.diff(finished.getId(), snapshotId);
+                baselineCompareService.diff(finished.getId(), snapshot.getId());
         double p95Before = metric(snapshot, "p95Ms");
         double p95After = metric(finished, "p95Ms");
         double dropPct = p95Before <= 0 ? 0 : (p95Before - p95After) / p95Before * 100;
 
         VerifyResult r = new VerifyResult();
-        r.issueId = issueId;
-        r.snapshotTaskId = snapshotId;
+        r.issueId = issue.getId();
+        r.snapshotTaskId = snapshot.getId();
         r.replayTaskId = finished.getId();
         r.p95Before = p95Before;
         r.p95After = p95After;
@@ -233,8 +322,73 @@ public class IssueVerifyService {
                 ? "验证通过：P95 由 " + fmt(p95Before) + "ms 降至 " + fmt(p95After) + "ms（下降 "
                         + fmt(r.p95DropPct) + "%），无指标回归，问题已自动关闭"
                 : buildNotPassedMessage(dropPct, diff, p95Before, p95After);
-        persist(issue, r);
         return r;
+    }
+
+    /**
+     * 读取最近一次验证结论（含进行中状态）—— 一键验证为异步任务，前端据此轮询。
+     *
+     * @return {@code verify_json} 解析后的结论；尚无结论返回 null
+     * @throws IllegalArgumentException 问题不存在
+     */
+    public Map<String, Object> verifyStatus(long issueId) {
+        PerformanceIssue issue = requireIssue(issueId);
+        String json = issue.getVerifyJson();
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        Map<String, Object> parsed;
+        try {
+            parsed = objectMapper.readValue(json, new TypeReference<Map<String, Object>>() { });
+        } catch (Exception e) {
+            log.warn("parse verify json failed, issue={}: {}", issueId, e.getMessage());
+            return null;
+        }
+        // 服务重启会留下"进行中"的残留结论，靠内存态判断不可靠，一律按时间兜底：
+        // 超出等待上限仍在 running，说明等待线程已随进程消失，需提示用户重新发起
+        if (Boolean.TRUE.equals(parsed.get("running")) && staleRunning(issue.getVerifyTime())) {
+            parsed.put("running", false);
+            parsed.put("replayFailed", true);
+            parsed.put("message", "上次验证已中断（服务重启或验证进程异常），请重新发起验证");
+        }
+        return parsed;
+    }
+
+    /** 进行中状态的最大存活时长（秒）：等待上限 + 收尾缓冲 */
+    private long runningTtlSec() {
+        return Math.max(MIN_WAIT_SEC, timeoutSec) + WAIT_BUFFER_SEC;
+    }
+
+    private boolean staleRunning(LocalDateTime verifyTime) {
+        return verifyTime != null && verifyTime.plusSeconds(runningTtlSec()).isBefore(LocalDateTime.now());
+    }
+
+    /** 问题存在性校验（不存在直接抛错，由全局异常处理为 400） */
+    private PerformanceIssue requireIssue(long issueId) {
+        PerformanceIssue issue = issueMapper.findById(issueId);
+        if (issue == null) {
+            throw new IllegalArgumentException("问题不存在: " + issueId);
+        }
+        return issue;
+    }
+
+    /** 场景快照解析结果：{@code task} 为 null 时 {@code error} 为对应的无快照结论 */
+    private record Snapshot(StressTask task, VerifyResult error) {
+    }
+
+    /** 解析场景快照；不可用时返回对应的 noSnapshot 结论（此时 {@link Snapshot#task()} 为 null） */
+    private Snapshot resolveSnapshot(PerformanceIssue issue) {
+        Long snapshotId = issue.getStressTaskId();
+        if (snapshotId == null || snapshotId <= 0) {
+            return new Snapshot(null, noSnapshot(issue.getId(), snapshotId, issue.getStatus(),
+                    "该问题未关联压测场景快照，无法自动验证；可从压测任务创建问题以建立场景快照"));
+        }
+        StressTask snapshot = taskMapper.findById(snapshotId);
+        if (snapshot == null) {
+            return new Snapshot(null, noSnapshot(issue.getId(), snapshotId, issue.getStatus(),
+                    "场景快照压测任务 #" + snapshotId + " 已不存在，无法自动验证"));
+        }
+        return new Snapshot(snapshot, null);
     }
 
     /**
@@ -347,6 +501,34 @@ public class IssueVerifyService {
         return r;
     }
 
+    /** 重放/判定失败结论（保持问题原状态） */
+    private static VerifyResult replayFailed(PerformanceIssue issue, Long snapshotId, Long replayTaskId,
+                                             String message) {
+        VerifyResult r = new VerifyResult();
+        r.issueId = issue.getId();
+        r.snapshotTaskId = snapshotId;
+        r.replayTaskId = replayTaskId;
+        r.replayFailed = true;
+        r.status = issue.getStatus();
+        r.message = message;
+        r.verifyTime = LocalDateTime.now();
+        return r;
+    }
+
+    /** 进行中结论：落库后前端可凭 {@link #verifyStatus} 轮询，进程重启也能恢复展示 */
+    private static VerifyResult pending(PerformanceIssue issue, Long snapshotId, Long replayTaskId,
+                                        String message) {
+        VerifyResult r = new VerifyResult();
+        r.issueId = issue.getId();
+        r.snapshotTaskId = snapshotId;
+        r.replayTaskId = replayTaskId;
+        r.running = true;
+        r.status = issue.getStatus();
+        r.message = message;
+        r.verifyTime = LocalDateTime.now();
+        return r;
+    }
+
     /** 落库：写 verify_json / verify_time，达标时置 resolved */
     private void persist(PerformanceIssue issue, VerifyResult r) {
         // 无快照属于"无法验证"，不写入结论（避免污染问题状态与验证时间）
@@ -368,6 +550,7 @@ public class IssueVerifyService {
         node.put("issueId", r.issueId);
         node.put("passed", r.passed);
         node.put("replayFailed", r.replayFailed);
+        node.put("running", r.running);
         node.put("snapshotTaskId", r.snapshotTaskId == null ? 0 : r.snapshotTaskId);
         node.put("replayTaskId", r.replayTaskId == null ? 0 : r.replayTaskId);
         node.put("p95Before", r.p95Before);

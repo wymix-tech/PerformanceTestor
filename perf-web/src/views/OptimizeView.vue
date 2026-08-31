@@ -166,6 +166,7 @@
               <div class="text-xs font-medium" :class="verifyResult.passed ? 'text-neon-green' : 'text-fg-main'">
                 修复效果验证
                 <span v-if="verifyResult.passed" class="ml-1 font-normal">· 达标已自动关闭</span>
+                <span v-else-if="verifyResult.running" class="ml-1 font-normal text-neon-blue">· 重放中…</span>
                 <span v-else-if="verifyResult.replayFailed" class="ml-1 font-normal text-red-400">· 重放失败</span>
                 <span v-else-if="verifyResult.noSnapshot" class="ml-1 font-normal text-amber-400">· 无场景快照</span>
                 <span v-else class="ml-1 font-normal text-amber-400">· 未达标</span>
@@ -175,8 +176,8 @@
 
             <div class="text-[11px] text-fg-sub leading-relaxed mb-3">{{ verifyResult.message }}</div>
 
-            <!-- 前后指标概览 -->
-            <div v-if="verifyResult.replayTaskId" class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+            <!-- 前后指标概览（重放未完成时指标尚无意义，不展示） -->
+            <div v-if="verifyResult.replayTaskId && !verifyResult.running" class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
               <div class="p-2 rounded bg-black/20">
                 <div class="text-[10px] text-fg-sub">P95 前</div>
                 <div class="text-sm text-fg-main">{{ fmtNum(verifyResult.p95Before) }}<span class="text-[10px] text-fg-sub ml-0.5">ms</span></div>
@@ -417,22 +418,44 @@ async function runAnalyze() {
 }
 
 // ===== 修复效果自动验证 =====
+// 一键验证是异步任务（需重放一次完整压测，数十秒到数分钟），
+// 服务端发起后立即返回 running=true，前端轮询验证状态接口取最终结论
+const VERIFY_POLL_INTERVAL_MS = 2000
+// 轮询上限：后端 perf.verify.timeout-sec 默认 300s，留足余量后放弃
+const VERIFY_POLL_MAX_TIMES = 200
 const verifying = ref(false)
 const verifyResult = ref<Record<string, any> | null>(null)
 
 async function runVerify() {
   if (!detail.value || verifying.value) return
   verifying.value = true
+  const issueId = detail.value.issue.id
   try {
-    const r = (await sourceApi.verifyIssue(detail.value.issue.id)) as unknown as { data: Record<string, any> }
-    verifyResult.value = r.data
-    await showIssueDetail(detail.value.issue.id)
+    const r = (await sourceApi.verifyIssue(issueId)) as unknown as { data: Record<string, any> }
+    let result = r.data
+    if (result?.running) {
+      result = await pollVerifyResult(issueId)
+    }
+    await showIssueDetail(issueId)
     // showIssueDetail 会清空结论，验证结果需在其后回填
-    verifyResult.value = r.data
+    verifyResult.value = result
     await loadIssues()
   } finally {
     verifying.value = false
   }
+}
+
+/** 轮询验证结论直到脱离 running 态（期间持续更新面板，用户能看到重放任务编号与进度提示） */
+async function pollVerifyResult(issueId: number): Promise<Record<string, any>> {
+  for (let i = 0; i < VERIFY_POLL_MAX_TIMES; i++) {
+    await new Promise(resolve => setTimeout(resolve, VERIFY_POLL_INTERVAL_MS))
+    const r = (await sourceApi.verifyStatus(issueId)) as unknown as { data: Record<string, any> | null }
+    if (r.data) {
+      verifyResult.value = r.data
+      if (!r.data.running) return r.data
+    }
+  }
+  return { ...(verifyResult.value || {}), replayFailed: true, message: '验证等待超时，请在压测任务中确认重放结果后重试' }
 }
 
 // 补绑压测场景快照（无快照问题的验证前置）

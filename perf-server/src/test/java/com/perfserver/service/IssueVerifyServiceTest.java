@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -25,7 +26,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 修复效果自动验证：达标 / 未达标 / 无快照 三分支 + 重放场景参数一致性。
+ * 修复效果自动验证：达标 / 未达标 / 无快照 三分支 + 重放场景参数一致性 + 异步入口。
+ *
+ * <p>判定逻辑通过同步入口 {@link IssueVerifyService#runVerify} 驱动（避免单测等待异步线程）；
+ * 线上入口 {@link IssueVerifyService#verify} 的异步语义另有用例覆盖。
  */
 class IssueVerifyServiceTest {
 
@@ -44,7 +48,12 @@ class IssueVerifyServiceTest {
         stressTaskService = mock(StressTaskService.class);
         BaselineCompareService baseline = new BaselineCompareService(taskMapper, new ObjectMapper());
         service = new IssueVerifyService(issueMapper, taskMapper, stressTaskService, baseline,
-                new ObjectMapper(), 300);
+                new ObjectMapper(), 300, 2);
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        service.shutdown();
     }
 
     /**
@@ -86,7 +95,7 @@ class IssueVerifyServiceTest {
         when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
                 .thenReturn(pendingTask(2));
 
-        IssueVerifyService.VerifyResult r = service.verify(70);
+        IssueVerifyService.VerifyResult r = service.runVerify(70);
 
         assertFalse(r.isReplayFailed(), "任务最终完成不应记为重放失败");
         assertTrue(pollCount.get() >= 3, "应在任务运行期间持续轮询，实际查询 " + pollCount.get() + " 次");
@@ -105,7 +114,7 @@ class IssueVerifyServiceTest {
         when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
                 .thenReturn(pendingTask(2));
 
-        IssueVerifyService.VerifyResult r = service.verify(10);
+        IssueVerifyService.VerifyResult r = service.runVerify(10);
 
         assertTrue(r.isPassed(), "P95 降 50% 且无回归应达标");
         assertEquals("resolved", r.getStatus());
@@ -130,7 +139,7 @@ class IssueVerifyServiceTest {
         when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
                 .thenReturn(pendingTask(2));
 
-        IssueVerifyService.VerifyResult r = service.verify(11);
+        IssueVerifyService.VerifyResult r = service.runVerify(11);
 
         assertFalse(r.isPassed(), "P95 仅降 10%（< 30%）不应达标");
         assertEquals("fixed", r.getStatus(), "未达标时保持原状态");
@@ -151,7 +160,7 @@ class IssueVerifyServiceTest {
         when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
                 .thenReturn(pendingTask(2));
 
-        IssueVerifyService.VerifyResult r = service.verify(12);
+        IssueVerifyService.VerifyResult r = service.runVerify(12);
 
         assertFalse(r.isPassed(), "存在指标回归不应达标");
         assertTrue(r.isRegressed());
@@ -164,7 +173,7 @@ class IssueVerifyServiceTest {
     void noSnapshotWhenIssueHasNoStressTask() {
         when(issueMapper.findById(20L)).thenReturn(issue(20, "analyzed", 0L));
 
-        IssueVerifyService.VerifyResult r = service.verify(20);
+        IssueVerifyService.VerifyResult r = service.runVerify(20);
 
         assertTrue(r.isNoSnapshot());
         assertFalse(r.isPassed());
@@ -181,7 +190,7 @@ class IssueVerifyServiceTest {
         when(issueMapper.findById(21L)).thenReturn(issue(21, "analyzed", 99L));
         when(taskMapper.findById(99L)).thenReturn(null);
 
-        IssueVerifyService.VerifyResult r = service.verify(21);
+        IssueVerifyService.VerifyResult r = service.runVerify(21);
 
         assertTrue(r.isNoSnapshot());
         assertTrue(r.getMessage().contains("已不存在"));
@@ -201,7 +210,7 @@ class IssueVerifyServiceTest {
         when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
                 .thenReturn(pendingTask(2));
 
-        IssueVerifyService.VerifyResult r = service.verify(30);
+        IssueVerifyService.VerifyResult r = service.runVerify(30);
 
         assertTrue(r.isReplayFailed());
         assertFalse(r.isPassed());
@@ -226,7 +235,7 @@ class IssueVerifyServiceTest {
         when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
                 .thenReturn(pendingTask(2));
 
-        service.verify(40);
+        service.runVerify(40);
 
         ArgumentCaptor<StressTaskRequest> captor = ArgumentCaptor.forClass(StressTaskRequest.class);
         verify(stressTaskService).createAndRun(captor.capture());
@@ -248,7 +257,7 @@ class IssueVerifyServiceTest {
         when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
                 .thenReturn(pendingTask(2));
 
-        service.verify(50);
+        service.runVerify(50);
 
         ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
         verify(issueMapper).updateVerify(eq(50L), jsonCaptor.capture(),
@@ -265,7 +274,117 @@ class IssueVerifyServiceTest {
     void throwsWhenIssueMissing() {
         when(issueMapper.findById(60L)).thenReturn(null);
 
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () -> service.verify(60));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () -> service.runVerify(60));
+    }
+
+    // ==================== 异步入口 ====================
+
+    /**
+     * 一键验证不得同步等待重放压测（最长 300s 会占死 HTTP 工作线程）：
+     * 发起后应立即返回进行中结论，并把该状态落库供前端查询。
+     */
+    @Test
+    void verifyReturnsRunningImmediatelyWithoutBlocking() {
+        when(issueMapper.findById(80L)).thenReturn(issue(80, "fixed", 1L));
+        when(taskMapper.findById(1L)).thenReturn(finishedTask(1, "{\"qps\":100,\"p95Ms\":200}"));
+        // 重放任务始终运行 → 同步实现会在这里轮询到超时；异步实现应立即返回
+        when(taskMapper.findById(2L)).thenReturn(pendingTask(2));
+        when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
+                .thenReturn(pendingTask(2));
+
+        long start = System.currentTimeMillis();
+        IssueVerifyService.VerifyResult r = service.verify(80);
+
+        assertTrue(System.currentTimeMillis() - start < 5_000,
+                "异步入口不应等待重放完成，实际耗时 " + (System.currentTimeMillis() - start) + "ms");
+        assertTrue(r.isRunning(), "应返回进行中状态");
+        assertEquals(2L, r.getReplayTaskId());
+        assertFalse(r.isPassed(), "进行中不应判定达标");
+
+        // 用 atLeastOnce：后台等待线程结束后还会再落一次最终结论，断言只关心"进行中状态已落库"
+        ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
+        verify(issueMapper, org.mockito.Mockito.atLeastOnce()).updateVerify(eq(80L), jsonCaptor.capture(),
+                org.mockito.ArgumentMatchers.any(), eq("fixed"));
+        assertTrue(jsonCaptor.getAllValues().stream().anyMatch(v -> v.contains("\"running\":true")),
+                "进行中状态需落库，实际写入: " + jsonCaptor.getAllValues());
+    }
+
+    /** 同一问题重复点击：复用进行中的验证，不重复发起重放压测 */
+    @Test
+    void verifyIgnoresDuplicateRequestForSameIssue() {
+        when(issueMapper.findById(81L)).thenReturn(issue(81, "fixed", 1L));
+        when(taskMapper.findById(1L)).thenReturn(finishedTask(1, "{\"qps\":100,\"p95Ms\":200}"));
+        when(taskMapper.findById(2L)).thenReturn(pendingTask(2));
+        when(stressTaskService.createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class)))
+                .thenReturn(pendingTask(2));
+
+        IssueVerifyService.VerifyResult first = service.verify(81);
+        IssueVerifyService.VerifyResult second = service.verify(81);
+
+        assertTrue(first.isRunning());
+        assertTrue(second.isRunning(), "重复请求仍应返回进行中状态");
+        assertTrue(second.getMessage().contains("进行中"), second.getMessage());
+        verify(stressTaskService, org.mockito.Mockito.times(1))
+                .createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class));
+    }
+
+    /** 无快照时的异步入口同样不发起压测，也不写库 */
+    @Test
+    void verifyAsyncSkipsWhenNoSnapshot() {
+        when(issueMapper.findById(82L)).thenReturn(issue(82, "analyzed", 0L));
+
+        assertTrue(service.verify(82).isNoSnapshot());
+        verify(stressTaskService, never()).createAndRun(org.mockito.ArgumentMatchers.any());
+    }
+
+    /** 状态查询：直接返回库内结论（一键验证为异步任务，前端据此轮询） */
+    @Test
+    void verifyStatusReturnsPersistedResult() {
+        PerformanceIssue stored = issue(83, "resolved", 1L);
+        stored.setVerifyJson("{\"issueId\":83,\"running\":false,\"passed\":true,\"p95DropPct\":42.5}");
+        stored.setVerifyTime(LocalDateTime.now());
+        when(issueMapper.findById(83L)).thenReturn(stored);
+
+        Map<String, Object> status = service.verifyStatus(83);
+
+        assertNotNull(status);
+        assertEquals(Boolean.TRUE, status.get("passed"));
+        assertEquals(42.5, ((Number) status.get("p95DropPct")).doubleValue());
+    }
+
+    /**
+     * 进程重启会留下"进行中"的残留结论，内存态判断已不可靠：
+     * 超出等待上限仍在 running 时应标记为已中断，避免前端无限轮询。
+     */
+    @Test
+    void verifyStatusMarksStaleRunningAsInterrupted() {
+        PerformanceIssue stored = issue(84, "fixed", 1L);
+        stored.setVerifyJson("{\"issueId\":84,\"running\":true}");
+        stored.setVerifyTime(LocalDateTime.now().minusSeconds(3600));
+        when(issueMapper.findById(84L)).thenReturn(stored);
+
+        Map<String, Object> status = service.verifyStatus(84);
+
+        assertNotNull(status);
+        assertEquals(Boolean.FALSE, status.get("running"));
+        assertEquals(Boolean.TRUE, status.get("replayFailed"));
+        assertTrue(String.valueOf(status.get("message")).contains("中断"), String.valueOf(status.get("message")));
+    }
+
+    /** 尚未验证过的问题：状态查询返回 null，前端据此不展示结论区 */
+    @Test
+    void verifyStatusReturnsNullWhenNeverVerified() {
+        when(issueMapper.findById(85L)).thenReturn(issue(85, "fixed", 1L));
+
+        assertNull(service.verifyStatus(85));
+    }
+
+    @Test
+    void verifyStatusThrowsWhenIssueMissing() {
+        when(issueMapper.findById(86L)).thenReturn(null);
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> service.verifyStatus(86));
     }
 
     // ---------------- helpers ----------------

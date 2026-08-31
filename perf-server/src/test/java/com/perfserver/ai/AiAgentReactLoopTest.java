@@ -226,6 +226,46 @@ class AiAgentReactLoopTest {
         assertEquals(2, latest.stream().filter(n -> "user".equals(n.path("role").asText())).count());
     }
 
+    /**
+     * 历史截断不得留下孤立 tool 消息。
+     *
+     * <p>一轮 ReAct 追加 1 条 assistant(tool_calls) + N 条 tool 响应，截断点很容易落在这组消息的
+     * 中间，留下没有前置 tool_call_id 的孤立 tool 消息；OpenAI 兼容接口对此通常直接报 400，
+     * 表现为下一轮静默降级规则模式（用户无感知）。
+     */
+    @Test
+    void trimNeverLeavesOrphanToolMessages() {
+        // 每轮两个工具调用 + 跑满轮次：历史超过 MAX_HISTORY 后每轮都会截断，
+        // 且"1 条 assistant + 2 条 tool"的分组长度与 MAX_HISTORY 不整除，截断点必然落在分组中间
+        int toolRounds = AiAgentService.MAX_ROUNDS - 2;
+        for (int i = 0; i < toolRounds; i++) {
+            scripted.add(result("", call("c" + i + "a", "echo", "{}"), call("c" + i + "b", "echo", "{}")));
+        }
+        scripted.add(result("建议先补充复合索引，再改写联表查询，最后输出修复提示词供编码工具直接落地。"));
+
+        agent.chat("s11", "分析最近慢 SQL 的根因");
+
+        ArgumentCaptor<List<JsonNode>> captor = ArgumentCaptor.forClass(List.class);
+        verify(llm, atLeastOnce()).chatWithTools(captor.capture(), any(ArrayNode.class),
+                ArgumentMatchers.<Consumer<String>>any());
+        List<List<JsonNode>> requests = captor.getAllValues();
+        for (List<JsonNode> request : requests) {
+            assertEquals("system", request.get(0).path("role").asText(), "首条必须是 system");
+            int pendingCalls = 0;
+            for (JsonNode node : request) {
+                String role = node.path("role").asText();
+                if ("assistant".equals(role)) {
+                    pendingCalls = node.path("tool_calls").isArray() ? node.path("tool_calls").size() : 0;
+                } else if ("tool".equals(role)) {
+                    assertTrue(pendingCalls > 0,
+                            "存在孤立 tool 消息：前面没有未匹配的 assistant.tool_calls，"
+                                    + "OpenAI 兼容接口会报 400 并静默降级规则模式");
+                    pendingCalls--;
+                }
+            }
+        }
+    }
+
     /** 清空会话：历史与角色状态一并移除 */
     @Test
     void clearResetsSessionAndRole() {
@@ -264,8 +304,13 @@ class AiAgentReactLoopTest {
     }
 
     private static ToolCall call(String name, String args) {
+        return call("call-" + name, name, args);
+    }
+
+    /** 指定 id 的工具调用：同一轮可返回多个调用（id 必须互不相同） */
+    private static ToolCall call(String id, String name, String args) {
         ToolCall tc = new ToolCall();
-        tc.setId("call-" + name);
+        tc.setId(id);
         tc.setName(name);
         tc.setArguments(args);
         return tc;

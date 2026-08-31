@@ -113,4 +113,67 @@ class AiKnowledgeServiceTest {
 
         assertFalse(service.delete(9L));
     }
+
+    // ==================== 沉淀去重 ====================
+
+    /** 同一问题反复对话产出近似结论：第二次不再入库，避免重复项淹没检索结果 */
+    @Test
+    void skipsDuplicateConclusion() {
+        String content = "现象：压测 P95 偏高，慢 SQL 平均 1280ms；根因：t_order 缺少 (user_id,status)"
+                + " 复合索引导致全表扫描；修复：补充复合索引并将循环单查改写为联表查询。";
+        when(mapper.recent(anyString(), anyInt())).thenReturn(List.of());
+        assertTrue(service.save("app", "订单列表慢 SQL 根因", content, "root_cause"));
+
+        // 第二次：内容仅有一处措辞差异，应判定为重复
+        when(mapper.recent(eq("app"), anyInt())).thenReturn(List.of(knowledge(content)));
+        assertFalse(service.save("app", "订单列表慢 SQL 根因", content + "建议尽快落地。", "root_cause"));
+
+        verify(mapper, org.mockito.Mockito.times(1)).insert(org.mockito.ArgumentMatchers.any());
+    }
+
+    /** 话题不同则不算重复，不能误伤正常沉淀 */
+    @Test
+    void savesDifferentConclusion() {
+        when(mapper.recent(anyString(), anyInt())).thenReturn(List.of(
+                knowledge("慢 SQL 根因：t_order 缺少复合索引导致全表扫描，建议补充索引并改写联表查询。")));
+
+        assertTrue(service.save("app", "JVM 调优建议",
+                "现象：Full GC 每分钟 6 次；根因：堆内存偏小且存在大对象缓存；建议扩堆并改为软引用缓存。",
+                "tuning"));
+    }
+
+    /** 回看窗口查询异常时放行写入：宁可多存一条，也不能阻塞沉淀链路 */
+    @Test
+    void savesWhenDedupLookupFails() {
+        when(mapper.recent(anyString(), anyInt())).thenThrow(new RuntimeException("db down"));
+
+        assertTrue(service.save("app", "慢 SQL 根因",
+                "现象：压测 P95 偏高；根因：缺少复合索引导致全表扫描；建议补充索引并改写联表查询。", "root_cause"));
+        verify(mapper).insert(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void similarityOfSameTextIsOne() {
+        assertEquals(1.0, AiKnowledgeService.similarity("慢 SQL 根因缺少索引", "慢 SQL 根因缺少索引"), 1e-9);
+    }
+
+    @Test
+    void similarityOfUnrelatedTextIsLow() {
+        double s = AiKnowledgeService.similarity("缺少复合索引导致全表扫描",
+                "Full GC 频繁且堆内存不足需扩容");
+        assertTrue(s < AiKnowledgeService.DEDUP_SIMILARITY, "无关文本相似度应低于阈值，实际 " + s);
+    }
+
+    /** 空白与长度差异不影响判定（同一结论的换行/缩进差异很常见） */
+    @Test
+    void similarityIgnoresWhitespace() {
+        assertEquals(1.0, AiKnowledgeService.similarity("慢 SQL 根因 缺少索引", "慢SQL根因缺少索引"), 1e-9);
+    }
+
+    private static AiKnowledge knowledge(String content) {
+        AiKnowledge k = new AiKnowledge();
+        k.setAppName("app");
+        k.setContent(content);
+        return k;
+    }
 }

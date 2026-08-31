@@ -357,15 +357,27 @@ public class AiAgentService {
         return sb.length() == 0 ? "本轮未获取到有效工具证据，请缩小问题范围后重试。" : sb.toString();
     }
 
+    /**
+     * 仅保留 system 首条 + 最近 {@value #MAX_HISTORY} 条。
+     *
+     * <p>截断点需回退到非 tool 消息：一次 ReAct 轮次会追加 1 条 assistant(tool_calls) + N 条
+     * tool，截断点很容易落在中间，留下没有前置 tool_call_id 的孤立 tool 消息。
+     * OpenAI 兼容接口对该形态通常直接报 400，表现为下一轮静默降级规则模式（用户无感知）。
+     */
     private void trim(List<ObjectNode> messages) {
-        // 保留 system 首条 + 最近 MAX_HISTORY 条
-        if (messages.size() > MAX_HISTORY + 1) {
-            ObjectNode sys = messages.get(0);
-            List<ObjectNode> tail = new ArrayList<>(messages.subList(messages.size() - MAX_HISTORY, messages.size()));
-            messages.clear();
-            messages.add(sys);
-            messages.addAll(tail);
+        if (messages.size() <= MAX_HISTORY + 1) {
+            return;
         }
+        // 索引 0 恒为 system，故回退下限为 1
+        int cut = Math.max(1, messages.size() - MAX_HISTORY);
+        while (cut > 1 && "tool".equals(messages.get(cut).path("role").asText())) {
+            cut--;
+        }
+        ObjectNode sys = messages.get(0);
+        List<ObjectNode> tail = new ArrayList<>(messages.subList(cut, messages.size()));
+        messages.clear();
+        messages.add(sys);
+        messages.addAll(tail);
     }
 
     // ---------------- 流式工具方法 ----------------

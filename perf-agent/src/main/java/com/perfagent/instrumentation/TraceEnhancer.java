@@ -114,8 +114,12 @@ public class TraceEnhancer {
                     .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
                             builder.visit(Advice.to(EsInterceptor.class)
                                     .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
-                                    .on(named("performRequest").or(named("performRequestAsync"))
-                                            .and(not(isStatic())))));
+                                    // 只拦同步 performRequest：performRequestAsync 返回 Future，
+                                    // OnMethodExit 时请求尚未真正执行，测到的是"提交耗时"（约 0ms），
+                                    // 慢 ES 查询会全部漏报。覆盖异步路径需在 Future 完成回调处计时，
+                                    // 而包装返回值要求 agent 编译期依赖 ES 客户端类型（Cancellable），
+                                    // 与"agent 零业务依赖"的约束冲突，故本期明确只覆盖同步路径。
+                                    .on(named("performRequest").and(not(isStatic())))));
             agentBuilder = agentBuilder
                     .type(mqTypeMatcher())
                     .transform((builder, typeDescription, classLoader, module, protectionDomain) ->

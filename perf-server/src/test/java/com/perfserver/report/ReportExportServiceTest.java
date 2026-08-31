@@ -17,6 +17,8 @@ import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -197,6 +199,43 @@ class ReportExportServiceTest {
         byte[] pdf = service.export(1, "pdf", false).getContent();
         assertTrue(pdf.length > 1000, "空结果也应能生成 PDF");
         assertEquals('%', (char) pdf[0]);
+    }
+
+    /** 同内容重复导出复用缓存：PDF 渲染是 CPU 密集操作，不应每次请求都重渲染 */
+    @Test
+    void pdfReusesCachedBytesForSameContent() {
+        stubTask("用户列表压测", "finished", RESULT_JSON);
+
+        byte[] first = service.export(1, "pdf", false).getContent();
+        byte[] second = service.export(1, "pdf", false).getContent();
+
+        assertSame(first, second, "内容未变时应直接复用上次产物");
+    }
+
+    /** 缓存以渲染内容为键：任务内容变化后不得命中旧产物 */
+    @Test
+    void pdfCacheIsKeyedByRenderedContent() {
+        stubTask("用户列表压测", "finished", RESULT_JSON);
+        byte[] first = service.export(1, "pdf", false).getContent();
+
+        stubTask("订单创建压测", "finished", RESULT_JSON);
+        byte[] second = service.export(1, "pdf", false).getContent();
+
+        assertNotSame(first, second, "内容变化后必须重新渲染");
+    }
+
+    /**
+     * 无中文字体时中文会渲染成空白方块，而接口不报错、用户难以察觉，
+     * 因此必须随导出结果给出明确告警。
+     */
+    @Test
+    void pdfWarnsWhenChineseFontMissing() {
+        stubTask("用户列表压测", "finished", RESULT_JSON);
+
+        String warning = service.export(1, "pdf", false).getWarning();
+
+        assertEquals(ReportExportService.resolveFontFile() == null, warning != null,
+                "告警应与字体探测结果一致（无字体时必须告警），实际 warning=" + warning);
     }
 
     // ==================== Word ====================

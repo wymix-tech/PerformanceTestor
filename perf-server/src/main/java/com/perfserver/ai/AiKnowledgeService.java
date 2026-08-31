@@ -9,7 +9,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * AI 知识库服务：分析结论沉淀与中文全文检索。
@@ -19,6 +21,10 @@ import java.util.List;
  *
  * <p>检索降级：FULLTEXT 在某些部署（如未建索引、词长过短）下可能抛异常，
  * 此时降级为最近结论列表，保证对话链路不被中断。
+ *
+ * <p>沉淀去重：同一问题反复对话会产出近似结论，入库前与最近 {@value #DEDUP_LOOKBACK}
+ * 条同应用结论做相似度比对，超过 {@value #DEDUP_SIMILARITY} 视为重复并跳过——
+ * 否则检索结果会被重复项淹没，模型参考价值随使用时长反而下降。
  */
 @Service
 public class AiKnowledgeService {
@@ -31,6 +37,12 @@ public class AiKnowledgeService {
     static final int MAX_LIMIT = 20;
     /** 检索结果中每条正文回填上下文的长度上限 */
     static final int SNIPPET_CHARS = 400;
+    /** 去重回看条数：与最近 N 条同应用结论比对 */
+    static final int DEDUP_LOOKBACK = 50;
+    /** 重复判定阈值（字符 bigram Jaccard 相似度），≥ 该值视为同一结论 */
+    static final double DEDUP_SIMILARITY = 0.9;
+    /** 参与相似度计算的正文长度上限（结论可能很长，截断以控制比对开销） */
+    private static final int DEDUP_SAMPLE_CHARS = 1000;
 
     private final AiKnowledgeMapper mapper;
 
@@ -41,13 +53,18 @@ public class AiKnowledgeService {
     /**
      * 沉淀一条分析结论。
      *
-     * @return 是否入库（内容过短或异常时返回 false）
+     * @return 是否入库（内容过短、与已有结论重复或异常时返回 false）
      */
     public boolean save(String appName, String title, String content, String tags) {
         if (content == null || content.trim().length() < MIN_CONTENT_CHARS) {
             return false;
         }
         try {
+            String normalized = content.trim();
+            if (isDuplicate(appName, normalized)) {
+                log.info("skip duplicated ai knowledge, app={}, title={}", appName, title);
+                return false;
+            }
             AiKnowledge item = new AiKnowledge();
             item.setAppName(appName == null ? "" : appName);
             item.setTitle(Texts.truncate(title == null || title.isBlank() ? firstLine(content) : title.trim(), 120));
@@ -61,6 +78,67 @@ public class AiKnowledgeService {
             log.warn("save ai knowledge failed: {}", e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * 重复判定：与最近 {@value #DEDUP_LOOKBACK} 条同应用结论逐一比对相似度。
+     *
+     * <p>比对失败（检索异常）时返回 false——宁可写入一条重复结论，也不能阻塞沉淀链路。
+     */
+    boolean isDuplicate(String appName, String content) {
+        List<AiKnowledge> recent;
+        try {
+            recent = mapper.recent(appName == null ? "" : appName, DEDUP_LOOKBACK);
+        } catch (Exception e) {
+            log.warn("load recent knowledge for dedup failed: {}", e.getMessage());
+            return false;
+        }
+        if (recent == null) {
+            return false;
+        }
+        for (AiKnowledge item : recent) {
+            if (item.getContent() == null) {
+                continue;
+            }
+            if (similarity(content, item.getContent()) >= DEDUP_SIMILARITY) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 字符 bigram Jaccard 相似度：中文无空格分词，二元字组足以刻画"近似重复"，
+     * 且对语序微调、少量增删不敏感（正是同一问题多次对话的产物形态）。
+     */
+    static double similarity(String a, String b) {
+        Set<String> ga = bigrams(a);
+        Set<String> gb = bigrams(b);
+        if (ga.isEmpty() || gb.isEmpty()) {
+            return 0;
+        }
+        int intersection = 0;
+        for (String g : ga) {
+            if (gb.contains(g)) {
+                intersection++;
+            }
+        }
+        return (double) intersection / (ga.size() + gb.size() - intersection);
+    }
+
+    private static Set<String> bigrams(String text) {
+        String s = text.replaceAll("\\s+", "");
+        if (s.length() > DEDUP_SAMPLE_CHARS) {
+            s = s.substring(0, DEDUP_SAMPLE_CHARS);
+        }
+        Set<String> grams = new HashSet<>();
+        for (int i = 0; i + 2 <= s.length(); i++) {
+            grams.add(s.substring(i, i + 2));
+        }
+        if (grams.isEmpty() && !s.isEmpty()) {
+            grams.add(s);
+        }
+        return grams;
     }
 
     /**

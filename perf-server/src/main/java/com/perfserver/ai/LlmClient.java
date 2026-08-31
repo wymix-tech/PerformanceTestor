@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -29,6 +30,9 @@ import java.util.stream.Stream;
 public class LlmClient {
 
     private static final Logger log = LoggerFactory.getLogger(LlmClient.class);
+
+    /** 错误响应体最多回读的行数（够排障即可，避免大响应体占内存） */
+    private static final int MAX_ERROR_LINES = 20;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HttpClient httpClient;
@@ -162,7 +166,10 @@ public class LlmClient {
             HttpResponse<Stream<String>> response =
                     httpClient.send(request, HttpResponse.BodyHandlers.ofLines());
             if (response.statusCode() != 200) {
-                log.warn("llm stream api error, status={}", response.statusCode());
+                // 必须消费错误响应体：JDK HttpClient 只在响应体读完后才归还连接，
+                // 未读的 body 会让底层连接被丢弃而非复用，ReAct 每轮一次调用会放大为频繁重建 TLS
+                log.warn("llm stream api error, status={}, body={}", response.statusCode(),
+                        errorBody(response.body()));
                 return null;
             }
             try (Stream<String> lines = response.body()) {
@@ -195,6 +202,22 @@ public class LlmClient {
                 return partialResult;
             }
             return null;
+        }
+    }
+
+    /**
+     * 读取错误响应体前若干行：既让连接得以归还连接池，也保留服务端给出的具体报错。
+     *
+     * @return 错误正文摘要；读取失败返回空串（排障信息缺失不应影响主流程）
+     */
+    private static String errorBody(Stream<String> body) {
+        if (body == null) {
+            return "";
+        }
+        try (Stream<String> lines = body) {
+            return lines.limit(MAX_ERROR_LINES).collect(Collectors.joining("\n"));
+        } catch (Exception e) {
+            return "";
         }
     }
 

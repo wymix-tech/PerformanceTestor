@@ -23,6 +23,9 @@ import java.nio.charset.StandardCharsets;
 @RequestMapping("/api/reports")
 public class ReportExportController {
 
+    /** 产物可用性告警响应头（如缺少中文字体）；值做 URL 编码以保证 HTTP 头安全 */
+    private static final String WARNING_HEADER = "X-Report-Warning";
+
     private final ReportExportService reportExportService;
 
     public ReportExportController(ReportExportService reportExportService) {
@@ -44,10 +47,14 @@ public class ReportExportController {
         // RFC 5987：中文文件名需 encoding 转义，同时保留 filename* 供非 ASCII 场景
         String encoded = URLEncoder.encode(result.getFilename(), StandardCharsets.UTF_8)
                 .replace("+", "%20");
-        return ResponseEntity.ok()
+        ResponseEntity.BodyBuilder ok = ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(result.getContentType()))
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded)
-                .body(result.getContent());
+                        "attachment; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded);
+        // 导出本身不报错但产物有缺陷时（如缺中文字体导致中文空白）在此告警，便于运维自查
+        if (result.getWarning() != null) {
+            ok = ok.header(WARNING_HEADER, URLEncoder.encode(result.getWarning(), StandardCharsets.UTF_8));
+        }
+        return ok.body(result.getContent());
     }
 }

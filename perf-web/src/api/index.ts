@@ -185,8 +185,10 @@ export const sourceApi = {
   // 从压测任务创建问题（可指定归属应用）
   fromStress: (params: { stressTaskId: number; repoId: number; appName?: string }) =>
     http.post('/source/issues/from-stress', null, { params }),
-  // 一键验证修复效果：重放场景快照压测 → 与基线 diff → 达标自动关闭问题
+  // 一键验证修复效果：异步发起重放压测，立即返回「进行中」结论
   verifyIssue: (issueId: number) => http.post(`/source/issues/${issueId}/verify`),
+  // 查询最近一次验证结论（含进行中状态，前端据此轮询取最终结果）
+  verifyStatus: (issueId: number) => http.get(`/source/issues/${issueId}/verify`),
   // 补绑压测场景快照（非压测来源问题建立验证基线）
   bindIssueStress: (issueId: number, stressTaskId: number) =>
     http.post(`/source/issues/${issueId}/bind-stress`, null, { params: { stressTaskId } }),

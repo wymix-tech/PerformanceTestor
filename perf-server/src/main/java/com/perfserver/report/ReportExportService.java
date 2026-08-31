@@ -11,7 +11,11 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.Semaphore;
 
 /**
  * 压测报告导出服务：将压测结果渲染为自包含 HTML，再按需转为 PDF 或 Word。
@@ -27,7 +31,11 @@ import java.util.Locale;
  *
  * <p>字体说明：PDF 渲染使用 Base-14 内置字体（Helvetica），无需外挂字体文件，
  * 但内置字体不含中文字形——生产部署需通过 {@code useFont()} 注册中文字体；
- * 当前实现显式设置 {@code defaultTextDirection} 并保留字体扩展点，见 {@link #buildPdf}。
+ * 当前实现探测系统中文字体候选路径，全部缺失时中文会渲染为空白方块，
+ * 此时通过日志与 {@link ExportResult#getWarning()} 明确告警（接口不报错，用户难以自查）。
+ *
+ * <p>PDF 渲染是同步 CPU 密集操作（HTML 解析 + 版面计算），故限制并发并缓存产物：
+ * 同一任务重复导出直接复用，避免多人重复导出把请求线程占满。
  */
 @Service
 public class ReportExportService {
@@ -39,22 +47,46 @@ public class ReportExportService {
     public static final String FORMAT_PDF = "pdf";
     public static final String FORMAT_DOC = "doc";
 
+    /** PDF 渲染并发上限（单次渲染占用一核数百毫秒～数秒，放宽只会拖垮整体响应） */
+    private static final int PDF_MAX_CONCURRENT = 2;
+    /** PDF 缓存条目上限（每份 PDF 通常数百 KB，8 条约几 MB 量级） */
+    private static final int PDF_CACHE_MAX_ENTRIES = 8;
+
     private final StressTaskService stressTaskService;
+    /** PDF 渲染并发闸门：超限请求排队等待，而非并发抢占 CPU */
+    private final Semaphore pdfPermit = new Semaphore(PDF_MAX_CONCURRENT);
+    /**
+     * PDF 产物缓存（LRU，按渲染 HTML 的内容哈希为键）。
+     * 用 HTML 而非 taskId 作键：任务结果更新后 HTML 随之变化，天然不会命中旧产物。
+     */
+    private final Map<String, byte[]> pdfCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+                    return size() > PDF_CACHE_MAX_ENTRIES;
+                }
+            });
 
     public ReportExportService(StressTaskService stressTaskService) {
         this.stressTaskService = stressTaskService;
     }
 
-    /** 导出结果：字节内容 + 文件名 + Content-Type */
+    /** 导出结果：字节内容 + 文件名 + Content-Type（+ 可选的降级告警） */
     public static class ExportResult {
         private final byte[] content;
         private final String filename;
         private final String contentType;
+        private final String warning;
 
         public ExportResult(byte[] content, String filename, String contentType) {
+            this(content, filename, contentType, null);
+        }
+
+        public ExportResult(byte[] content, String filename, String contentType, String warning) {
             this.content = content;
             this.filename = filename;
             this.contentType = contentType;
+            this.warning = warning;
         }
 
         public byte[] getContent() {
@@ -67,6 +99,11 @@ public class ReportExportService {
 
         public String getContentType() {
             return contentType;
+        }
+
+        /** 产物可用性告警（如缺少中文字体）；无问题返回 null */
+        public String getWarning() {
+            return warning;
         }
     }
 
@@ -87,8 +124,7 @@ public class ReportExportService {
         String fmt = format == null || format.isBlank()
                 ? FORMAT_HTML : format.toLowerCase(Locale.ROOT);
         return switch (fmt) {
-            case FORMAT_PDF -> new ExportResult(buildPdf(html), filename(task, "pdf"),
-                    "application/pdf");
+            case FORMAT_PDF -> buildPdfCached(html, filename(task, "pdf"));
             case FORMAT_DOC -> new ExportResult(buildDoc(html), filename(task, "doc"),
                     "application/msword");
             default -> new ExportResult(html.getBytes(StandardCharsets.UTF_8), filename(task, "html"),
@@ -96,18 +132,38 @@ public class ReportExportService {
         };
     }
 
-    /** HTML → PDF（openhtmltopdf + PDFBox，A4） */
-    private static byte[] buildPdf(String html) {
+    /**
+     * HTML → PDF（先查缓存，未命中才渲染）。
+     *
+     * <p>同一任务的报告内容不变时直接复用上次产物：PDF 渲染是 CPU 密集操作，
+     * 前端「预览/导出/重试」很容易在短时间内对同一任务发起多次请求。
+     */
+    private ExportResult buildPdfCached(String html, String filename) {
+        String key = Integer.toHexString(html.hashCode());
+        byte[] cached = pdfCache.get(key);
+        if (cached != null) {
+            log.debug("report pdf cache hit, key={}, {} bytes", key, cached.length);
+            return new ExportResult(cached, filename, "application/pdf", fontWarning());
+        }
+        byte[] pdf = renderPdf(html);
+        pdfCache.put(key, pdf);
+        return new ExportResult(pdf, filename, "application/pdf", fontWarning());
+    }
+
+    /** HTML → PDF（openhtmltopdf + PDFBox，A4），并发受 {@link #pdfPermit} 限制 */
+    private byte[] renderPdf(String html) {
+        pdfPermit.acquireUninterruptibly();
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             PdfRendererBuilder builder = new PdfRendererBuilder();
             // 中文处理：内置 Base-14 字体无中文字形，探测并注册系统中文字体
-            for (String path : FONT_CANDIDATES) {
-                java.io.File f = new java.io.File(path);
-                if (f.exists()) {
-                    builder.useFont(f, FONT_FAMILY, 400,
-                            BaseRendererBuilder.FontStyle.NORMAL, true);
-                    break;
-                }
+            java.io.File font = resolveFontFile();
+            if (font != null) {
+                builder.useFont(font, FONT_FAMILY, 400,
+                        BaseRendererBuilder.FontStyle.NORMAL, true);
+            } else {
+                log.warn("未找到中文字体（候选: {}），PDF 中文将显示为空白方块；"
+                        + "请在部署环境安装文泉驿/Noto CJK 字体，或调整 FONT_CANDIDATES",
+                        String.join(", ", FONT_CANDIDATES));
             }
             builder.withHtmlContent(html, null);
             builder.toStream(out);
@@ -117,7 +173,26 @@ public class ReportExportService {
         } catch (Exception e) {
             log.error("build report pdf failed", e);
             throw new IllegalStateException("PDF 生成失败：" + e.getMessage(), e);
+        } finally {
+            pdfPermit.release();
         }
+    }
+
+    /** 探测系统中文字体；全部候选均不存在时返回 null（中文将渲染为空白方块） */
+    static java.io.File resolveFontFile() {
+        for (String path : FONT_CANDIDATES) {
+            java.io.File f = new java.io.File(path);
+            if (f.exists() && f.isFile()) {
+                return f;
+            }
+        }
+        return null;
+    }
+
+    /** 无中文字体时的用户侧提示文案（随导出结果返回，便于前端/运维感知） */
+    private static String fontWarning() {
+        return resolveFontFile() == null
+                ? "缺少中文字体，PDF 中的中文可能显示为空白方块" : null;
     }
 
     /**
