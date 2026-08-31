@@ -281,7 +281,10 @@
     <div v-else-if="step === 4" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">获取压测结果</div>
       <div class="text-[11px] text-fg-sub mb-4">任务完成后自动拉取报告摘要。<router-link class="text-neon-blue hover:underline" to="/stress">打开完整压测报告</router-link></div>
-      <div v-if="!stressTask" class="text-xs text-fg-sub py-8 text-center">请先在上一步发起压测</div>
+      <div v-if="!stressTask" class="text-xs text-fg-sub py-6 text-center">
+        <div class="mb-3">本向导内未发起压测，或会话已被清空</div>
+        <router-link class="btn-primary inline-flex" to="/stress">前往压测中心查看历史报告</router-link>
+      </div>
       <div v-else-if="!report" class="text-xs text-fg-sub py-8 text-center flex items-center justify-center gap-2">
         <span class="w-2 h-2 rounded-full bg-neon-green animate-pulse"></span> 任务 {{ stressTask.status }}，等待完成…
       </div>
@@ -340,13 +343,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
 import StressForm from '../components/stress/StressForm.vue'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi, deployApi, slowSqlApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
+import { saveQuickStart, loadQuickStart, clearQuickStart } from '../stores/quickStartNav'
 
 const route = useRoute()
 const router = useRouter()
@@ -429,6 +433,47 @@ const instBaseUrl = computed(() => {
 const stressTask = ref<any>(null)
 const report = ref<any>(null)
 const capacityText = ref('')
+
+// ===== 跨页面导航：持久化向导进度 =====
+// 用户在向导内会跳到压测中心/调用链/性能优化/AI 助手看细节，而侧边栏没有「快速开始」
+// 入口，一旦点出去就回不来。这里把进度写入 sessionStorage，由 MainLayout 顶栏渲染
+// 全局「返回快速开始」按钮，任何页面都能一步回到当前步骤。
+function cacheRunState() {
+  saveQuickStart({
+    step: step.value,
+    stepTitle: stepDefs[step.value]?.title || '',
+    repoId: repoId.value,
+    connId: connId.value,
+    sessionDone: [...sessionDone.value],
+    stressTask: stressTask.value,
+    report: report.value,
+    capacityText: capacityText.value,
+    traces: traces.value,
+    issues: issues.value,
+    savedAt: Date.now()
+  })
+}
+
+function restoreRunState() {
+  const s = loadQuickStart()
+  if (!s) return false
+  step.value = s.step ?? 0
+  repoId.value = s.repoId ?? 0
+  connId.value = s.connId ?? 0
+  sessionDone.value = s.sessionDone?.length === stepDefs.length
+    ? [...s.sessionDone]
+    : [false, false, false, false, false, false, false]
+  stressTask.value = s.stressTask ?? null
+  report.value = s.report ?? null
+  capacityText.value = s.capacityText ?? ''
+  traces.value = s.traces ?? []
+  issues.value = s.issues ?? []
+  // 压测仍在进行中：恢复轮询，避免状态卡死
+  if (stressTask.value && (stressTask.value.status === 'running' || stressTask.value.status === 'pending')) {
+    startPolling()
+  }
+  return true
+}
 const traces = ref<Array<Record<string, any>>>([])
 const issues = ref<Array<Record<string, any>>>([])
 const appInstances = ref<Array<Record<string, any>>>([])
@@ -749,11 +794,21 @@ function startPolling() {
     if (t?.status === 'finished') {
       stopPolling()
       const rep = await stressApi.report(stressTask.value.id)
-      const stat = rep.data?.statistics || rep.data?.result?.statistics || {}
-      report.value = stat
+      // rep.data 为整个压测任务对象（含 result 字段：统计指标/分档/容量评估）
+      const data = rep.data || {}
+      const result = data.result || {}
+      report.value = result
       sessionDone.value[4] = true // 本轮报告已获取
-      const cap = rep.data?.result?.capacity || rep.data?.capacity
-      if (cap) capacityText.value = `容量评估：最大可承受并发 ${cap.maxConcurrency ?? '—'}，最大 QPS ${cap.maxQps ?? '—'}`
+      const cap = result.capacity
+      if (cap) {
+        const maxC = cap.maxConcurrency ?? '—'
+        const maxQ = cap.maxQps ?? '—'
+        const tag = cap.extrapolated ? '（外推估算）' : ''
+        capacityText.value = `容量评估：最大可承受并发 ${maxC}，最大 QPS ${maxQ}${tag}`
+      } else {
+        capacityText.value = ''
+      }
+      cacheRunState() // 压测结果已生成：写入 session 缓存供跨路由恢复
       loadTracesAndIssues()
     }
   }, 2000)
@@ -819,8 +874,12 @@ function goAiAnalyze() {
   router.push({ path: '/ai', query: { msg: `分析项目「${repoName.value}」最近的慢 SQL 与热点调用链根因，并给出修复方案` } })
 }
 
-/** 完成本轮，回到总览 */
+/** 完成本轮，回到总览：本轮结束，清除会话缓存（下次进入为全新向导）。
+ *  finishing 标记用于阻止卸载前的最后一次 watch 把状态又写回去。 */
+let finishing = false
 function finishRound() {
+  finishing = true
+  clearQuickStart()
   router.push('/dashboard')
 }
 
@@ -829,8 +888,20 @@ function onEnterStep() {
 }
 
 onMounted(async () => {
-  // 快速开始 = 每次全新流程：固定第 1 步，不预选项目、不载入历史任务（打勾只认本轮操作）
-  step.value = 0
+  // 快速开始 = 全新引导流程；但用户在向导内会跳到压测中心/调用链/性能优化看细节，
+  // 而侧边栏没有本页入口，点出去就回不来。故按入口区分：
+  //   · 带 step 参数（总览页 /quick-start?step=0）= 明确开新一轮 → 以 URL 为准，step=0 时清空旧进度
+  //   · 不带参数（从其他页面返回 / 刷新）          = 恢复上次进度，回到原步骤
+  const q = route.query.step
+  if (q !== undefined && Number.isFinite(Number(q))) {
+    // step=0 是总览页的入口语义（开新一轮）；其余值来自向导内 goStep 的 replace，
+    // 说明用户只是在本向导内刷新，数据仍需恢复，仅 step 以 URL 为准
+    if (Number(q) === 0) clearQuickStart()
+    else restoreRunState()
+    step.value = Math.max(0, Math.min(stepDefs.length - 1, Number(q)))
+  } else {
+    restoreRunState()
+  }
   const [c, a] = await Promise.allSettled([
     dbConnApi.list(), appApi.list()
   ])
@@ -840,6 +911,15 @@ onMounted(async () => {
   if (a.status === 'fulfilled') appInstances.value = a.value.data || []
   loadDeployConns()
 })
+
+// 向导进度自动持久化：任何影响进度的状态变化都写入，供跨页面返回时恢复
+watch(
+  [step, repoId, connId, sessionDone, stressTask, report, traces, issues],
+  () => {
+    if (!finishing) cacheRunState()
+  },
+  { deep: true }
+)
 
 onUnmounted(stopPolling)
 </script>

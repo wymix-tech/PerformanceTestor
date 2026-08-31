@@ -35,6 +35,12 @@ export const slowSqlApi = {
     http.get('/slow-sqls', { params })
 }
 
+export const slowCommandApi = {
+  // 中间件慢命令列表（Redis / ES / MQ，耗时倒序；type 为空表示全部）
+  list: (params: { app?: string; type?: string; start?: string | number; end?: string | number; minCostMs?: number; limit?: number }) =>
+    http.get('/slow-commands', { params })
+}
+
 export const hotspotApi = {
   // 方法级 CPU 热点排行（命中次数降序，最近 1 小时）
   list: (params: { app?: string; start?: string | number; end?: string | number; limit?: number }) =>
@@ -50,6 +56,16 @@ export const stressApi = {
   samples: (id: number, limit = 500) => http.get(`/stress/tasks/${id}/samples`, { params: { limit } }),
   // 压测报告（含统计/分档采样点/容量评估结果）
   report: (id: number) => http.get(`/stress/tasks/${id}/report`)
+}
+
+export const reportApi = {
+  /**
+   * 报告导出/打印页 URL（文件下载走 Blob，不能直接走 JSON 拦截器）
+   * 说明：导出接口返回裸文件流（非 ApiResponse 包壳），需带 token 访问，
+   * 故打印页用 window.open 直开、文件下载用 responseType:'blob'。
+   */
+  exportUrl: (taskId: number, format: 'html' | 'pdf' | 'doc', printMode = false) =>
+    `/api/reports/export?stressTaskId=${taskId}&format=${format}&printMode=${printMode}`
 }
 
 export const scheduleApi = {
@@ -204,4 +220,4 @@ export const dbConnApi = {
     http.post('/dbconns/test', data)
 }
 
-export default { appApi, jvmApi, traceApi, slowSqlApi, stressApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }
+export default { appApi, jvmApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }
