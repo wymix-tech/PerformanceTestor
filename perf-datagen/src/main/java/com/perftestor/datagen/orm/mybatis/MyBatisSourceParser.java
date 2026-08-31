@@ -2,15 +2,14 @@ package com.perftestor.datagen.orm.mybatis;
 
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
-import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
-import com.github.javaparser.ast.body.FieldDeclaration;
 import com.perftestor.datagen.model.MagicHint;
 import com.perftestor.datagen.model.RelationHint;
 import com.perftestor.datagen.model.SourceFile;
+import com.perftestor.datagen.orm.support.JavaSourceHints;
 import com.perftestor.datagen.spi.OrmSourceParser;
 import com.perftestor.datagen.util.SqlLiteralExtractor;
 import org.slf4j.Logger;
@@ -112,47 +111,8 @@ public class MyBatisSourceParser implements OrmSourceParser {
         CompilationUnit cu = parseResult.getResult().get();
         String sourceRef = f.getPath();
 
-        // Java 枚举常量反查（枚举发现第四级来源）
-        cu.findAll(EnumDeclaration.class).forEach(ed -> {
-            List<String> constants = new ArrayList<>();
-            ed.getEntries().forEach(e -> constants.add(e.getNameAsString()));
-            if (!constants.isEmpty()) {
-                result.getJavaEnums().put(ed.getNameAsString(), constants);
-            }
-        });
-
-        // static final 常量：STATUS_X/TYPE_X 等命名特征，值入魔法值候选
-        cu.findAll(FieldDeclaration.class).forEach(fd -> {
-            if (!fd.isStatic() || !fd.isFinal()) {
-                return;
-            }
-            fd.getVariables().forEach(vd -> {
-                String name = vd.getNameAsString();
-                if (!name.matches("(?i)(STATUS|STATE|TYPE|KIND|FLAG|LEVEL)[A-Z0-9_]*")) {
-                    return;
-                }
-                vd.getInitializer().ifPresent(init -> {
-                    MagicHint h = null;
-                    if (init instanceof StringLiteralExpr s) {
-                        h = new MagicHint(null, snake(name), MagicHint.KIND_CONSTANT);
-                        h.getValues().add(s.getValue());
-                    } else if (init instanceof com.github.javaparser.ast.expr.IntegerLiteralExpr
-                            || init instanceof com.github.javaparser.ast.expr.LongLiteralExpr) {
-                        try {
-                            long v = Long.parseLong(init.toString());
-                            h = new MagicHint(null, snake(name), MagicHint.KIND_CONSTANT);
-                            h.getValues().add(v);
-                        } catch (NumberFormatException ignore) {
-                            return;
-                        }
-                    }
-                    if (h != null) {
-                        h.getSourceRefs().add(sourceRef);
-                        result.getMagicHints().add(h);
-                    }
-                });
-            });
-        });
+        // Java 枚举常量反查 + static final 状态常量（与 JPA 解析器共用片段）
+        JavaSourceHints.collectEnumsAndConstants(cu, sourceRef, result);
 
         // @Select/@Insert/@Update/@Delete 注解 SQL（字符串常量；provider 等形态静默跳过）
         for (String ann : new String[]{"Select", "Insert", "Update", "Delete"}) {
@@ -183,15 +143,7 @@ public class MyBatisSourceParser implements OrmSourceParser {
 
     /** 常量名 → 列名（STATUS_SHIPPED → status；USER_TYPE_A → type） */
     static String snake(String constantName) {
-        String s = constantName.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toLowerCase(Locale.ROOT);
-        String[] tokens = s.split("_");
-        for (String t : tokens) {
-            if (t.equals("status") || t.equals("state") || t.equals("type")
-                    || t.equals("flag") || t.equals("level") || t.equals("kind")) {
-                return t;
-            }
-        }
-        return s;
+        return JavaSourceHints.snake(constantName);
     }
 
     /** XML mapper：resultMap association/collection 关联 + select/insert/update 字面量与 JOIN */
@@ -265,16 +217,7 @@ public class MyBatisSourceParser implements OrmSourceParser {
 
     /** Java 类名/全限定名 → 表名（camelCase → snake_case） */
     static String toTableName(String javaType) {
-        if (javaType == null || javaType.isBlank()) {
-            return null;
-        }
-        String simple = javaType.contains(".")
-                ? javaType.substring(javaType.lastIndexOf('.') + 1) : javaType;
-        simple = simple.replace("DO", "").replace("Entity", "").replace("PO", "");
-        if (simple.isEmpty()) {
-            return null;
-        }
-        return simple.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toLowerCase(Locale.ROOT);
+        return JavaSourceHints.toTableName(javaType);
     }
 }
 

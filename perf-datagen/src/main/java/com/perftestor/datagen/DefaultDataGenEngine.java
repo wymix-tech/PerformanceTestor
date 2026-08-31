@@ -22,6 +22,7 @@ import com.perftestor.datagen.util.SqlLiteralExtractor;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,15 +45,59 @@ public class DefaultDataGenEngine implements DataGenEngine {
     /** 高倾斜警告阈值：单热行承载子行占比 */
     static final double HOT_ROW_SHARE_WARN = 50.0;
 
-    private final DatabaseDialect dialect;
+    /** 注册方言（按 supports(jdbcUrl) 路由；新增库种仅需注册实现类） */
+    private final List<DatabaseDialect> dialects;
     private final BatchExecutor executor;
-    private final OrmSourceParser ormParser;
+    /** 注册 ORM 解析器（按 supports(files) + order() 路由，支持多 ORM 共存） */
+    private final List<OrmSourceParser> ormParsers;
     private final EnumValueDiscoverer enumDiscoverer = new EnumValueDiscoverer();
+    /**
+     * DB 枚举发现值缓存（{@code 表名.列名 → 候选值}），由 {@link #collectEnumSuggestions} 填充。
+     *
+     * <p>关键：枚举列若未配置规则又无此缓存，会被填入随机长串，
+     * 对 PG 原生枚举列直接触发「column is of type X but expression is of type character varying」，
+     * 对 MySQL ENUM 列则写入空串或报错。引擎为有状态组件（每次 execute 重建缓存）。
+     */
+    private final Map<String, List<Object>> dbEnumValues = new HashMap<>();
 
+    /** 单方言/单解析器构造（兼容既有调用方） */
     public DefaultDataGenEngine(DatabaseDialect dialect, BatchExecutor executor, OrmSourceParser ormParser) {
-        this.dialect = dialect;
+        this(dialect == null ? List.of() : List.of(dialect), executor,
+                ormParser == null ? List.of() : List.of(ormParser));
+    }
+
+    /**
+     * 多方言/多解析器构造（推荐）：方言按 JDBC URL 的 {@code supports()} 判别路由，
+     * 解析器按源码特征 {@code supports()} + {@code order()} 路由。
+     */
+    public DefaultDataGenEngine(List<DatabaseDialect> dialects, BatchExecutor executor,
+                                List<OrmSourceParser> ormParsers) {
+        this.dialects = dialects == null ? List.of() : List.copyOf(dialects);
         this.executor = executor;
-        this.ormParser = ormParser;
+        this.ormParsers = ormParsers == null ? List.of() : List.copyOf(ormParsers);
+    }
+
+    /** 已注册方言（供调用方做 URL 前置校验，保证与引擎内路由判定一致） */
+    public List<DatabaseDialect> getDialects() {
+        return dialects;
+    }
+
+    /** 按 JDBC URL 选方言（supports 判别，扩展新库种无需改动引擎） */
+    private DatabaseDialect resolveDialect(String jdbcUrl) {
+        for (DatabaseDialect d : dialects) {
+            if (d.supports(jdbcUrl)) {
+                return d;
+            }
+        }
+        throw new IllegalArgumentException("不支持的 JDBC URL（未注册匹配方言）: " + jdbcUrl);
+    }
+
+    /** 命中的 ORM 解析器（特征检测 + order 升序，多 ORM 共存时全部执行后合并） */
+    private List<OrmSourceParser> resolveParsers(List<SourceFile> files) {
+        return ormParsers.stream()
+                .filter(p -> p.supports(files))
+                .sorted(Comparator.comparingInt(OrmSourceParser::order))
+                .toList();
     }
 
     @Override
@@ -62,7 +107,11 @@ public class DefaultDataGenEngine implements DataGenEngine {
         result.setTotalRows(spec.getTables().stream().mapToLong(TableSpec::getRowCount).sum());
         try {
             validate(spec);
-            try (Connection conn = connect(spec)) {
+            // 引擎为单例 Bean：每次执行前清空上一次的 DB 枚举缓存（避免跨任务串用与内存增长）
+            dbEnumValues.clear();
+            // 方言按 JDBC URL 路由（MySQL/PG/…；新增库种仅注册实现类）
+            DatabaseDialect dialect = resolveDialect(spec.getJdbcUrl());
+            try (Connection conn = connect(spec, dialect)) {
                 // 1. 元数据读取（缺失表立即失败）
                 Map<String, SchemaMetadata> metas = new LinkedHashMap<>();
                 for (TableSpec ts : spec.getTables()) {
@@ -78,10 +127,17 @@ public class DefaultDataGenEngine implements DataGenEngine {
                 Map<String, List<String>> javaEnums = new HashMap<>();
                 scanSource(spec, metas.keySet(), magicHints, javaEnums);
                 List<RelationHint> ormHints = new ArrayList<>();
-                if (ormParser != null && spec.getSourceFiles() != null && !spec.getSourceFiles().isEmpty()) {
-                    for (RelationHint h : ormParser.scan(spec.getSourceFiles(), metas.keySet()).getRelationHints()) {
-                        if (metas.containsKey(h.getChildTable()) && metas.containsKey(h.getParentTable())) {
-                            ormHints.add(h);
+                if (spec.getSourceFiles() != null && !spec.getSourceFiles().isEmpty()) {
+                    for (OrmSourceParser parser : resolveParsers(spec.getSourceFiles())) {
+                        try {
+                            for (RelationHint h : parser.scan(spec.getSourceFiles(), metas.keySet())
+                                    .getRelationHints()) {
+                                if (metas.containsKey(h.getChildTable()) && metas.containsKey(h.getParentTable())) {
+                                    ormHints.add(h);
+                                }
+                            }
+                        } catch (Exception ignore) {
+                            // 单解析器失败静默降级
                         }
                     }
                 }
@@ -101,7 +157,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
                 List<String> order = TopoSorter.sort(metas.keySet(), deps);
 
                 // 5. 枚举建议注入（未配置 enum 规则的列，用发现值生成建议提示）
-                collectEnumSuggestions(conn, spec, metas, javaEnums, result);
+                collectEnumSuggestions(conn, spec, metas, javaEnums, result, dialect);
 
                 // 6. Dry-Run：估算后返回；正式：执行写入
                 long estMs = estimateMaxTxnMs(spec);
@@ -115,7 +171,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
                     result.setSuccess(true);
                     return result;
                 }
-                long inserted = insertAll(spec, conn, metas, rel, order, listener, result);
+                long inserted = insertAll(spec, conn, metas, rel, order, listener, result, dialect);
                 result.setInsertedRows(inserted);
                 result.setSuccess(true);
                 return result;
@@ -131,7 +187,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
 
     private long insertAll(DataGenSpec spec, Connection conn, Map<String, SchemaMetadata> metas,
                            RelationResolver.RelationResolution rel, List<String> order,
-                           EngineListener listener, EngineResult result) throws Exception {
+                           EngineListener listener, EngineResult result, DatabaseDialect dialect) throws Exception {
         long totalInserted = 0;
         long totalRows = result.getTotalRows();
 
@@ -154,17 +210,18 @@ public class DefaultDataGenEngine implements DataGenEngine {
 
             // 先填充依赖父表的 ID 池
             for (RelationHint edge : tableEdges.values()) {
-                ensurePool(spec, conn, metas, pools, edge.getParentTable(), edge.getParentColumn());
+                ensurePool(spec, conn, metas, pools, edge.getParentTable(), edge.getParentColumn(), dialect);
             }
 
-            long inserted = insertTable(spec, conn, meta, ts, tableEdges, pools, listener, totalInserted, totalRows);
+            long inserted = insertTable(spec, conn, meta, ts, tableEdges, pools, listener,
+                    totalInserted, totalRows, dialect);
             totalInserted += inserted;
             result.getTableStats().add(new EngineResult.TableStat(tableName, inserted));
 
             // 自引用表：本表主键也进入池（后续行引用已插行）
             if (tableEdges.values().stream().anyMatch(e -> e.getParentTable().equals(tableName))) {
                 String pk = meta.getPrimaryKeys().isEmpty() ? "id" : meta.getPrimaryKeys().iterator().next();
-                ensurePool(spec, conn, metas, pools, tableName, pk);
+                ensurePool(spec, conn, metas, pools, tableName, pk, dialect);
             }
         }
         return totalInserted;
@@ -172,7 +229,8 @@ public class DefaultDataGenEngine implements DataGenEngine {
 
     /** 确保父表主键池已填充（分段游标拉取，上限 50 万；幂等） */
     private void ensurePool(DataGenSpec spec, Connection conn, Map<String, SchemaMetadata> metas,
-                            Map<String, Map<String, IdPool>> pools, String table, String column) throws Exception {
+                            Map<String, Map<String, IdPool>> pools, String table, String column,
+                            DatabaseDialect dialect) throws Exception {
         Map<String, IdPool> byCol = pools.computeIfAbsent(table, k -> new LinkedHashMap<>());
         if (byCol.containsKey(column)) {
             return;
@@ -220,7 +278,8 @@ public class DefaultDataGenEngine implements DataGenEngine {
     /** 单表生成与批量插入（每表独立事务；ref/refSkew 采样 + orphanRate 独立池后置替换） */
     private long insertTable(DataGenSpec spec, Connection conn, SchemaMetadata meta, TableSpec ts,
                              Map<String, RelationHint> tableEdges, Map<String, Map<String, IdPool>> pools,
-                             EngineListener listener, long insertedBefore, long totalRows) throws Exception {
+                             EngineListener listener, long insertedBefore, long totalRows,
+                             DatabaseDialect dialect) throws Exception {
         List<String> insertColumns = new ArrayList<>();
         List<SchemaMetadata.ColumnMeta> cols = new ArrayList<>();
         for (SchemaMetadata.ColumnMeta c : meta.getColumns()) {
@@ -295,7 +354,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
         return inserted;
     }
 
-    /** 构造一行参数值：规则引擎 + ref/refSkew 池采样 + orphanRate 后置替换 */
+    /** 构造一行参数值：规则引擎 + DB 枚举发现 + ref/refSkew 池采样 + orphanRate 后置替换 */
     private Object[] buildRow(Connection conn, SchemaMetadata meta, TableSpec ts,
                               List<String> insertColumns, List<SchemaMetadata.ColumnMeta> cols,
                               Map<String, RelationHint> tableEdges, Map<String, Map<String, IdPool>> pools,
@@ -320,8 +379,15 @@ public class DefaultDataGenEngine implements DataGenEngine {
                         : (fr.getColumn() == null ? "id" : fr.getColumn());
                 IdPool pool = pools.get(parentTable) == null ? null : pools.get(parentTable).get(parentColumn);
                 value = sampleRef(pool, fr, orphan, col);
+            } else if (fr != null) {
+                value = RuleEngine.applyRule(fr, col);
             } else {
-                value = fr != null ? RuleEngine.applyRule(fr, col) : RuleEngine.generateDefault(col);
+                // 未配置规则：优先用 DB 发现的枚举值（PG 原生枚举 / MySQL ENUM / CHECK 约束），
+                // 否则随机生成——否则枚举列会被填入随机长串，直接触发类型/约束错误。
+                List<Object> discovered = dbEnumValues.get(enumKey(meta.getTableName(), colName));
+                value = discovered != null && !discovered.isEmpty()
+                        ? discovered.get(ThreadLocalRandom.current().nextInt(discovered.size()))
+                        : RuleEngine.generateDefault(col);
                 if (orphan && colName.endsWith("_" + pk) && !col.isNullable()) {
                     value = null; // 不可空列的孤儿策略由池采样无效 ID 处理（见 sampleRef），此处仅可空列置 NULL
                 }
@@ -348,8 +414,8 @@ public class DefaultDataGenEngine implements DataGenEngine {
     }
 
     private void validate(DataGenSpec spec) {
-        if (!dialect.supports(spec.getJdbcUrl())) {
-            throw new IllegalArgumentException("不支持的 JDBC URL（本模块仅配置了对应方言）");
+        if (dialects.stream().noneMatch(d -> d.supports(spec.getJdbcUrl()))) {
+            throw new IllegalArgumentException("不支持的 JDBC URL（未注册匹配方言）: " + spec.getJdbcUrl());
         }
         if (spec.getTables() == null || spec.getTables().isEmpty()) {
             throw new IllegalArgumentException("表组为空");
@@ -368,7 +434,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
         }
     }
 
-    private Connection connect(DataGenSpec spec) throws Exception {
+    private Connection connect(DataGenSpec spec, DatabaseDialect dialect) throws Exception {
         Properties props = new Properties();
         props.setProperty("user", spec.getDbUser() == null ? "" : spec.getDbUser());
         props.setProperty("password", spec.getDbPassword() == null ? "" : spec.getDbPassword());
@@ -383,12 +449,15 @@ public class DefaultDataGenEngine implements DataGenEngine {
         if (files == null || files.isEmpty()) {
             return;
         }
-        try {
-            OrmSourceParser.ScanResult sr = ormParser.scan(files, tables);
-            outMagic.addAll(sr.getMagicHints());
-            outEnums.putAll(sr.getJavaEnums());
-        } catch (Exception e) {
-            // 源码解析失败静默降级：仅依赖 DB 元数据
+        // 多 ORM 共存：全部命中解析器按 order 顺序执行并合并结果
+        for (OrmSourceParser parser : resolveParsers(files)) {
+            try {
+                OrmSourceParser.ScanResult sr = parser.scan(files, tables);
+                outMagic.addAll(sr.getMagicHints());
+                outEnums.putAll(sr.getJavaEnums());
+            } catch (Exception e) {
+                // 单个解析器失败静默降级：不影响其他 ORM 与 DB 元数据
+            }
         }
     }
 
@@ -415,7 +484,8 @@ public class DefaultDataGenEngine implements DataGenEngine {
 
     private void collectEnumSuggestions(Connection conn, DataGenSpec spec,
                                         Map<String, SchemaMetadata> metas,
-                                        Map<String, List<String>> javaEnums, EngineResult result) {
+                                        Map<String, List<String>> javaEnums, EngineResult result,
+                                        DatabaseDialect dialect) {
         for (TableSpec ts : spec.getTables()) {
             SchemaMetadata m = metas.get(ts.getTableName().toLowerCase(Locale.ROOT));
             if (m == null) {
@@ -425,13 +495,22 @@ public class DefaultDataGenEngine implements DataGenEngine {
                 if (ts.getFields().get(col.getName()) != null) {
                     continue; // 已配置规则
                 }
-                List<Object> values = enumDiscoverer.discover(conn, dialect, col, javaEnums);
-                if (values.isEmpty() && EnumValueDiscoverer.suspectEnumColumn(col)) {
+                List<Object> values = enumDiscoverer.discover(conn, dialect, m.getTableName(), col, javaEnums);
+                if (!values.isEmpty()) {
+                    // 缓存 DB 发现值：未配置规则时直接用于生成，避免枚举列被填入随机长串
+                    dbEnumValues.put(enumKey(m.getTableName(), col.getName()), values);
+                } else if (EnumValueDiscoverer.suspectEnumColumn(col)) {
                     result.getWarnings().add("列 " + m.getTableName() + "." + col.getName()
                             + " 疑似枚举列（列名特征），建议人工配置 enum 规则");
                 }
             }
         }
+    }
+
+    /** DB 枚举值缓存键（表名.列名，均小写） */
+    static String enumKey(String table, String column) {
+        return (table == null ? "" : table.toLowerCase(Locale.ROOT)) + "."
+                + (column == null ? "" : column.toLowerCase(Locale.ROOT));
     }
 
     private long estimateMaxTxnMs(DataGenSpec spec) {
