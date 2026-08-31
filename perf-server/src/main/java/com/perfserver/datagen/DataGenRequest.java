@@ -9,7 +9,7 @@ public class DataGenRequest {
     private String taskName;
     /** 连接配置 ID（可选，与"问题与优化"页的数据库连接配置共用；提供时覆盖下方手填连接） */
     private Long connId;
-    /** 目标库 JDBC URL，如 jdbc:mysql://127.0.0.1:3306/demo */
+    /** 目标库 JDBC URL，如 jdbc:mysql://127.0.0.1:3306/demo 或 jdbc:postgresql://127.0.0.1:5432/demo */
     private String dbUrl;
     private String dbUser;
     private String dbPassword;

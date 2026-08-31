@@ -104,6 +104,25 @@ CREATE TABLE IF NOT EXISTS slow_sql (
 ) ENGINE = InnoDB COMMENT = '慢 SQL 记录';
 
 -- ---------------------------------------------------------------------
+-- 4.0 slow_command：中间件慢命令（agent 拦截 Redis / ES / RabbitMQ）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS slow_command (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name      VARCHAR(128)  NOT NULL COMMENT '应用名称',
+    type          VARCHAR(16)   NOT NULL COMMENT '中间件类型：redis / es / mq',
+    command       VARCHAR(1024) NOT NULL DEFAULT '' COMMENT '命令文本（方法名 + 参数，已截断）',
+    cost_ms       DOUBLE        NOT NULL DEFAULT 0 COMMENT '执行耗时 ms',
+    trace_id      VARCHAR(64)   NULL COMMENT '关联调用链 ID（未采样时为空）',
+    method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶）',
+    execute_time  DATETIME      NOT NULL COMMENT '执行时间',
+    PRIMARY KEY (id),
+    KEY idx_app_time (app_name, execute_time),
+    KEY idx_type (type, execute_time),
+    KEY idx_trace (trace_id),
+    KEY idx_cost (cost_ms)
+) ENGINE = InnoDB COMMENT = '中间件慢命令记录';
+
+-- ---------------------------------------------------------------------
 -- 4.1 hotspot_method：方法级 CPU 热点（agent HotspotSampler 弱采样聚合上报）
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS hotspot_method (

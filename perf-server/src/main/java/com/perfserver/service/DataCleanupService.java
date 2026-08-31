@@ -40,6 +40,7 @@ public class DataCleanupService {
         deleted.put("traceChain", cleanupMapper.deleteTraceByApp(appName));
         deleted.put("jvmMetric", cleanupMapper.deleteJvmByApp(appName));
         deleted.put("slowSql", cleanupMapper.deleteSlowSqlByApp(appName));
+        deleted.put("slowCommand", cleanupMapper.deleteSlowCommandByApp(appName));
         deleted.put("appInstance", cleanupMapper.deleteAppInstancesByApp(appName));
         deleted.put("dbConn", cleanupMapper.deleteDbConnsByApp(appName));
 

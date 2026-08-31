@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.SlowCommandMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.SlowCommand">
+        <id column="id" property="id"/>
+        <result column="app_name" property="appName"/>
+        <result column="type" property="type"/>
+        <result column="command" property="command"/>
+        <result column="cost_ms" property="costMs"/>
+        <result column="trace_id" property="traceId"/>
+        <result column="method_chain" property="methodChain"/>
+        <result column="execute_time" property="executeTime"/>
+    </resultMap>
+
+    <insert id="batchInsert">
+        INSERT INTO slow_command (app_name, type, command, cost_ms, trace_id, method_chain, execute_time)
+        VALUES
+        <foreach collection="list" item="c" separator=",">
+            (#{c.appName}, #{c.type}, #{c.command}, #{c.costMs}, #{c.traceId}, #{c.methodChain}, #{c.executeTime})
+        </foreach>
+    </insert>
+
+    <sql id="BaseColumns">
+        id, app_name, type, command, cost_ms, trace_id, method_chain, execute_time
+    </sql>
+
+    <select id="query" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM slow_command
+        WHERE execute_time &gt;= #{start} AND execute_time &lt;= #{end}
+        <if test="appName != null and appName != ''">
+            AND app_name = #{appName}
+        </if>
+        <if test="type != null and type != ''">
+            AND type = #{type}
+        </if>
+        <if test="minCostMs != null">
+            AND cost_ms &gt;= #{minCostMs}
+        </if>
+        ORDER BY cost_ms DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findByTraceId" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM slow_command
+        WHERE trace_id = #{traceId}
+        ORDER BY cost_ms DESC
+        LIMIT 100
+    </select>
+
+</mapper>

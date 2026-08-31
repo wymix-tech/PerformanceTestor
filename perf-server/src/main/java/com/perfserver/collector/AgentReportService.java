@@ -5,12 +5,14 @@ import com.perfserver.entity.AppInstance;
 import com.perfserver.entity.DbConn;
 import com.perfserver.entity.HotspotMethod;
 import com.perfserver.entity.JvmMetric;
+import com.perfserver.entity.SlowCommand;
 import com.perfserver.entity.SlowSql;
 import com.perfserver.entity.TraceChain;
 import com.perfserver.mapper.AppInstanceMapper;
 import com.perfserver.mapper.DbConnMapper;
 import com.perfserver.mapper.HotspotMethodMapper;
 import com.perfserver.mapper.JvmMetricMapper;
+import com.perfserver.mapper.SlowCommandMapper;
 import com.perfserver.mapper.SlowSqlMapper;
 import com.perfserver.mapper.TraceChainMapper;
 import org.slf4j.Logger;
@@ -23,14 +25,15 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Agent 上报采集服务：接收远程探针批量上报（trace / jvm / slowSql）并落库。
+ * Agent 上报采集服务：接收远程探针批量上报（trace / jvm / slowSql / slowCommand / hotspot）并落库。
  *
  * <p>上报 body 格式（与 agent 端 {@code MetricsReporter} 约定一致）：
- * {@code {"type":"trace|jvm|slowSql","appName":"...","items":[...]}}
+ * {@code {"type":"trace|jvm|slowSql|slowCommand|hotspot","appName":"...","items":[...]}}
  *
  * <p>可靠性：单批落库失败不阻断后续批次；解析异常仅记录日志，保证上报接口可用。
  */
@@ -48,6 +51,9 @@ public class AgentReportService {
     private final Map<String, Long> unknownProjectWarnAt = new java.util.concurrent.ConcurrentHashMap<>();
     private static final long WARN_INTERVAL_MS = 60_000;
 
+    /** slow_command.command 列宽（VARCHAR(1024)，含截断后缀需留余量） */
+    private static final int MAX_COMMAND_LEN = 1000;
+
     /** 限频告警：未知项目上报被丢弃 */
     private void warnUnknownProjectOnce(String project, String type) {
         long now = System.currentTimeMillis();
@@ -62,6 +68,7 @@ public class AgentReportService {
     private final JvmMetricMapper jvmMetricMapper;
     private final TraceChainMapper traceChainMapper;
     private final SlowSqlMapper slowSqlMapper;
+    private final SlowCommandMapper slowCommandMapper;
     private final HotspotMethodMapper hotspotMethodMapper;
     private final DbConnMapper dbConnMapper;
     private final ProjectRegistry projectRegistry;
@@ -71,6 +78,7 @@ public class AgentReportService {
                               JvmMetricMapper jvmMetricMapper,
                               TraceChainMapper traceChainMapper,
                               SlowSqlMapper slowSqlMapper,
+                              SlowCommandMapper slowCommandMapper,
                               HotspotMethodMapper hotspotMethodMapper,
                               DbConnMapper dbConnMapper,
                               ProjectRegistry projectRegistry,
@@ -79,6 +87,7 @@ public class AgentReportService {
         this.jvmMetricMapper = jvmMetricMapper;
         this.traceChainMapper = traceChainMapper;
         this.slowSqlMapper = slowSqlMapper;
+        this.slowCommandMapper = slowCommandMapper;
         this.hotspotMethodMapper = hotspotMethodMapper;
         this.dbConnMapper = dbConnMapper;
         this.projectRegistry = projectRegistry;
@@ -126,6 +135,7 @@ public class AgentReportService {
                 case "trace" -> saveTraces(appName, items);
                 case "jvm" -> saveJvmMetrics(appName, items);
                 case "slowSql" -> saveSlowSqls(appName, items);
+                case "slowCommand" -> saveSlowCommands(appName, items);
                 case "hotspot" -> saveHotspots(appName, items);
                 default -> log.warn("agent report ignored: unknown type={}, app={}", type, appName);
             }
@@ -250,6 +260,49 @@ public class AgentReportService {
             slowSqlMapper.batchInsert(batch);
         }
         log.info("agent report: saved {} slow sqls, app={}", batch.size(), appName);
+    }
+
+    /** 中间件慢命令批量入库（Redis / ES / MQ） */
+    private void saveSlowCommands(String appName, List<?> items) {
+        List<SlowCommand> batch = new ArrayList<>(items.size());
+        for (Object item : items) {
+            if (!(item instanceof Map<?, ?> m)) {
+                continue;
+            }
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> map = (Map<String, Object>) m;
+                String type = strVal(map.get("type"));
+                if (type == null || type.isBlank()) {
+                    continue;
+                }
+                SlowCommand cmd = new SlowCommand();
+                cmd.setAppName(appName);
+                cmd.setType(type.toLowerCase(Locale.ROOT));
+                cmd.setCommand(truncateCommand(strVal(map.get("command"))));
+                cmd.setCostMs(doubleVal(map.get("costMs")));
+                cmd.setTraceId(strVal(map.get("traceId")));
+                Object chain = map.get("methodChain");
+                cmd.setMethodChain(chain == null ? null : objectMapper.writeValueAsString(chain));
+                cmd.setExecuteTime(toLocalDateTime(longVal(map.get("executeTime"))));
+                batch.add(cmd);
+            } catch (Exception e) {
+                log.warn("parse slow command failed, app={}", appName, e);
+            }
+        }
+        if (!batch.isEmpty()) {
+            slowCommandMapper.batchInsert(batch);
+        }
+        log.info("agent report: saved {} slow commands, app={}", batch.size(), appName);
+    }
+
+    /** 命令文本落库截断（command 列 VARCHAR(1024)，超长会直接报错） */
+    private static String truncateCommand(String command) {
+        if (command == null) {
+            return "";
+        }
+        return command.length() > MAX_COMMAND_LEN
+                ? command.substring(0, MAX_COMMAND_LEN) + "..." : command;
     }
 
     /**
