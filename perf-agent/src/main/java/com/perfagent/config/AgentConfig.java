@@ -61,6 +61,17 @@ public class AgentConfig {
     public boolean methodTraceEnabled = true;
     /** 是否启用 JDBC 拦截 */
     public boolean jdbcEnabled = true;
+    /**
+     * 是否启用中间件拦截（Redis / ES / RabbitMQ，默认 false）。
+     * 中间件命令调用极高频（Redis 单次请求可达数十次），默认关闭以控制常态开销；
+     * 需要定位中间件慢命令时显式开启 middlewareEnabled=true。
+     */
+    public boolean middlewareEnabled = false;
+    /**
+     * 慢命令阈值 ms（默认 100）。中间件单次命令通常远快于 SQL
+     * （Redis 正常 <1ms），故默认阈值比慢 SQL 更严格。
+     */
+    public long slowCommandThresholdMs = 100;
     /** 是否启用 JMX 采集 */
     public boolean jmxEnabled = true;
     /**
@@ -107,6 +118,8 @@ public class AgentConfig {
         if (kv.containsKey("maxTracesPerSec")) cfg.maxTracesPerSec = Integer.parseInt(kv.get("maxTracesPerSec"));
         if (kv.containsKey("methodTraceEnabled")) cfg.methodTraceEnabled = Boolean.parseBoolean(kv.get("methodTraceEnabled"));
         if (kv.containsKey("jdbcEnabled")) cfg.jdbcEnabled = Boolean.parseBoolean(kv.get("jdbcEnabled"));
+        if (kv.containsKey("middlewareEnabled")) cfg.middlewareEnabled = Boolean.parseBoolean(kv.get("middlewareEnabled"));
+        if (kv.containsKey("slowCommandThresholdMs")) cfg.slowCommandThresholdMs = Long.parseLong(kv.get("slowCommandThresholdMs"));
         if (kv.containsKey("jmxEnabled")) cfg.jmxEnabled = Boolean.parseBoolean(kv.get("jmxEnabled"));
         if (kv.containsKey("filterRootEnabled")) cfg.filterRootEnabled = Boolean.parseBoolean(kv.get("filterRootEnabled"));
         if (kv.containsKey("hotspotEnabled")) cfg.hotspotEnabled = Boolean.parseBoolean(kv.get("hotspotEnabled"));

@@ -277,7 +277,7 @@ async function cleanupData(r: Record<string, any>) {
   }
   const ok = window.confirm(
     `确认清理项目「${r.repoName}」的全部历史数据吗？\n` +
-    `将删除该应用(${r.appName})的压测任务/采样、慢SQL、JVM监控、调用链、性能问题/修复方案、应用实例、数据库连接等数据。\n` +
+    `将删除该应用(${r.appName})的压测任务/采样、慢SQL/慢命令、JVM监控、调用链、性能问题/修复方案、应用实例、数据库连接等数据。\n` +
     `源码与项目本身保留，此操作不可恢复。`
   )
   if (!ok) return
@@ -287,12 +287,13 @@ async function cleanupData(r: Record<string, any>) {
     const d = (res.data?.deleted || {}) as Record<string, number>
     const num = (v: unknown) => Number(v || 0)
     const total =
-      num(d.stressSample) + num(d.stressTask) + num(d.slowSql) +
+      num(d.stressSample) + num(d.stressTask) + num(d.slowSql) + num(d.slowCommand) +
       num(d.jvmMetric) + num(d.traceChain) + num(d.performanceIssue) +
       num(d.fixSuggestion) + num(d.appInstance) + num(d.dbConn)
     alert(
       `已清理 ${total} 条历史数据：\n` +
-      `压测 ${num(d.stressTask) + num(d.stressSample)} 条、慢SQL ${num(d.slowSql)} 条、` +
+      `压测 ${num(d.stressTask) + num(d.stressSample)} 条、` +
+      `慢SQL ${num(d.slowSql)} 条、慢命令 ${num(d.slowCommand)} 条、` +
       `监控 ${num(d.jvmMetric) + num(d.traceChain)} 条、问题 ${num(d.performanceIssue) + num(d.fixSuggestion)} 条`
     )
     await loadRepos()

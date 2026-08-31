@@ -37,6 +37,10 @@
         <!-- PIT 突变测试（perf-datagen 质量门禁；1.15.3+ 支持 JDK 21） -->
         <pitest.version>1.17.4</pitest.version>
         <pitest-junit5.version>1.2.2</pitest-junit5.version>
+        <!-- 报告导出：openhtmltopdf（HTML+CSS 渲染 PDF，Word 走 HTML 兼容 .doc，零额外依赖） -->
+        <openhtmltopdf.version>1.0.10</openhtmltopdf.version>
+        <!-- PostgreSQL 驱动：配合 perf-datagen 的 PostgreSQLDialect（灌数目标库支持 PG） -->
+        <postgresql.version>42.7.3</postgresql.version>
     </properties>
 
     <dependencyManagement>
@@ -99,6 +103,23 @@
                 <groupId>io.jsonwebtoken</groupId>
                 <artifactId>jjwt-jackson</artifactId>
                 <version>${jjwt.version}</version>
+            </dependency>
+            <!-- 报告导出：openhtmltopdf（core + pdfbox 后端） -->
+            <dependency>
+                <groupId>com.openhtmltopdf</groupId>
+                <artifactId>openhtmltopdf-core</artifactId>
+                <version>${openhtmltopdf.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.openhtmltopdf</groupId>
+                <artifactId>openhtmltopdf-pdfbox</artifactId>
+                <version>${openhtmltopdf.version}</version>
+            </dependency>
+            <!-- PostgreSQL 驱动：PostgreSQLDialect 运行时连接 PG 目标库 -->
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

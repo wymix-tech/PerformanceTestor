@@ -38,11 +38,11 @@
 - **JMeter 真实适配**：JMX 模板生成（ThreadGroup/RampUp/ConstantThroughputTimer）→ ProcessBuilder 调 `jmeter -n -t plan.jmx -l result.jtl` → 解析 JTL CSV 回填分位统计；jmeterHome 可配，未安装降级提示
 - **定时压测/基线/告警**：新表 stress_schedule + StressScheduler（@Scheduled 30s 扫描）；同场景按 appVersion 自动 diff QPS/P95/错误率；NotifyService 支持 webhook/钉钉/飞书；压测请求注入 `X-Perf-Test: 1` 标记头，perf-demo 演示 header 检测影子表路由
 
-### M4 — 三阶段功能
+### M4 — 三阶段功能（已完成 2/3）
 
-- **AI 编排升级**：ReAct 显式循环（Thought/Action/Observation，工具结果截断防上下文膨胀）；压测执行/根因分析/修复建议三角色路由；`POST /api/ai/chat/stream` SseEmitter 流式（LlmClient stream 模式）；新表 ai_knowledge（FULLTEXT）+ 分析结论自动入库 + search_knowledge 工具；前端流式渲染
-- **修复效果自动验证**：问题创建时快照压测场景；`POST /api/source/issues/{id}/verify` 重放同场景压测 → 前后指标 diff → 达标自动关闭问题
-- **容量科学化**：二项式/指数拟合 + RT-并发二阶导拐点检测 + 分档采样方差置信区间；结果 JSON 增 model/r2/fittedCurve（向后兼容）
+- **AI 编排升级** ✅：ReAct 显式循环（Thought/Action/Observation，工具结果截断 2000 字符防上下文膨胀，10 轮上限收尾）；压测执行/根因分析/修复建议三角色路由（角色切换时 system prompt 原地替换保留历史）；`POST /api/ai/chat/stream` SseEmitter 流式（300s，事件 token/thought/tool/observation/done/error，工具轮次间推 thought 心跳防断连）；新表 ai_knowledge（FULLTEXT ngram 中文检索）+ 结论自动入库（正文 ≥40 字）+ search_knowledge 工具；前端 fetch+ReadableStream 逐 token 渲染
+- **修复效果自动验证** ✅：问题快照压测场景（`stress_task_id`，支持补绑）；`POST /api/source/issues/{id}/verify` 重放同场景压测 → `BaselineCompareService.diff` 前后指标 diff → P95 降幅 ≥30% 且无回归则自动 `resolved` 并写 `verify_json`（含四行对比明细）；前端"验证修复"按钮 + 前后指标卡 + 基线对比表格 + 无快照补绑入口
+- **容量科学化** ⏸️：二项式/指数拟合 + RT-并发二阶导拐点检测 + 分档采样方差置信区间；结果 JSON 增 model/r2/fittedCurve（向后兼容）
 
 ### M5 — 四阶段功能
 
@@ -85,14 +85,18 @@ flowchart LR
 ```
 pom.xml                                    # dependencyManagement 增 jjwt/openhtmltopdf
 sql/{init.sql,init_empty.sql}              # 新增 hotspot_method/stress_schedule/ai_knowledge/slow_command（双脚本同步）
+                                           # performance_issue 补 stress_task_id/verify_json/verify_time（add_column_if_missing 幂等）
 perf-server .../auth/                      # [NEW] JwtService/AuthController/JwtAuthInterceptor/WebAuthConfig
 perf-server .../stress/                    # StressStatistician 无锁化 / HttpStressEngine 加固 / JmeterStressEngine 实现
 perf-server .../stress/StressScheduler.java + BaselineCompareService.java   # [NEW]
 perf-server .../notify/NotifyService.java  # [NEW]
 perf-server .../collector/AgentReportService.java  # 扩展 hotspot/slowCommand
 perf-server .../capacity/CapacityAnalyzer.java     # 拟合+置信区间+拐点
-perf-server .../ai/                         # ReAct 循环 / LlmClient stream / SSE 控制器 / SearchKnowledgeTool
-perf-server .../source/SourceIssueService.java     # 场景快照+verify 闭环
+perf-server .../ai/                         # ReAct 循环 / LlmClient stream / SSE 控制器 / SearchKnowledgeTool / AiKnowledgeService
+                                            # [NEW] AiRole / ReactPhase / ReactStep / AiStreamEvent(Type) / StreamAccumulator / AiChatStreamController
+                                            # [NEW] entity/AiKnowledge + mapper/AiKnowledgeMapper(.xml)
+perf-server .../source/SourceIssueService.java     # 场景快照+补绑
+perf-server .../service/IssueVerifyService.java    # [NEW] 重放验证闭环（达标自动 resolved）
 perf-server .../report/ReportExportService.java    # [NEW] HTML→PDF/.doc
 perf-agent .../                             # AgentPremain 幂等 / TraceEnhancer Filter+中间件拦截 / TraceContext NOT_SAMPLED
                                             # JvmCollector GC 映射 / MetricsReporter flush / HotspotSampler [NEW]

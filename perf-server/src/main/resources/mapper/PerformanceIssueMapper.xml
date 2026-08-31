@@ -14,14 +14,17 @@
         <result column="line_end" property="lineEnd"/>
         <result column="root_cause" property="rootCause"/>
         <result column="status" property="status"/>
+        <result column="stress_task_id" property="stressTaskId"/>
+        <result column="verify_json" property="verifyJson"/>
+        <result column="verify_time" property="verifyTime"/>
         <result column="create_time" property="createTime"/>
     </resultMap>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO performance_issue (issue_type, app_name, title, evidence_json, source_repo_id,
-                                       source_file_id, line_start, line_end, root_cause, status)
+                                       source_file_id, line_start, line_end, root_cause, stress_task_id, status)
         VALUES (#{issueType}, #{appName}, #{title}, #{evidenceJson}, #{sourceRepoId},
-                #{sourceFileId}, #{lineStart}, #{lineEnd}, #{rootCause}, 'pending')
+                #{sourceFileId}, #{lineStart}, #{lineEnd}, #{rootCause}, #{stressTaskId}, 'pending')
     </insert>
 
     <update id="updateAnalyzed">
@@ -45,9 +48,23 @@
         UPDATE performance_issue SET status = #{status} WHERE id = #{id}
     </update>
 
+    <!-- 绑定压测场景快照（创建问题或补绑时） -->
+    <update id="updateStressTask">
+        UPDATE performance_issue SET stress_task_id = #{stressTaskId} WHERE id = #{id}
+    </update>
+
+    <!-- 写入重放验证结论；达标时同事务置为 resolved -->
+    <update id="updateVerify">
+        UPDATE performance_issue
+        SET verify_json = #{verifyJson},
+            verify_time = #{verifyTime},
+            status = #{status}
+        WHERE id = #{id}
+    </update>
+
     <sql id="BaseColumns">
         id, issue_type, app_name, title, evidence_json, source_repo_id, source_file_id,
-        line_start, line_end, root_cause, status, create_time
+        line_start, line_end, root_cause, status, stress_task_id, verify_json, verify_time, create_time
     </sql>
 
     <select id="findById" resultMap="BaseResultMap">

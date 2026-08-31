@@ -15,9 +15,11 @@ import java.util.List;
 import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
 import static net.bytebuddy.matcher.ElementMatchers.isAbstract;
 import static net.bytebuddy.matcher.ElementMatchers.isAnnotatedWith;
+import static net.bytebuddy.matcher.ElementMatchers.isBridge;
 import static net.bytebuddy.matcher.ElementMatchers.isInterface;
 import static net.bytebuddy.matcher.ElementMatchers.isStatic;
 import static net.bytebuddy.matcher.ElementMatchers.isSubTypeOf;
+import static net.bytebuddy.matcher.ElementMatchers.isSynthetic;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 import static net.bytebuddy.matcher.ElementMatchers.named;
 import static net.bytebuddy.matcher.ElementMatchers.not;
@@ -102,7 +104,98 @@ public class TraceEnhancer {
                                             .or(named("executeUpdate")).or(named("executeBatch"))
                                             .and(not(isStatic())))));
         }
+        // 3) 中间件拦截（Redis / ES / MQ）：默认关闭，需 middlewareEnabled=true 显式开启
+        if (config.middlewareEnabled) {
+            agentBuilder = agentBuilder
+                    .type(redisTypeMatcher())
+                    .transform(middlewareTransform(RedisInterceptor.class));
+            agentBuilder = agentBuilder
+                    .type(esTypeMatcher())
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(EsInterceptor.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on(named("performRequest").or(named("performRequestAsync"))
+                                            .and(not(isStatic())))));
+            agentBuilder = agentBuilder
+                    .type(mqTypeMatcher())
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(MqInterceptor.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on(mqMethodMatcher().and(not(isStatic())))));
+        }
         return agentBuilder;
+    }
+
+    /**
+     * Redis 类型匹配：Lettuce 同步命令接口 + Jedis 命令接口（按类型名匹配，
+     * 无需在 agent 侧引入任何 Redis 依赖，类不存在时匹配器自然返回 false）。
+     */
+    private static ElementMatcher.Junction<TypeDescription> redisTypeMatcher() {
+        return hasSuperType(named("io.lettuce.core.api.sync.RedisCommands"))
+                .or(hasSuperType(named("io.lettuce.core.api.sync.BaseRedisCommands")))
+                .or(hasSuperType(named("redis.clients.jedis.Jedis")))
+                .or(hasSuperType(named("redis.clients.jedis.commands.JedisCommands")))
+                .and(not(isInterface()))
+                .and(not(isAbstract()))
+                .and(not(nameStartsWith("com.perfagent.")))
+                .and(not(nameStartsWith("net.bytebuddy.")));
+    }
+
+    /**
+     * ES 类型匹配：RestClient 子类。RestHighLevelClient 的 search/index/bulk
+     * 最终都经由 RestClient#performRequest 发出，故只拦底层避免重复计数。
+     */
+    private static ElementMatcher.Junction<TypeDescription> esTypeMatcher() {
+        // hasSuperType 不含类型自身，RestClient 为具体类需显式 or 自身
+        return named("org.elasticsearch.client.RestClient")
+                .or(hasSuperType(named("org.elasticsearch.client.RestClient")))
+                .and(not(isInterface()))
+                .and(not(isAbstract()))
+                .and(not(nameStartsWith("com.perfagent.")))
+                .and(not(nameStartsWith("net.bytebuddy.")));
+    }
+
+    /** MQ 类型匹配：RabbitMQ Channel 实现类 */
+    private static ElementMatcher.Junction<TypeDescription> mqTypeMatcher() {
+        return hasSuperType(named("com.rabbitmq.client.Channel"))
+                .and(not(isInterface()))
+                .and(not(isAbstract()))
+                .and(not(nameStartsWith("com.perfagent.")))
+                .and(not(nameStartsWith("net.bytebuddy.")));
+    }
+
+    /** RabbitMQ 关注的命令方法（发布/消费/确认/声明/事务） */
+    private static ElementMatcher.Junction<MethodDescription> mqMethodMatcher() {
+        return named("basicPublish").or(named("basicGet")).or(named("basicConsume"))
+                .or(named("basicAck")).or(named("basicNack")).or(named("basicReject"))
+                .or(named("queueDeclare")).or(named("queueBind")).or(named("exchangeDeclare"))
+                .or(named("txCommit")).or(named("txRollback"));
+    }
+
+    /**
+     * 中间件方法匹配（Lettuce/Jedis 全命令方法）：排除静态、抽象、桥接合成、
+     * 生命周期与 Object 方法，避免噪音与重复计数。
+     */
+    private static ElementMatcher.Junction<MethodDescription> middlewareMethods() {
+        return not(isStatic())
+                .and(not(isAbstract()))
+                .and(not(isSynthetic()))
+                .and(not(isBridge()))
+                .and(not(named("close")))
+                .and(not(named("shutdown")))
+                .and(not(named("toString")))
+                .and(not(named("hashCode")))
+                .and(not(named("equals")))
+                .and(not(nameStartsWith("dispatch")))
+                .and(not(nameStartsWith("lambda$")));
+    }
+
+    /** 中间件 transform（复用统一方法过滤） */
+    private static AgentBuilder.Transformer middlewareTransform(Class<?> advice) {
+        return (builder, typeDescription, classLoader, module, protectionDomain) ->
+                builder.visit(Advice.to(advice)
+                        .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                        .on(middlewareMethods()));
     }
 
     /** 方法埋点 transform：POJO/数据类直接返回原 builder（不增强） */

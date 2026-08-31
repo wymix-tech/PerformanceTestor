@@ -21,7 +21,7 @@
           class="px-4 py-1.5 rounded-lg text-xs transition-all"
           :class="activeTab === tab.key ? 'bg-neon-green/15 text-neon-green border border-neon-green/30' : 'text-fg-sub border border-white/10 hover:text-fg-main'"
           @click="activeTab = tab.key"
-        >{{ tab.label }} <span v-if="tab.key === 'slow'" class="opacity-70">{{ slowSqls.length }}</span></button>
+        >{{ tab.label }} <span v-if="tab.key === 'slow'" class="opacity-70">{{ slowItems.length }}</span></button>
       </div>
     </div>
 
@@ -64,13 +64,22 @@
       </div>
     </div>
 
+    <!-- 慢命令合并视图：慢 SQL（数据库）+ 中间件慢命令（Redis/ES/MQ），统一按耗时倒序 -->
     <div v-else-if="activeTab === 'slow'">
       <div class="glass-card p-4">
-        <div class="flex items-center justify-between mb-3">
-          <div class="text-sm font-medium">慢 SQL 列表</div>
-          <div class="flex items-center gap-2">
-            <label class="text-xs text-fg-sub">最小耗时</label>
-            <select v-model="minCostMs" class="input-select w-28" @change="loadSlowSqls">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div class="text-sm font-medium">慢命令列表（合并）</div>
+          <div class="flex flex-wrap items-center gap-2">
+            <label class="text-xs text-fg-sub">类型</label>
+            <select v-model="slowType" class="input-select w-32" @change="loadSlowItems">
+              <option value="">全部</option>
+              <option value="sql">SQL</option>
+              <option value="redis">Redis</option>
+              <option value="es">ES</option>
+              <option value="mq">MQ</option>
+            </select>
+            <label class="text-xs text-fg-sub ml-2">最小耗时</label>
+            <select v-model="minCostMs" class="input-select w-28" @change="loadSlowItems">
               <option :value="0">全部</option>
               <option :value="100">100ms</option>
               <option :value="500">500ms</option>
@@ -78,21 +87,28 @@
             </select>
           </div>
         </div>
-        <div v-if="!slowSqls.length" class="text-xs text-fg-sub py-10 text-center">暂无慢 SQL</div>
+        <div class="text-[11px] text-fg-sub mb-3">
+          中间件慢命令（Redis / ES / MQ）需被测应用以 <span class="font-mono">middlewareEnabled=true</span> 启动 agent 才有数据
+        </div>
+        <div v-if="!slowItems.length" class="text-xs text-fg-sub py-10 text-center">暂无慢命令</div>
         <div v-else class="space-y-2">
-          <div v-for="s in slowSqls" :key="s.id" class="flex items-start gap-3 px-4 py-3 rounded-lg bg-white/5">
+          <div v-for="s in slowItems" :key="s.kind + '-' + s.id" class="flex items-start gap-3 px-4 py-3 rounded-lg bg-white/5">
             <div class="text-2xl font-bold shrink-0"
               :class="Number(s.costMs) > 1000 ? 'text-red-400' : 'text-amber-400'">{{ Number(s.costMs).toFixed(0) }}ms</div>
             <div class="min-w-0 flex-1">
-              <div class="text-xs text-fg-main font-mono break-all">{{ s.sqlText }}</div>
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-[10px] px-1.5 py-0.5 rounded font-mono" :class="typeBadgeClass(s.type)">{{ typeLabel(s.type) }}</span>
+              </div>
+              <div class="text-xs text-fg-main font-mono break-all">{{ s.text }}</div>
               <div v-if="formatChain(s.methodChain)" class="text-[11px] mt-1.5 truncate" :title="typeof s.methodChain === 'string' ? s.methodChain : JSON.stringify(s.methodChain)">
                 <span class="text-fg-sub">调用链：</span>
                 <span class="text-neon-blue font-mono">{{ formatChain(s.methodChain) }}</span>
               </div>
               <div class="text-[11px] text-fg-sub mt-1.5 flex flex-wrap gap-3">
-                <span class="px-2 py-0.5 rounded bg-white/5">{{ s.source }}</span>
+                <span v-if="s.source" class="px-2 py-0.5 rounded bg-white/5">{{ s.source }}</span>
                 <span v-if="s.appName">应用：{{ s.appName }}</span>
                 <span v-if="s.dbHost">DB：{{ s.dbHost }}</span>
+                <span v-if="s.traceId" class="font-mono" :title="s.traceId">链路：{{ s.traceId.slice(-8) }}</span>
                 <span v-if="s.executeTime">{{ fmtTime(s.executeTime) }}</span>
               </div>
             </div>
@@ -135,12 +151,12 @@ import { GitBranch } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import TraceTree from '../components/TraceTree.vue'
 import { fmtTime } from '../utils/format'
-import { traceApi, slowSqlApi, hotspotApi, sourceApi } from '../api'
+import { traceApi, slowSqlApi, slowCommandApi, hotspotApi, sourceApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 
 const tabs = [
   { key: 'trace', label: '调用链' },
-  { key: 'slow', label: '慢 SQL' },
+  { key: 'slow', label: '慢命令' },
   { key: 'hotspot', label: 'CPU 热点' }
 ]
 const activeTab = ref('trace')
@@ -152,6 +168,10 @@ const traces = ref<Array<Record<string, any>>>([])
 const detail = ref<Record<string, any> | null>(null)
 const treeNode = ref<Record<string, any> | null>(null)
 const slowSqls = ref<Array<Record<string, any>>>([])
+/** 中间件慢命令（Redis / ES / MQ） */
+const slowCommands = ref<Array<Record<string, any>>>([])
+/** 类型过滤：'' 全部 / sql / redis / es / mq */
+const slowType = ref('')
 const minCostMs = ref(0)
 const selectedId = ref<number>()
 /** CPU 热点方法排行（agent HotspotSampler 弱采样） */
@@ -315,16 +335,48 @@ async function selectTrace(t: Record<string, any>) {
   }
 }
 
-async function loadSlowSqls() {
+/** 慢命令合并加载：慢 SQL + 中间件慢命令并行拉取，类型过滤在前端合并后统一执行 */
+async function loadSlowItems() {
   const end = Date.now()
-  const r = await slowSqlApi.list({
-    app: query.value.app || undefined,
-    start: end - 86400000,
-    end,
-    minCostMs: minCostMs.value || undefined,
-    limit: 50
-  })
-  slowSqls.value = r.data
+  const window = { start: end - 86400000, end, minCostMs: minCostMs.value || undefined, limit: 50 }
+  const app = query.value.app || undefined
+  const [sql, cmd] = await Promise.all([
+    slowSqlApi.list({ ...window, app }),
+    // 选定 SQL 时无需拉中间件命令；选定具体中间件类型时交由后端过滤（减少传输）
+    slowType.value === 'sql'
+      ? Promise.resolve({ data: [] })
+      : slowCommandApi.list({ ...window, app, type: slowType.value || undefined })
+  ])
+  slowSqls.value = sql.data ?? []
+  slowCommands.value = cmd.data ?? []
+}
+
+/** 合并后的慢命令列表（慢 SQL 与中间件命令统一结构，按耗时倒序） */
+const slowItems = computed(() => {
+  const merged: Array<Record<string, any>> = []
+  for (const s of slowSqls.value) {
+    merged.push({ ...s, kind: 'sql', type: 'sql', text: s.sqlText })
+  }
+  for (const c of slowCommands.value) {
+    merged.push({ ...c, kind: 'cmd', type: c.type, text: c.command })
+  }
+  merged.sort((a, b) => Number(b.costMs ?? 0) - Number(a.costMs ?? 0))
+  return slowType.value ? merged.filter(i => i.type === slowType.value) : merged
+})
+
+/** 类型标签文案 */
+function typeLabel(type: string): string {
+  return { sql: 'SQL', redis: 'Redis', es: 'ES', mq: 'MQ' }[type] ?? type
+}
+
+/** 类型标签配色（不同中间件一眼可辨） */
+function typeBadgeClass(type: string): string {
+  return {
+    sql: 'bg-neon-blue/15 text-neon-blue',
+    redis: 'bg-red-400/15 text-red-400',
+    es: 'bg-amber-400/15 text-amber-400',
+    mq: 'bg-purple-400/15 text-purple-400'
+  }[type] ?? 'bg-white/5 text-fg-sub'
 }
 
 // 方法链格式化：methodChain 为 JSON 数组字符串（完整类名#方法），展示为 短类名#方法 → 短类名#方法
@@ -411,10 +463,11 @@ watch(activeTab, (tab) => {
 })
 watch(() => query.value.app, () => {
   if (activeTab.value === 'hotspot') loadHotspots()
+  if (activeTab.value === 'slow') loadSlowItems()
 })
 
 onMounted(() => {
   loadTraces()
-  loadSlowSqls()
+  loadSlowItems()
 })
 </script>

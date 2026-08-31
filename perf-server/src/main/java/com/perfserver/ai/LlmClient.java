@@ -16,6 +16,8 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Semaphore;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 /**
  * OpenAI 兼容大模型客户端：封装 chat/completions 调用。
@@ -42,6 +44,8 @@ public class LlmClient {
     private String model;
     @Value("${perf.ai.timeout-sec:60}")
     private int timeoutSec;
+    @Value("${perf.ai.stream-timeout-sec:300}")
+    private int streamTimeoutSec;
 
     public LlmClient(@Value("${perf.ai.max-concurrent-requests:4}") int maxConcurrentRequests) {
         this.httpClient = HttpClient.newBuilder()
@@ -80,6 +84,19 @@ public class LlmClient {
      * @return 模型回复（含最终 content 与/或 tool_calls）；失败或不可用时返回 null
      */
     public ChatResult chatWithTools(List<JsonNode> messages, ArrayNode tools) {
+        return chatWithTools(messages, tools, null);
+    }
+
+    /**
+     * Function Calling 对话补全（可选流式）。
+     *
+     * @param messages  完整消息数组（OpenAI 格式 ObjectNode 列表）
+     * @param tools     工具函数定义数组（OpenAI format）
+     * @param tokenSink 正文增量消费器；非 null 时启用 {@code stream=true} 逐 token 回调，
+     *                  null 时走一次性响应（兼容旧路径）
+     * @return 模型回复（含最终 content 与/或 tool_calls）；失败或不可用时返回 null
+     */
+    public ChatResult chatWithTools(List<JsonNode> messages, ArrayNode tools, Consumer<String> tokenSink) {
         if (!available()) {
             return null;
         }
@@ -93,26 +110,81 @@ public class LlmClient {
             body.set("tools", tools);
             body.put("tool_choice", "auto");
 
-            JsonNode root = postChat(body);
-            if (root == null) {
-                return null;
+            if (tokenSink == null) {
+                JsonNode root = postChat(body);
+                return root == null ? null : parseChatResult(root);
             }
-            JsonNode message = root.path("choices").path(0).path("message");
-            ChatResult result = new ChatResult();
-            result.setContent(message.path("content").asText(null));
-            JsonNode calls = message.path("tool_calls");
-            if (calls.isArray()) {
-                for (JsonNode call : calls) {
-                    ToolCall tc = new ToolCall();
-                    tc.setId(call.path("id").asText());
-                    tc.setName(call.path("function").path("name").asText());
-                    tc.setArguments(call.path("function").path("arguments").asText("{}"));
-                    result.getToolCalls().add(tc);
-                }
-            }
-            return result;
+            body.put("stream", true);
+            return postChatStream(body, tokenSink);
         } finally {
             limiter.release();
+        }
+    }
+
+    /** 解析一次性响应的 choices[0].message */
+    private ChatResult parseChatResult(JsonNode root) {
+        JsonNode message = root.path("choices").path(0).path("message");
+        ChatResult result = new ChatResult();
+        result.setContent(message.path("content").asText(null));
+        JsonNode calls = message.path("tool_calls");
+        if (calls.isArray()) {
+            for (JsonNode call : calls) {
+                ToolCall tc = new ToolCall();
+                tc.setId(call.path("id").asText());
+                tc.setName(call.path("function").path("name").asText());
+                tc.setArguments(call.path("function").path("arguments").asText("{}"));
+                result.getToolCalls().add(tc);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 流式对话：逐行读取 SSE，正文增量经 tokenSink 实时回调，工具调用增量累加后一次性返回。
+     *
+     * @return 合并后的完整回复；连接失败/非 200 返回 null（调用方降级规则模式）
+     */
+    private ChatResult postChatStream(ObjectNode body, Consumer<String> tokenSink) {
+        StreamAccumulator accumulator = new StreamAccumulator();
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl.replaceAll("/+$", "") + "/chat/completions"))
+                    .timeout(Duration.ofSeconds(Math.max(timeoutSec, streamTimeoutSec)))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("Accept", "text/event-stream")
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                    .build();
+
+            HttpResponse<Stream<String>> response =
+                    httpClient.send(request, HttpResponse.BodyHandlers.ofLines());
+            if (response.statusCode() != 200) {
+                log.warn("llm stream api error, status={}", response.statusCode());
+                return null;
+            }
+            try (Stream<String> lines = response.body()) {
+                for (String line : (Iterable<String>) lines::iterator) {
+                    if (line == null) {
+                        continue;
+                    }
+                    String trimmed = line.trim();
+                    // SSE 帧：忽略 event:/comment(:) 行，只处理 data: 行
+                    if (trimmed.isEmpty() || !trimmed.startsWith("data:")) {
+                        continue;
+                    }
+                    String data = trimmed.substring("data:".length()).trim();
+                    if ("[DONE]".equals(data)) {
+                        break;
+                    }
+                    for (String token : accumulator.consume(data, objectMapper)) {
+                        tokenSink.accept(token);
+                    }
+                }
+            }
+            return accumulator.toResult();
+        } catch (Exception e) {
+            log.warn("llm stream api call failed: {}", e.getMessage());
+            return null;
         }
     }
 

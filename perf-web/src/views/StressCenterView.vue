@@ -201,8 +201,8 @@
             </select>
           </div>
           <div>
-            <label class="text-xs text-fg-sub">JDBC URL（jdbc:mysql://）</label>
-            <input v-model="gen.dbUrl" class="input-text w-full" placeholder="jdbc:mysql://host:3306/db" />
+            <label class="text-xs text-fg-sub">JDBC URL（jdbc:mysql:// 或 jdbc:postgresql://）</label>
+            <input v-model="gen.dbUrl" class="input-text w-full" placeholder="jdbc:mysql://host:3306/db 或 jdbc:postgresql://host:5432/db" />
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div><label class="text-xs text-fg-sub">用户</label><input v-model="gen.dbUser" class="input-text w-full" /></div>

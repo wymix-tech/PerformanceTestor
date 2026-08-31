@@ -44,6 +44,13 @@
             <version>2.2.224</version>
             <scope>test</scope>
         </dependency>
+        <!-- PostgreSQL 驱动：仅 PostgreSQLDialectLiveTest（真实 PG 冒烟）使用；
+             生产驱动由宿主（perf-server）以 runtime 依赖提供，本模块不引入编译期驱动 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

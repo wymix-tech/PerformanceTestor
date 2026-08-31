@@ -13,11 +13,15 @@ export function taskStatusClass(s: string): string {
   return map[s] || FALLBACK
 }
 
-/** 性能问题状态（后端真实值：pending/analyzed/failed） */
+/** 性能问题状态（后端真实值：pending/analyzed/fixed/resolved） */
 export function issueStatusClass(s: string): string {
   const map: Record<string, string> = {
     pending: 'text-amber-400 bg-amber-400/10',
     analyzed: 'text-neon-green bg-neon-green/10',
+    // 已修复待验证
+    fixed: 'text-neon-blue bg-neon-blue/10',
+    // 重放验证达标、自动关闭
+    resolved: 'text-neon-green bg-neon-green/15',
     failed: 'text-red-400 bg-red-400/10'
   }
   return map[s] || FALLBACK

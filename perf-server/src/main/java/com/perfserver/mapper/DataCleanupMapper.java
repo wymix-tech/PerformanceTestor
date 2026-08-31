@@ -21,6 +21,9 @@ public interface DataCleanupMapper {
     /** 慢 SQL */
     int deleteSlowSqlByApp(@Param("appName") String appName);
 
+    /** 中间件慢命令（Redis / ES / MQ） */
+    int deleteSlowCommandByApp(@Param("appName") String appName);
+
     /** 压测任务 ID 列表（供级联删采样） */
     List<Long> findStressTaskIdsByApp(@Param("appName") String appName);
 
