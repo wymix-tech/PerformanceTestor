@@ -188,124 +188,10 @@
       </div>
     </div>
 
-    <!-- 数据准备 Tab -->
-    <div v-else-if="activeTab === 'datagen'" class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      <div class="glass-card p-5">
-        <div class="text-sm font-medium mb-4">自动灌数据</div>
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs text-fg-sub">连接配置（与「问题与优化」页共用，选中自动填充）</label>
-            <select v-model="gen.connId" class="input-select w-full" @change="applyConn">
-              <option :value="0">— 手动填写连接 —</option>
-              <option v-for="c in conns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.dbUrl }}）</option>
-            </select>
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">JDBC URL（jdbc:mysql:// 或 jdbc:postgresql://）</label>
-            <input v-model="gen.dbUrl" class="input-text w-full" placeholder="jdbc:mysql://host:3306/db 或 jdbc:postgresql://host:5432/db" />
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-fg-sub">用户</label><input v-model="gen.dbUser" class="input-text w-full" /></div>
-            <div><label class="text-xs text-fg-sub">密码</label><input v-model="gen.dbPassword" type="password" class="input-text w-full" /></div>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="text-xs text-fg-sub">目标表</label>
-              <select v-model="gen.tableName" class="input-select w-full" @change="loadColumns">
-                <option value="">— 先读取表清单 —</option>
-                <option v-for="t in tables" :key="t" :value="t">{{ t }}</option>
-              </select>
-              <button class="text-xs text-neon-blue hover:underline mt-1 cursor-pointer" @click="loadTables">读取表清单</button>
-            </div>
-            <div>
-              <label class="text-xs text-fg-sub">源码项目（魔法值/关联识别，可选）</label>
-              <select v-model="gen.repoId" class="input-select w-full">
-                <option :value="0">— 不使用源码分析 —</option>
-                <option v-for="r in repoStore.repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
-              </select>
-            </div>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-fg-sub">行数</label><input v-model.number="gen.rowCount" type="number" class="input-text w-full" min="1" max="1000000" /></div>
-            <div><label class="text-xs text-fg-sub">孤儿率 orphanRate（0~1，可选）</label><input v-model.number="gen.orphanRate" type="number" step="0.01" min="0" max="1" class="input-text w-full" /></div>
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">字段规则(JSON) — 支持 enum+weights / range+overThreshold / ref / refSkew</label>
-            <textarea v-model="gen.ruleJson" rows="3" class="input-text w-full font-mono text-xs"
-              placeholder='{"fields":{"user_id":{"type":"refSkew","table":"user","column":"id","hotPercent":20,"hotShare":80},"status":{"type":"enum","values":["PENDING","PAID"],"weights":[20,80]}}}'></textarea>
-            <div v-if="skewWarn" class="text-[11px] text-amber-400 mt-1">⚠ 检测到高热点倾斜（refSkew 热行承载过大）：建议降低批量或为子表分区，否则高并发下行锁冲突会抵消批量写入收益</div>
-          </div>
-          <div>
-            <div class="flex items-center justify-between">
-              <label class="text-xs text-fg-sub">联表表组(JSON，可选 — 填写后按表组拓扑排序灌数)</label>
-              <button class="text-xs text-neon-blue hover:underline cursor-pointer" @click="fillTableGroupExample">填入示例</button>
-            </div>
-            <textarea v-model="gen.tablesJson" rows="3" class="input-text w-full font-mono text-xs"
-              placeholder='[{"tableName":"user","rowCount":10000},{"tableName":"order","rowCount":100000,"fields":{"user_id":{"type":"ref","table":"user","column":"id"}}}]'></textarea>
-          </div>
-          <div v-if="columns.length" class="text-xs text-fg-sub space-y-0.5">
-            <div v-for="c in columns" :key="c.name">
-              {{ c.name }}（{{ c.type }}）
-              <span v-if="c.suggestedValues && c.suggestedValues.length" class="text-neon-green">建议值: {{ c.suggestedValues.join(' / ') }}</span>
-              <span v-else-if="c.suspectEnum" class="text-amber-400">疑似枚举列，建议人工配置规则</span>
-            </div>
-          </div>
-          <div v-if="suggestions.length" class="space-y-1.5">
-            <div class="text-xs text-fg-sub font-medium">语义建议（低置信关联需确认采纳）</div>
-            <div v-for="s in suggestions" :key="s.id" class="flex items-center justify-between px-3 py-2 rounded-lg bg-white/5">
-              <div class="text-[11px] text-fg-sub">
-                <template v-if="s.hintType === 'relation'">
-                  {{ s.tableName }}.{{ s.columnName }} → {{ s.parentTable }}.{{ s.parentColumn }}
-                  <span class="text-neon-blue ml-1">[{{ s.source }}] {{ (s.confidence * 100).toFixed(0) }}%</span>
-                </template>
-                <template v-else>
-                  {{ s.tableName }}.{{ s.columnName }} 候选值 {{ s.valuesJson }}
-                </template>
-              </div>
-              <div class="flex gap-2">
-                <button class="text-[11px] text-neon-green hover:underline cursor-pointer" @click="adoptHint(s.id, true)">采纳</button>
-                <button class="text-[11px] text-fg-sub hover:underline cursor-pointer" @click="adoptHint(s.id, false)">忽略</button>
-              </div>
-            </div>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <button class="btn-secondary w-full justify-center" :disabled="running" @click="startDataGen(true)">试运行（校验预检）</button>
-            <button class="btn-primary w-full justify-center" :disabled="running || !dryRunPassed" @click="startDataGen(false)">开始灌数据</button>
-          </div>
-          <div v-if="!dryRunPassed" class="text-[11px] text-fg-sub">建议先执行试运行：校验表存在/规则解析/关联识别/环检测与外键池预检，通过后开启正式执行</div>
-        </div>
-      </div>
-      <div class="glass-card p-5">
-        <div class="text-sm font-medium mb-3">灌数据任务</div>
-        <div v-if="!genTasks.length" class="text-xs text-fg-sub py-8 text-center">暂无任务</div>
-        <div v-else class="space-y-2">
-          <div v-for="t in genTasks" :key="t.id" class="px-4 py-3 rounded-lg bg-white/5">
-            <div class="flex items-center justify-between">
-              <div class="text-sm text-fg-main">{{ t.taskName }}</div>
-              <div class="flex items-center gap-2">
-                <span v-if="t.tablesJson" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue">联表</span>
-                <span class="text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t.status)">{{ t.status }}</span>
-              </div>
-            </div>
-            <div class="text-[11px] text-fg-sub mt-1">
-              {{ t.tableName }} · {{ t.inserted }}/{{ (t.totalRows || t.rowCount) }} 行 · {{ t.costMs }}ms
-            </div>
-            <div class="h-1.5 rounded bg-white/5 mt-2 overflow-hidden">
-              <div class="h-full bg-neon-green rounded transition-all" :style="{ width: (t.inserted / Math.max(t.totalRows || t.rowCount, 1)) * 100 + '%' }"></div>
-            </div>
-            <div v-if="t.detailJson" class="text-[11px] mt-1.5 space-y-0.5">
-              <div v-if="parseDetail(t.detailJson).dryRunReport" class="text-neon-green">✓ 试运行通过 · 预计 {{ parseDetail(t.detailJson).dryRunReport.totalRows }} 行 · 单表事务估算 {{ parseDetail(t.detailJson).dryRunReport.estimatedMaxTxnMs }}ms</div>
-              <div v-for="(w, wi) in parseDetail(t.detailJson).warnings || []" :key="wi" class="text-amber-400">⚠ {{ w }}</div>
-              <div v-if="parseDetail(t.detailJson).selfCheck" class="text-fg-sub">
-                自检：非空率 {{ ((parseDetail(t.detailJson).selfCheck.nonEmptyRate || 0) * 100).toFixed(0) }}%
-                <span v-if="parseDetail(t.detailJson).selfCheck.warning" class="text-amber-400">（{{ parseDetail(t.detailJson).selfCheck.warning }}）</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+    <!-- 数据准备 Tab：与快速开始向导「灌注数据」共用 DataGenForm，能力完全一致 -->
+    <div v-else-if="activeTab === 'datagen'">
+      <DataGenForm :poll="true" />
     </div>
-
     <!-- 定时压测 Tab：调度管理 + 版本基线对比（回归门禁） -->
     <div v-else-if="activeTab === 'schedule'" class="grid grid-cols-1 xl:grid-cols-3 gap-4">
       <div class="glass-card p-5">
@@ -406,6 +292,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Gauge } from 'lucide-vue-next'
 import StressForm from '../components/stress/StressForm.vue'
 import StressReport from '../components/stress/StressReport.vue'
+import DataGenForm from '../components/datagen/DataGenForm.vue'
 import { taskStatusClass as statusClass, fmtTime } from '../utils/format'
 import { stressApi, dataGenApi, capacityApi, sourceApi, appApi, dbConnApi, scheduleApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'

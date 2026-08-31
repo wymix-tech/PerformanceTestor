@@ -106,41 +106,17 @@
       </div>
     </div>
 
-    <!-- Step 3 数据准备 -->
-    <div v-else-if="step === 2" class="glass-card p-5">
-      <div class="text-sm font-medium mb-1">灌注测试数据 <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
-      <div v-if="autoDbUrl" class="mb-3 rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-[11px] text-neon-green">
-        ✓ 已从被测应用 agent 上报探测到数据库：{{ autoDbUrl }}{{ connId ? '（已自动匹配连接配置）' : '（无匹配的连接配置，请选择或手填）' }}
-      </div>
-      <div class="text-[11px] text-fg-sub mb-4">选择数据库连接，试运行通过后正式灌数。需要更复杂的联表/规则配置？<router-link class="text-neon-blue hover:underline" to="/stress?tab=datagen">打开完整数据准备</router-link></div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs text-fg-sub">数据库连接</label>
-            <select v-model="connId" class="input-select w-full">
-              <option :value="0">— 选择连接配置 —</option>
-              <option v-for="c in conns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.dbUrl }}）</option>
-            </select>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-fg-sub">用户表行数</label><input v-model.number="genUsers" type="number" class="input-text w-full" /></div>
-            <div><label class="text-xs text-fg-sub">订单表行数</label><input v-model.number="genOrders" type="number" class="input-text w-full" /></div>
-          </div>
-          <div class="flex gap-2">
-            <button class="btn-secondary flex-1 justify-center" :disabled="!connId || busy" @click="runGen(true)">试运行</button>
-            <button class="btn-primary flex-1 justify-center" :disabled="!connId || busy || !genDryPassed" @click="runGen(false)">正式灌数</button>
-          </div>
-        </div>
-        <div class="rounded-xl bg-white/5 p-4 text-xs space-y-1.5">
-          <div class="text-fg-sub font-medium mb-1">表组（demo 联表模板）</div>
-          <div class="font-mono text-[11px] text-fg-sub leading-relaxed">perf_user（{{ genUsers }} 行）<br />perf_order（{{ genOrders }} 行，user_id → perf_user.id）</div>
-          <div v-if="genTask" class="pt-2 border-t border-white/10">
-            <span :class="taskStatusClass(genTask.status)">{{ genTask.status }}</span>
-            <span class="text-fg-sub ml-2">#{{ genTask.id }} {{ genTask.inserted }}/{{ genTask.totalRows || genTask.rowCount }} 行</span>
-          </div>
-          <div v-if="genDryPassed && !genTask" class="text-neon-green">✓ 试运行通过，可正式灌数</div>
-        </div>
-      </div>
+    <!-- Step 3 数据准备：与压测中心「数据准备」共用 DataGenForm，能力完全一致；
+         仅把上游步骤选择的项目、以及部署后 agent 上报探测到的数据库连接自动带入 -->
+    <div v-else-if="step === 2">
+      <!-- 探测结果提示收敛为一行：组件内已有「✓ 项目与数据库连接已自动带入」标记，此处不再重复整块提示 -->
+      <DataGenForm
+        mode="compact"
+        :initial-repo-id="repoId"
+        :initial-conn-id="autoConnId"
+        :initial-db-url="autoDbUrl"
+        @created="onGenCreated"
+      />
     </div>
 
     <!-- Step 2 部署（可选：自动 / 手动） -->
@@ -347,6 +323,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
 import StressForm from '../components/stress/StressForm.vue'
+import DataGenForm from '../components/datagen/DataGenForm.vue'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi, deployApi, slowSqlApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
@@ -368,10 +345,7 @@ const repos = computed(() => repoStore.repos)
 const repoId = ref<number>(0)
 const conns = ref<Array<Record<string, any>>>([])
 const connId = ref<number>(0)
-const genUsers = ref(1000)
-const genOrders = ref(2000)
-const genTask = ref<any>(null)
-const genDryPassed = ref(false)
+
 // 部署（可选步骤）：跳过或执行后进入压测
 const deployConnId = ref<number>(0)
 const deployModule = ref('')
@@ -386,6 +360,25 @@ const deployMode = ref<'auto' | 'manual'>('auto')
 /** 部署后从 agent 上报探测到的被测应用数据库连接（自动预填灌数步骤） */
 const autoDbUrl = ref('')
 
+/** agent 上报探测到的数据库所匹配的平台连接配置 ID（0 = 无匹配，由组件退回手填 URL） */
+const autoConnId = computed(() => {
+  if (!autoDbUrl.value) return 0
+  const hit = conns.value.find((c) => normalizeUrl(c.dbUrl) === normalizeUrl(autoDbUrl.value))
+  return hit ? hit.id : 0
+})
+
+/** 归一化 JDBC URL 用于比对（忽略用户名、参数顺序与末尾斜杠差异） */
+function normalizeUrl(url: string): string {
+  return (url || '').trim().replace(/\/+$/, '').toLowerCase()
+}
+
+/** 灌数任务创建成功：标记本步骤完成，并在正式灌数后自动进入压测步骤 */
+function onGenCreated(payload: { task: any; dryRun: boolean }) {
+  if (!payload?.dryRun) {
+    sessionDone.value[2] = true // 本轮正式灌数已发起
+    setTimeout(advance, 1200)
+  }
+}
 /** 手动部署：SCP 上传 agent 命令 */
 const manualScpCmd = computed(() => {
   const c = deployConns.value.find((x) => x.id === deployConnId.value)
@@ -726,43 +719,8 @@ async function loadEndpoints() {
   } catch { /* 扫描失败不阻断 */ }
 }
 
-async function runGen(dryRun: boolean) {
-  busy.value = true
-  try {
-    const r = await dataGenApi.create({
-      taskName: `向导-${dryRun ? '试运行' : '灌数'}-${repoName.value}`,
-      connId: connId.value || undefined,
-      dryRun,
-      tables: [
-        { tableName: 'perf_user', rowCount: genUsers.value },
-        { tableName: 'perf_order', rowCount: genOrders.value,
-          // API 契约：fields 为字符串型规则 JSON（TableSpecDto.fields: String）
-          fields: JSON.stringify({ user_id: { type: 'ref', table: 'perf_user', column: 'id' } }) }
-      ]
-    })
-    genTask.value = r.data
-    if (dryRun) {
-      // 轮询一次结果后放行正式灌数
-      setTimeout(checkGen, 2500)
-    } else {
-      sessionDone.value[2] = true // 本轮正式灌数已发起
-      // 自动进入压测步骤（任务异步执行，进度在数据准备 Tab 可查）
-      setTimeout(advance, 1200)
-    }
-  } finally {
-    busy.value = false
-  }
-}
-
-async function checkGen() {
-  if (!genTask.value) return
-  const r = await dataGenApi.list(5)
-  const t = (r.data || []).find((x: any) => x.id === genTask.value.id)
-  if (t) genTask.value = t
-  if (genTask.value.status === 'finished' && genTask.value.detailJson?.includes('"passed":true')) {
-    genDryPassed.value = true
-  }
-}
+// 灌数逻辑已全部交由 DataGenForm 公共组件（与压测中心「数据准备」一致），
+// 向导仅负责把项目与探测到的数据库连接预填进去，并通过 @created 感知进度。
 
 /** 发起压测：StressForm 提交标准请求体，向导补充任务名与应用归属 */
 async function startStress(payload: Record<string, unknown>) {
