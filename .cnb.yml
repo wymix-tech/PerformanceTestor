@@ -7,29 +7,39 @@
 #   - 依赖真实数据库的 *LiveTest 已用 Assumptions.assumeTrue 自跳过，
 #     无需额外排除规则即可无库运行
 #   - 两个 Job 并行执行，任一失败则 PR 门禁不通过
+#
+# 修复要点（上一轮踩坑）：父层 docker.volumes 的 m2 卷不会自动下传到用
+# image 覆盖了镜像的子 Job，导致子 Job 内 Maven 找不到 /root/.m2 目录。
+# 现在的做法：所有子 Job 自带 image，依赖仓库缓存直接声明在各自 image 上。
 # =====================================================================
 main:
   pull_request:
     - name: pr-gate
-      docker:
-        image: cnbcool/default-build-env
-        # Maven 本地仓库缓存：跨构建复用依赖，避免每次全量下载
-        volumes:
-          - m2:/root/.m2:rw
-      env:
-        MAVEN_OPTS: -Dmaven.repo.local=/root/.m2/repository
       stages:
         - name: quality-gate
           jobs:
             backend:
               name: 后端单元测试
               image: maven:3.9-eclipse-temurin-21
+              # Maven 依赖缓存：跨构建复用，避免每次全量下载（cow 写时复制，支持并行 Job）
+              docker:
+                volumes:
+                  - cache:/root/.m2:rw
+              env:
+                # 把 .m2 仓库固定到挂载点，触发缓存命中
+                MAVEN_OPTS: -Dmaven.repo.local=/root/.m2/repository
               script: |
                 set -e
                 mvn -B -ntp test
             frontend:
               name: 前端类型检查与构建
               image: node:20
+              docker:
+                volumes:
+                  - cache:/root/.npm:rw
+              env:
+                # npm 缓存命中关键：让 ci 与 build 走同一份全局缓存
+                npm_config_cache: /root/.npm
               script: |
                 set -e
                 cd perf-web
