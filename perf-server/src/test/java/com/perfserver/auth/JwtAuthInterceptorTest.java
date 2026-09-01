@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -65,6 +66,42 @@ class JwtAuthInterceptorTest {
     void passesThroughWhenAuthDisabled() throws Exception {
         properties.setEnabled(false);
         assertTrue(interceptor.preHandle(new MockHttpServletRequest(), response(), new Object()));
+    }
+
+    @Test
+    void allowsStaticApiTokenAndMarksCiCaller() throws Exception {
+        properties.setApiToken("ci-token-xyz");
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-Perf-Api-Token", "ci-token-xyz");
+        assertTrue(interceptor.preHandle(request, response(), new Object()));
+        assertEquals(Boolean.TRUE, request.getAttribute(JwtAuthInterceptor.CI_ATTR),
+                "命中 API Token 应标记调用方为 CI");
+    }
+
+    @Test
+    void rejectsWrongApiToken() throws Exception {
+        properties.setApiToken("ci-token-xyz");
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-Perf-Api-Token", "wrong");
+        MockHttpServletResponse response = response();
+        assertFalse(interceptor.preHandle(request, response, new Object()));
+        assertEquals(HttpServletResponse.SC_UNAUTHORIZED, response.getStatus());
+    }
+
+    @Test
+    void apiTokenIsIgnoredWhenNotConfigured() throws Exception {
+        // 未配置 API Token：不得因请求头带值而放行
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-Perf-Api-Token", "anything");
+        assertFalse(interceptor.preHandle(request, response(), new Object()));
+    }
+
+    @Test
+    void jwtPathDoesNotMarkCiCaller() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("Authorization", "Bearer " + jwtService.issue("admin"));
+        assertTrue(interceptor.preHandle(request, response(), new Object()));
+        assertNull(request.getAttribute(JwtAuthInterceptor.CI_ATTR), "JWT 登录不应被标记为 CI 调用");
     }
 
     private static MockHttpServletResponse response() {

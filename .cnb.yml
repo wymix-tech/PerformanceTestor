@@ -1,0 +1,55 @@
+# =====================================================================
+# PerformanceTestor PR 门禁流水线
+# 目标：防回归——后端全模块单元测试 + 前端类型检查与构建
+#
+# 说明：
+#   - 后端为 Maven 多模块（perf-server / perf-agent / perf-datagen / perf-demo）
+#   - 依赖真实数据库的 *LiveTest 已用 Assumptions.assumeTrue 自跳过，
+#     无需额外排除规则即可无库运行
+#   - 两个 Job 并行执行，任一失败则 PR 门禁不通过
+#
+# 修复要点（上一轮踩坑）：父层 docker.volumes 的 m2 卷不会自动下传到用
+# image 覆盖了镜像的子 Job，导致子 Job 内 Maven 找不到 /root/.m2 目录。
+# 现在的做法：所有子 Job 自带 image，依赖仓库缓存直接声明在各自 image 上。
+# =====================================================================
+main:
+  pull_request:
+    - name: pr-gate
+      stages:
+        - name: quality-gate
+          jobs:
+            backend:
+              name: 后端单元测试
+              # 与项目 maven.compiler.release=17 及本地开发环境对齐。
+              # 高版本 JDK 编低版本目标虽可工作（--release 17），但未来版本可能移除
+              # 对旧 release 的支持，且易造成「本地过了 CI 挂」的版本漂移。
+              image: maven:3.9-eclipse-temurin-17
+              # Maven 依赖缓存：跨构建复用，避免每次全量下载（cow 写时复制，支持并行 Job）
+              docker:
+                volumes:
+                  - cache:/root/.m2:rw
+              env:
+                # 把 .m2 仓库固定到挂载点，触发缓存命中
+                MAVEN_OPTS: -Dmaven.repo.local=/root/.m2/repository
+              script: |
+                set -e
+                mvn -B -ntp test
+            frontend:
+              name: 前端类型检查与构建
+              # 必须 >= 22：StrykerJS 10 要求 node>=22（node:20 会直接启动失败）。
+              # 前端产物是静态资源、运行期在浏览器，构建期 Node 版本不影响部署环境。
+              image: node:22
+              docker:
+                volumes:
+                  - cache:/root/.npm:rw
+              env:
+                # npm 缓存命中关键：让 ci 与 build 走同一份全局缓存
+                npm_config_cache: /root/.npm
+              script: |
+                set -e
+                cd perf-web
+                npm ci
+                npm run build
+                # 突变测试门禁（仅对已有单测覆盖的文件，约 12 秒）。
+                # 全量突变（npm run test:mutation:all）需约 40 分钟，不接入 CI。
+                npm run test:mutation

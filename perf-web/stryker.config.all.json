@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "全量突变测试配置：突变所有源文件，仅出报告用于摸底覆盖盲区，不设 break 阈值。运行：npm run test:mutation:all。警告：实测需约 40 分钟（4844 个突变，多数因零覆盖而 survived），仅建议阶段性手动跑一次摸底，不要接入 CI，也不要作为日常命令。",
+  "extends": "./stryker.config.json",
+  "mutate": [
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "!src/**/__tests__/**",
+    "!src/**/*.spec.ts",
+    "!src/main.ts",
+    "!src/router/index.ts",
+    "!src/**/*.d.ts"
+  ],
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": null
+  }
+}

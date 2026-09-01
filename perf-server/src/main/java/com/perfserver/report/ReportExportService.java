@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
+import java.util.regex.Pattern;
 
 /**
  * 压测报告导出服务：将压测结果渲染为自包含 HTML，再按需转为 PDF 或 Word。
@@ -140,9 +141,13 @@ public class ReportExportService {
      *
      * <p>同一任务的报告内容不变时直接复用上次产物：PDF 渲染是 CPU 密集操作，
      * 前端「预览/导出/重试」很容易在短时间内对同一任务发起多次请求。
+     *
+     * <p>缓存键剔除「生成时间」这一易变时间戳：报告正文顶部会渲染当前时间，
+     * 若纳入键则跨秒后必然缓存未命中，缓存形同虚设（复用产物时保留首次渲染的时间戳，
+     * 与「内容未变则复用」的语义一致）。
      */
     private ExportResult buildPdfCached(String html, String filename) {
-        String key = sha256Hex(html);
+        String key = sha256Hex(withoutGeneratedAt(html));
         byte[] cached = pdfCache.get(key);
         if (cached != null) {
             log.debug("report pdf cache hit, key={}, {} bytes", key, cached.length);
@@ -167,6 +172,20 @@ public class ReportExportService {
             // SHA-256 是 JCA 规范必备算法，理论不可达；退回 hashCode 仅损失防碰撞性，不影响可用性
             return "h-" + Integer.toHexString(html.hashCode());
         }
+    }
+
+    /** 缓存键用的易变时间戳：报告正文顶部的「生成时间：...」 */
+    private static final Pattern GENERATED_AT =
+            Pattern.compile("生成时间：\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}");
+
+    /**
+     * 剔除 HTML 中的「生成时间」时间戳，用于构造稳定的缓存键。
+     *
+     * @param html 渲染后的报告 HTML
+     * @return 时间戳被占位符替换的 HTML（仅用于摘要计算，不用于渲染）
+     */
+    private static String withoutGeneratedAt(String html) {
+        return GENERATED_AT.matcher(html).replaceAll("生成时间：*");
     }
 
     /** HTML → PDF（openhtmltopdf + PDFBox，A4），并发受 {@link #pdfPermit} 限制 */

@@ -3,6 +3,7 @@ package com.perfserver.controller;
 import com.perfserver.common.ApiResponse;
 import com.perfserver.entity.StressSample;
 import com.perfserver.entity.StressTask;
+import com.perfserver.service.StressGateService;
 import com.perfserver.service.StressTaskService;
 import com.perfserver.stress.StressTaskRequest;
 import com.perfserver.stress.StressTaskResult;
@@ -26,15 +27,51 @@ import java.util.Map;
 public class StressController {
 
     private final StressTaskService stressTaskService;
+    private final StressGateService stressGateService;
 
-    public StressController(StressTaskService stressTaskService) {
+    public StressController(StressTaskService stressTaskService, StressGateService stressGateService) {
         this.stressTaskService = stressTaskService;
+        this.stressGateService = stressGateService;
     }
 
     /** 创建并启动压测任务（异步执行，立即返回任务） */
     @PostMapping("/tasks")
     public ApiResponse<StressTask> start(@RequestBody StressTaskRequest request) {
         return ApiResponse.ok(stressTaskService.createAndRun(request));
+    }
+
+    /**
+     * 性能回归门禁（CI 用）：创建压测 → 等待完成 → 与基线比对 → 返回可判定结论。
+     *
+     * <p>同步阻塞到压测完成（受 timeoutSec 限制），流水线一次调用即可拿到
+     * {@code data.passed} 作为构建判定依据（失败时 HTTP 仍为 200，
+     * 便于脚本用 JSON 解析出明细摘要，退出码由脚本按 passed 决定）。
+     */
+    @PostMapping("/gate")
+    public ApiResponse<StressGateService.GateVerdict> gate(
+            @RequestBody StressTaskRequest request,
+            @RequestParam(required = false) Long baselineTaskId,
+            @RequestParam(required = false) Long timeoutSec,
+            @RequestParam(defaultValue = "false") boolean failOnNoBaseline,
+            @RequestParam(required = false) String webhook) {
+        StressGateService.GateVerdict verdict = stressGateService.runGate(
+                request, baselineTaskId == null ? 0 : baselineTaskId,
+                timeoutSec == null ? 0 : timeoutSec, failOnNoBaseline, webhook);
+        return ApiResponse.ok(verdict);
+    }
+
+    /**
+     * 历史趋势：同应用 + 同 URL 的最近完成任务的核心指标序列（按完成时间正序）。
+     *
+     * @param appName 应用名（必填，用于隔离不同应用）
+     * @param url     目标 URL（必填，场景模式用「场景压测（N 步）」摘要串）
+     * @param limit   返回条数（默认 20，上限 100）
+     */
+    @GetMapping("/trend")
+    public ApiResponse<List<Map<String, Object>>> trend(@RequestParam String appName,
+                                                        @RequestParam String url,
+                                                        @RequestParam(defaultValue = "20") int limit) {
+        return ApiResponse.ok(stressTaskService.trend(appName, url, Math.min(limit, 100)));
     }
 
     /** 任务列表 */

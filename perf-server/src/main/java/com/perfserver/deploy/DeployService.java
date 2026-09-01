@@ -6,6 +6,7 @@ import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.Session;
 import com.perfserver.entity.DeployConn;
 import com.perfserver.mapper.DeployConnMapper;
+import com.perfserver.security.CryptoService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -44,16 +45,19 @@ public class DeployService {
     private static final String SAFE_NAME = "[A-Za-z0-9._\\-]+";
 
     private final DeployConnMapper deployConnMapper;
+    private final CryptoService cryptoService;
 
-    public DeployService(DeployConnMapper deployConnMapper) {
+    public DeployService(DeployConnMapper deployConnMapper, CryptoService cryptoService) {
         this.deployConnMapper = deployConnMapper;
+        this.cryptoService = cryptoService;
     }
 
     public List<DeployConn> listConns(int limit) {
+        // SQL 只查非敏感列 + has_credential 计算列，凭据内容不出库
         return deployConnMapper.list(limit);
     }
 
-    /** 新增 SSH 连接（密码/私钥二选一必填校验） */
+    /** 新增 SSH 连接（密码/私钥二选一必填校验；凭据加密落库） */
     public void addConn(DeployConn conn) {
         boolean hasPassword = conn.getPassword() != null && !conn.getPassword().isBlank();
         boolean hasKey = conn.getPrivateKey() != null && !conn.getPrivateKey().isBlank();
@@ -61,6 +65,9 @@ public class DeployService {
             throw new IllegalArgumentException("password 与 privateKey 至少配置一项");
         }
         conn.setAuthType(hasKey ? DeployConn.AUTH_PRIVATE_KEY : DeployConn.AUTH_PASSWORD);
+        // 加密落库：存量明文在下次保存时自动转为密文
+        conn.setPassword(cryptoService.encrypt(conn.getPassword()));
+        conn.setPrivateKey(cryptoService.encrypt(conn.getPrivateKey()));
         deployConnMapper.insert(conn);
     }
 
@@ -235,13 +242,15 @@ public class DeployService {
 
     private Session connect(DeployConn conn) throws Exception {
         JSch jsch = new JSch();
-        if (DeployConn.AUTH_PRIVATE_KEY.equals(conn.getAuthType()) && conn.getPrivateKey() != null) {
-            jsch.addIdentity("deploy-key-" + conn.getId(), conn.getPrivateKey().getBytes(), null, null);
+        // 取用点解密：明文仅存在于本方法栈内，不写入日志、不进入 AI 上下文
+        String privateKey = cryptoService.decrypt(conn.getPrivateKey());
+        if (DeployConn.AUTH_PRIVATE_KEY.equals(conn.getAuthType()) && privateKey != null) {
+            jsch.addIdentity("deploy-key-" + conn.getId(), privateKey.getBytes(), null, null);
         }
         Session session = jsch.getSession(conn.getUsername(), conn.getHost(),
                 conn.getPort() == null ? 22 : conn.getPort());
         if (DeployConn.AUTH_PASSWORD.equals(conn.getAuthType())) {
-            session.setPassword(conn.getPassword());
+            session.setPassword(cryptoService.decrypt(conn.getPassword()));
         }
         Properties cfg = new Properties();
         cfg.put("StrictHostKeyChecking", "no");

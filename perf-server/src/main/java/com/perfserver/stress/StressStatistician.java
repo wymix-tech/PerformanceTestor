@@ -1,5 +1,9 @@
 package com.perfserver.stress;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -37,6 +41,14 @@ public class StressStatistician {
     private final LongAdder errorCount = new LongAdder();
     private final LongAdder totalCostMs = new LongAdder();
 
+    /**
+     * 分步骤累计统计（多接口场景编排用）：key = 步骤名。
+     *
+     * <p>用独立的轻量计数器而非完整直方图：分步骤只需请求数/错误数/耗时累计
+     * （分位数由引擎侧在场景模式下按需单独采集），避免 30000 桶 × 步数的内存放大。
+     */
+    private final Map<String, StepCounter> stepCounters = new ConcurrentHashMap<>();
+
     /** 窗口基线（上次 collectWindow 时的合并累计快照） */
     private final long[] lastHistogram = new long[BUCKET_COUNT];
     private long lastTotal;
@@ -57,6 +69,127 @@ public class StressStatistician {
         totalCostMs.add(costMs);
         if (error) {
             errorCount.increment();
+        }
+    }
+
+    /**
+     * 记录一次请求耗时并归入指定步骤（多接口场景编排用）。
+     *
+     * <p>汇总侧与 {@link #record} 完全一致（同一份直方图），
+     * 额外按步骤名累加一份轻量计数，读取时合成分步骤明细。
+     *
+     * @param stepName 步骤名（null/空则只计汇总）
+     */
+    public void record(long costMs, boolean error, String stepName) {
+        record(costMs, error);
+        if (stepName != null && !stepName.isEmpty()) {
+            stepCounters.computeIfAbsent(stepName, k -> new StepCounter()).record(costMs, error);
+        }
+    }
+
+    /**
+     * 分步骤统计快照（按进入顺序稳定输出；未记录任何步骤时返回空列表）。
+     *
+     * @param formalElapsedSec 正式期时长（秒），用于计算各步骤 QPS
+     */
+    public List<StepStats> stepStats(double formalElapsedSec) {
+        if (stepCounters.isEmpty()) {
+            return List.of();
+        }
+        double elapsed = Math.max(1.0, formalElapsedSec);
+        List<StepStats> list = new ArrayList<>(stepCounters.size());
+        stepCounters.forEach((name, c) -> {
+            long total = c.total.sum();
+            long errors = c.errors.sum();
+            StepStats s = new StepStats();
+            s.stepName = name;
+            s.totalRequests = total;
+            s.errorCount = errors;
+            s.errorRate = total == 0 ? 0 : round2(errors * 100.0 / total);
+            s.qps = round2(total / elapsed);
+            s.avgMs = total == 0 ? 0 : round2((double) c.costMs.sum() / total);
+            s.maxMs = c.max.get();
+            list.add(s);
+        });
+        list.sort((a, b) -> a.stepName.compareTo(b.stepName));
+        return list;
+    }
+
+    /** 是否记录过任何分步骤数据 */
+    public boolean hasStepStats() {
+        return !stepCounters.isEmpty();
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100.0) / 100.0;
+    }
+
+    /** 单步骤轻量计数器（LongAdder 无锁累加 + max 用 CAS 更新） */
+    private static final class StepCounter {
+        private final LongAdder total = new LongAdder();
+        private final LongAdder errors = new LongAdder();
+        private final LongAdder costMs = new LongAdder();
+        private final java.util.concurrent.atomic.AtomicLong max = new java.util.concurrent.atomic.AtomicLong();
+
+        void record(long cost, boolean error) {
+            total.increment();
+            costMs.add(cost);
+            if (error) {
+                errors.increment();
+            }
+            max.accumulateAndGet(cost, Math::max);
+        }
+    }
+
+    /** 分步骤统计结果 */
+    public static class StepStats {
+        private String stepName;
+        private long totalRequests;
+        private long errorCount;
+        private double errorRate;
+        private double qps;
+        private double avgMs;
+        private double maxMs;
+
+        public String getStepName() {
+            return stepName;
+        }
+
+        public long getTotalRequests() {
+            return totalRequests;
+        }
+
+        public long getErrorCount() {
+            return errorCount;
+        }
+
+        public double getErrorRate() {
+            return errorRate;
+        }
+
+        public double getQps() {
+            return qps;
+        }
+
+        public double getAvgMs() {
+            return avgMs;
+        }
+
+        public double getMaxMs() {
+            return maxMs;
+        }
+
+        /** 由聚合结果构造（分档合并场景） */
+        static StepStats of(String stepName, long total, long errors, long totalCostMs, long maxMs) {
+            StepStats s = new StepStats();
+            s.stepName = stepName;
+            s.totalRequests = total;
+            s.errorCount = errors;
+            s.errorRate = total == 0 ? 0 : round2(errors * 100.0 / total);
+            s.qps = 0; // 分档合并场景由调用方按总时长换算
+            s.avgMs = total == 0 ? 0 : round2((double) totalCostMs / total);
+            s.maxMs = maxMs;
+            return s;
         }
     }
 

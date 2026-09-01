@@ -55,7 +55,32 @@ export const stressApi = {
   // 周期采样（实时图表）
   samples: (id: number, limit = 500) => http.get(`/stress/tasks/${id}/samples`, { params: { limit } }),
   // 压测报告（含统计/分档采样点/容量评估结果）
-  report: (id: number) => http.get(`/stress/tasks/${id}/report`)
+  report: (id: number) => http.get(`/stress/tasks/${id}/report`),
+  // 历史趋势：同应用 + 同目标 URL 的最近完成任务指标序列（报告页折线图用）
+  trend: (params: { appName: string; url: string; limit?: number }) =>
+    http.get('/stress/trend', { params }),
+  // 性能回归门禁（CI 用）：同步等待压测完成并比对基线，返回 { passed, summary, ... }
+  gate: (data: Record<string, unknown>, params?: { baselineTaskId?: number; timeoutSec?: number; failOnNoBaseline?: boolean; webhook?: string }) =>
+    http.post('/stress/gate', data, { params })
+}
+
+export const jvmAlertApi = {
+  // JVM 阈值告警规则列表（appName 为空查全部）
+  list: (appName?: string, limit = 100) =>
+    http.get('/jvm-alert-rules', { params: { appName, limit } }),
+  // 支持的指标键（下拉选项）
+  metrics: () => http.get('/jvm-alert-rules/metrics'),
+  // 新增规则
+  add: (data: Record<string, unknown>) => http.post('/jvm-alert-rules', data),
+  // 更新规则
+  update: (id: number, data: Record<string, unknown>) => http.put(`/jvm-alert-rules/${id}`, data),
+  // 删除规则
+  remove: (id: number) => http.delete(`/jvm-alert-rules/${id}`),
+  // 启用/停用
+  setEnabled: (id: number, enabled: boolean) =>
+    http.post(`/jvm-alert-rules/${id}/enabled`, null, { params: { enabled } }),
+  // 手动触发一次判定（返回 triggered 表示是否超阈值）
+  check: (id: number) => http.post(`/jvm-alert-rules/${id}/check`)
 }
 
 export const reportApi = {
@@ -222,4 +247,4 @@ export const dbConnApi = {
     http.post('/dbconns/test', data)
 }
 
-export default { appApi, jvmApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }
+export default { appApi, jvmApi, jvmAlertApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }

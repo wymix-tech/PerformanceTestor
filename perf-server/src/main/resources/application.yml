@@ -33,13 +33,25 @@ mybatis:
 # ===== 平台业务配置 =====
 perf:
   # 轻量 JWT 鉴权（管理员账号支持环境变量注入：PERF_ADMIN_USER / PERF_ADMIN_PASSWORD / PERF_JWT_SECRET）
-  # 白名单：/api/auth/**（登录）与 /api/agent/**（探针上报，被测侧无 JWT 能力）
+  # 白名单：/api/auth/**（登录）与 /api/agent/**（探针上报走独立令牌校验）
   auth:
     enabled: true
     username: ${PERF_ADMIN_USER:admin}
     password: ${PERF_ADMIN_PASSWORD:admin123}
     secret: ${PERF_JWT_SECRET:perf-testor-default-jwt-secret-please-change-in-production}
     expire-hours: 12
+    # 探针上报令牌：配置后 /api/agent/** 需携带 X-Perf-Agent-Token 请求头（agent 侧 agentToken=<值>）
+    # 留空 = 不校验，保持开放（兼容存量 agent 与内网演示）
+    agent-token: ${PERF_AGENT_TOKEN:}
+    # 静态 API Token：供 CI 流水线调用压测/门禁接口，请求头 X-Perf-Api-Token
+    # 留空 = 不启用
+    api-token: ${PERF_API_TOKEN:}
+
+  # 敏感凭据加密（DbConn 数据库密码 / DeployConn SSH 凭据）
+  # 密钥走环境变量，任意长度口令（内部 SHA-256 归一化为 AES-256 密钥）
+  # 留空 = 不加密（内网演示）；存量明文凭据在下次保存时自动转为密文
+  crypto:
+    secret: ${PERF_CRYPTO_SECRET:}
   # 源码文件存储根目录（平台服务器磁盘）
   source:
     storage-dir: /data/perf-source
