@@ -58,10 +58,25 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- PostgreSQL 驱动：灌数引擎 PostgreSQLDialect 连接 PG 目标库（与 MySQL 驱动同为运行期） -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
+        </dependency>
+        <!-- 报告导出：HTML → PDF（openhtmltopdf + PDFBox 后端） -->
+        <dependency>
+            <groupId>com.openhtmltopdf</groupId>
+            <artifactId>openhtmltopdf-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.openhtmltopdf</groupId>
+            <artifactId>openhtmltopdf-pdfbox</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -73,6 +88,40 @@
     <build>
         <finalName>perf-server</finalName>
         <plugins>
+            <!-- PIT 突变测试：mvn -pl perf-server org.pitest:pitest-maven:mutationCoverage -->
+            <!-- 暂不设 mutationThreshold：当前 24%（source/controller/ai.tools/deploy 几乎无覆盖），
+                 设阈值会常态化失败，先按报告补测试再启用门禁 -->
+            <plugin>
+                <groupId>org.pitest</groupId>
+                <artifactId>pitest-maven</artifactId>
+                <configuration>
+                    <targetClasses>
+                        <param>com.perfserver.*</param>
+                    </targetClasses>
+                    <targetTests>
+                        <param>com.perfserver.*</param>
+                    </targetTests>
+                    <!-- 排除无突变价值的样板：实体/配置/Mapper 接口（仅注解）/ 启动类 -->
+                    <excludedClasses>
+                        <param>com.perfserver.entity.*</param>
+                        <param>com.perfserver.config.*</param>
+                        <param>com.perfserver.mapper.*</param>
+                        <param>com.perfserver.PerfServerApplication</param>
+                    </excludedClasses>
+                    <outputFormats>
+                        <outputFormat>XML</outputFormat>
+                        <outputFormat>HTML</outputFormat>
+                    </outputFormats>
+                    <timestampedReports>false</timestampedReports>
+                    <!-- 放宽单突变超时：压测/PDF 渲染类用例本身耗时数秒，
+                         默认 4s 会把大量突变判为 TIMED_OUT（计入 killed，虚高分数） -->
+                    <timeoutConstant>15000</timeoutConstant>
+                    <timeoutFactor>1.5</timeoutFactor>
+                    <jvmArgs>
+                        <jvmArg>-XX:+EnableDynamicAgentLoading</jvmArg>
+                    </jvmArgs>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

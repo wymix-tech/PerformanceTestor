@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.AiKnowledgeMapper">
+
+    <resultMap id="BaseResultMap" type="com.perfserver.entity.AiKnowledge">
+        <id column="id" property="id"/>
+        <result column="app_name" property="appName"/>
+        <result column="title" property="title"/>
+        <result column="content" property="content"/>
+        <result column="tags" property="tags"/>
+        <result column="source" property="source"/>
+        <result column="create_time" property="createTime"/>
+        <result column="score" property="score"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ai_knowledge (app_name, title, content, tags, source, create_time)
+        VALUES (#{appName}, #{title}, #{content}, #{tags}, #{source}, #{createTime})
+    </insert>
+
+    <!-- 全文检索：MATCH ... AGAINST 自然语言模式，按相关度降序 -->
+    <select id="search" resultMap="BaseResultMap">
+        SELECT id, app_name, title, content, tags, source, create_time,
+               MATCH(title, content) AGAINST (#{query} IN NATURAL LANGUAGE MODE) AS score
+        FROM ai_knowledge
+        WHERE MATCH(title, content) AGAINST (#{query} IN NATURAL LANGUAGE MODE)
+        <if test="appName != null and appName != ''">
+            AND (app_name = #{appName} OR app_name = '')
+        </if>
+        ORDER BY score DESC, create_time DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="recent" resultMap="BaseResultMap">
+        SELECT id, app_name, title, content, tags, source, create_time, 0 AS score
+        FROM ai_knowledge
+        <where>
+            <if test="appName != null and appName != ''">
+                AND (app_name = #{appName} OR app_name = '')
+            </if>
+        </where>
+        ORDER BY create_time DESC
+        LIMIT #{limit}
+    </select>
+
+    <delete id="deleteById">
+        DELETE FROM ai_knowledge WHERE id = #{id}
+    </delete>
+
+</mapper>

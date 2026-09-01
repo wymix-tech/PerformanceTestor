@@ -20,8 +20,17 @@ public class PerformanceIssue {
     private Integer lineEnd;
     /** 大模型根因分析 */
     private String rootCause;
-    /** 状态：pending/analyzed/fixed */
+    /** 状态：pending/analyzed/fixed/resolved（resolved = 重放验证达标自动关闭） */
     private String status;
+    /**
+     * 场景快照：问题创建时对应的压测任务（0 = 未关联）。
+     * 一键验证时以该任务为基线重放同场景压测。
+     */
+    private Long stressTaskId;
+    /** 重放验证结论 JSON（重放任务 ID / 前后 diff / 达标判定） */
+    private String verifyJson;
+    /** 最近一次验证时间 */
+    private LocalDateTime verifyTime;
     private LocalDateTime createTime;
 
     public Long getId() {
@@ -110,6 +119,30 @@ public class PerformanceIssue {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public Long getStressTaskId() {
+        return stressTaskId;
+    }
+
+    public void setStressTaskId(Long stressTaskId) {
+        this.stressTaskId = stressTaskId;
+    }
+
+    public String getVerifyJson() {
+        return verifyJson;
+    }
+
+    public void setVerifyJson(String verifyJson) {
+        this.verifyJson = verifyJson;
+    }
+
+    public LocalDateTime getVerifyTime() {
+        return verifyTime;
+    }
+
+    public void setVerifyTime(LocalDateTime verifyTime) {
+        this.verifyTime = verifyTime;
     }
 
     public LocalDateTime getCreateTime() {

@@ -13,7 +13,7 @@
           <button class="text-xs text-fg-sub hover:text-fg-main" @click="clearSession">清空会话</button>
         </div>
 
-        <div class="flex-1 overflow-y-auto space-y-4 pr-1 min-h-[320px]">
+        <div ref="scrollEl" class="flex-1 overflow-y-auto space-y-4 pr-1 min-h-[320px]">
           <div v-if="!messages.length" class="text-xs text-fg-sub py-16 text-center">
             输入 <code class="text-neon-blue">/</code> 使用指令，输入 <code class="text-neon-blue">@</code> 引用项目/问题，或直接自然语言提问
           </div>
@@ -22,18 +22,30 @@
               <div class="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-sm bg-neon-green/15 border border-neon-green/30 text-sm text-fg-main whitespace-pre-wrap">{{ m.content }}</div>
             </div>
             <div v-else class="flex justify-start">
-              <div class="max-w-[85%]">
+              <div class="max-w-[85%] min-w-0">
+                <!-- ReAct 推理过程（Thought / Action / Observation） -->
+                <div v-if="m.thought"
+                  class="mb-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[11px] text-fg-sub flex items-start gap-1.5">
+                  <Loader2 v-if="m.streaming" class="w-3 h-3 mt-px shrink-0 animate-spin text-neon-blue" />
+                  <span class="truncate">{{ m.thought }}</span>
+                </div>
                 <div v-for="(tool, ti) in m.toolCalls" :key="ti"
                   class="mb-2 px-3 py-2 rounded-lg bg-neon-blue/5 border border-neon-blue/20 text-xs">
                   <span class="text-neon-blue">调用工具</span>
                   <span class="text-fg-main font-mono ml-1">{{ tool.name }}</span>
                   <pre class="text-[11px] text-fg-sub mt-1.5 whitespace-pre-wrap font-mono max-h-[140px] overflow-y-auto">{{ tool.arguments }}</pre>
+                  <pre v-if="tool.result" class="text-[11px] text-fg-sub mt-1 pt-1 border-t border-white/10 whitespace-pre-wrap font-mono max-h-[140px] overflow-y-auto">{{ tool.result }}</pre>
                 </div>
-                <div class="px-4 py-2.5 rounded-2xl rounded-bl-sm bg-white/8 border border-white/10 text-sm text-fg-main whitespace-pre-wrap" style="background:rgba(255,255,255,0.08)">{{ m.content }}</div>
+                <div v-if="m.content || !m.streaming"
+                  class="px-4 py-2.5 rounded-2xl rounded-bl-sm bg-white/8 border border-white/10 text-sm text-fg-main whitespace-pre-wrap break-words"
+                  style="background:rgba(255,255,255,0.08)">{{ m.content }}<span v-if="m.streaming" class="inline-block w-1.5 h-3.5 ml-0.5 bg-neon-green animate-pulse align-middle"></span></div>
+                <div v-if="m.roleLabel" class="mt-1 text-[11px] text-fg-sub">
+                  角色 {{ m.roleLabel }} · {{ m.mode === 'rule' ? '规则演示模式' : '大模型 ReAct' }}<span v-if="m.rounds"> · {{ m.rounds }} 轮推理</span>
+                </div>
               </div>
             </div>
           </div>
-          <div v-if="loading" class="flex items-center gap-2 text-xs text-fg-sub">
+          <div v-if="loading && !messages.some((m) => m.streaming)" class="flex items-center gap-2 text-xs text-fg-sub">
             <span class="w-2 h-2 rounded-full bg-neon-green animate-pulse"></span>
             AI 正在处理…
           </div>
@@ -66,7 +78,10 @@
               placeholder="输入 / 呼出指令，@ 引用项目/问题，或直接自然语言提问"
               @input="onInput" @keydown="onKeydown" @blur="closePanelSoon"
             />
-            <button class="btn-primary" :disabled="loading || !input.trim()" @click="send(input)">
+            <button v-if="loading" class="btn-primary" style="background:linear-gradient(135deg,#ef4444,#f97316)" @click="stopStream">
+              <Square class="w-4 h-4" /> 停止
+            </button>
+            <button v-else class="btn-primary" :disabled="!input.trim()" @click="send(input)">
               <Send class="w-4 h-4" /> 发送
             </button>
           </div>
@@ -76,9 +91,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Bot, Send, Zap, Database, Gauge, FileText, Wrench, Bug, Boxes } from 'lucide-vue-next'
+import { Bot, Send, Zap, Database, Gauge, FileText, Wrench, Bug, Boxes, Loader2, Square } from 'lucide-vue-next'
 import { aiApi, sourceApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 
@@ -88,6 +103,17 @@ const messages = ref<Array<Record<string, any>>>([])
 const input = ref('')
 const loading = ref(false)
 const inputEl = ref<HTMLInputElement | null>(null)
+const scrollEl = ref<HTMLElement | null>(null)
+/** 进行中的流式请求控制器（供"停止"中断） */
+let abortCtl: AbortController | null = null
+
+/** 后端 AiRole 枚举 → 中文角色名 */
+const ROLE_LABELS: Record<string, string> = {
+  GENERAL: '通用助手',
+  STRESS_EXECUTOR: '压测执行',
+  ROOT_CAUSE_ANALYST: '根因分析',
+  FIX_ADVISOR: '修复建议'
+}
 
 /** AI 自动执行闭环编排指令（LLM 档自动串联工具多轮执行；规则档返回状态快照+执行计划） */
 const AUTO_PIPELINE_PROMPT =
@@ -209,30 +235,143 @@ function closePanelSoon() {
   setTimeout(() => { panelMode.value = '' }, 150)
 }
 
+// ===== SSE 流式对话 =====
+/** 发送并流式渲染：axios 不支持流式，改用 fetch + ReadableStream 逐帧解析 */
 async function send(text: string) {
   const content = text.trim()
   if (!content || loading.value) return
   input.value = ''
   panelMode.value = ''
   messages.value.push({ role: 'user', content })
+
+  const assistant: Record<string, any> = {
+    role: 'assistant', content: '', toolCalls: [], thought: '', streaming: true
+  }
+  messages.value.push(assistant)
   loading.value = true
+
+  const controller = new AbortController()
+  abortCtl = controller
   try {
-    const r = await aiApi.chat({ sessionId: sessionId.value, message: content })
-    messages.value.push({
-      role: 'assistant',
-      content: r.data.reply || '（无回复）',
-      toolCalls: r.data.toolCalls || []
+    const res = await fetch('/api/ai/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('perf_token') || ''}`
+      },
+      body: JSON.stringify({ sessionId: sessionId.value, message: content }),
+      signal: controller.signal
     })
-  } catch {
-    messages.value.push({ role: 'assistant', content: '请求失败，请确认 perf-server 已启动。' })
+    if (!res.ok || !res.body) {
+      throw new Error(`HTTP ${res.status}`)
+    }
+    await readSse(res.body, assistant)
+  } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      assistant.content += '\n（请求失败，请确认 perf-server 已启动。）'
+    }
   } finally {
+    assistant.streaming = false
+    assistant.thought = ''
+    abortCtl = null
     loading.value = false
+    await scrollToBottom()
   }
 }
 
+/** 读取 SSE 字节流：按空行切帧，逐帧交给 applyEvent */
+async function readSse(body: ReadableStream<Uint8Array>, msg: Record<string, any>) {
+  const reader = body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n')
+    let sep = buffer.indexOf('\n\n')
+    while (sep >= 0) {
+      handleFrame(buffer.slice(0, sep), msg)
+      buffer = buffer.slice(sep + 2)
+      sep = buffer.indexOf('\n\n')
+    }
+  }
+  // 连接关闭时残留的最后一帧（服务端可能未以空行收尾）
+  if (buffer.trim()) handleFrame(buffer, msg)
+}
+
+/** 解析单帧 SSE：event 名 + data（统一 JSON 编码，避免正文换行破坏帧格式） */
+function handleFrame(frame: string, msg: Record<string, any>) {
+  let eventName = 'message'
+  let data = ''
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      data += line.slice(5).trim()
+    }
+  }
+  if (!data) return
+  let payload: any
+  try {
+    payload = JSON.parse(data)
+  } catch {
+    return
+  }
+  applyEvent(eventName, payload, msg)
+}
+
+/** 按事件类型增量更新助手消息 */
+function applyEvent(eventName: string, payload: any, msg: Record<string, any>) {
+  switch (eventName) {
+    case 'token':
+      msg.content += payload || ''
+      scrollToBottom()
+      break
+    case 'thought':
+      msg.thought = payload || ''
+      break
+    case 'tool':
+      msg.toolCalls.push({ name: payload.name, arguments: payload.arguments || '', result: '' })
+      break
+    case 'observation': {
+      const last = msg.toolCalls[msg.toolCalls.length - 1]
+      if (last && last.name === payload.name) {
+        last.result = payload.result || ''
+      } else {
+        msg.toolCalls.push({ name: payload.name, arguments: '', result: payload.result || '' })
+      }
+      break
+    }
+    case 'done':
+      msg.mode = payload.mode
+      msg.rounds = payload.rounds
+      msg.roleLabel = ROLE_LABELS[payload.role] || ''
+      break
+    case 'error':
+      msg.content += `\n（${payload}）`
+      break
+  }
+}
+
+/** 中断进行中的流式请求 */
+function stopStream() {
+  abortCtl?.abort()
+  const last = messages.value[messages.value.length - 1]
+  if (last) last.streaming = false
+  loading.value = false
+}
+
+async function scrollToBottom() {
+  await nextTick()
+  const el = scrollEl.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
 async function clearSession() {
+  abortCtl?.abort()
   await aiApi.clearSession(sessionId.value).catch(() => {})
   messages.value = []
+  loading.value = false
 }
 
 onMounted(async () => {

@@ -209,6 +209,15 @@ public final class TraceContext {
     }
 
     /**
+     * 当前链路 ID（未采样/无上下文时返回 null），供慢 SQL 与慢命令事件关联调用链。
+     * 仅在阈值命中后调用（慢路径），正常路径零开销。
+     */
+    public static String currentTraceId() {
+        Ctx ctx = CTX.get();
+        return ctx == null ? null : ctx.traceId;
+    }
+
+    /**
      * 当前调用方法链快照（根 → 叶方法名列表），供慢 SQL 等事件记录触发链路。
      * 仅在慢 SQL 阈值命中后调用（JDBC 拦截处），正常路径零开销。
      */

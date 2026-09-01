@@ -106,41 +106,17 @@
       </div>
     </div>
 
-    <!-- Step 3 数据准备 -->
-    <div v-else-if="step === 2" class="glass-card p-5">
-      <div class="text-sm font-medium mb-1">灌注测试数据 <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
-      <div v-if="autoDbUrl" class="mb-3 rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-[11px] text-neon-green">
-        ✓ 已从被测应用 agent 上报探测到数据库：{{ autoDbUrl }}{{ connId ? '（已自动匹配连接配置）' : '（无匹配的连接配置，请选择或手填）' }}
-      </div>
-      <div class="text-[11px] text-fg-sub mb-4">选择数据库连接，试运行通过后正式灌数。需要更复杂的联表/规则配置？<router-link class="text-neon-blue hover:underline" to="/stress?tab=datagen">打开完整数据准备</router-link></div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs text-fg-sub">数据库连接</label>
-            <select v-model="connId" class="input-select w-full">
-              <option :value="0">— 选择连接配置 —</option>
-              <option v-for="c in conns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.dbUrl }}）</option>
-            </select>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-fg-sub">用户表行数</label><input v-model.number="genUsers" type="number" class="input-text w-full" /></div>
-            <div><label class="text-xs text-fg-sub">订单表行数</label><input v-model.number="genOrders" type="number" class="input-text w-full" /></div>
-          </div>
-          <div class="flex gap-2">
-            <button class="btn-secondary flex-1 justify-center" :disabled="!connId || busy" @click="runGen(true)">试运行</button>
-            <button class="btn-primary flex-1 justify-center" :disabled="!connId || busy || !genDryPassed" @click="runGen(false)">正式灌数</button>
-          </div>
-        </div>
-        <div class="rounded-xl bg-white/5 p-4 text-xs space-y-1.5">
-          <div class="text-fg-sub font-medium mb-1">表组（demo 联表模板）</div>
-          <div class="font-mono text-[11px] text-fg-sub leading-relaxed">perf_user（{{ genUsers }} 行）<br />perf_order（{{ genOrders }} 行，user_id → perf_user.id）</div>
-          <div v-if="genTask" class="pt-2 border-t border-white/10">
-            <span :class="taskStatusClass(genTask.status)">{{ genTask.status }}</span>
-            <span class="text-fg-sub ml-2">#{{ genTask.id }} {{ genTask.inserted }}/{{ genTask.totalRows || genTask.rowCount }} 行</span>
-          </div>
-          <div v-if="genDryPassed && !genTask" class="text-neon-green">✓ 试运行通过，可正式灌数</div>
-        </div>
-      </div>
+    <!-- Step 3 数据准备：与压测中心「数据准备」共用 DataGenForm，能力完全一致；
+         仅把上游步骤选择的项目、以及部署后 agent 上报探测到的数据库连接自动带入 -->
+    <div v-else-if="step === 2">
+      <!-- 探测结果提示收敛为一行：组件内已有「✓ 项目与数据库连接已自动带入」标记，此处不再重复整块提示 -->
+      <DataGenForm
+        mode="compact"
+        :initial-repo-id="repoId"
+        :initial-conn-id="autoConnId"
+        :initial-db-url="autoDbUrl"
+        @created="onGenCreated"
+      />
     </div>
 
     <!-- Step 2 部署（可选：自动 / 手动） -->
@@ -281,7 +257,10 @@
     <div v-else-if="step === 4" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">获取压测结果</div>
       <div class="text-[11px] text-fg-sub mb-4">任务完成后自动拉取报告摘要。<router-link class="text-neon-blue hover:underline" to="/stress">打开完整压测报告</router-link></div>
-      <div v-if="!stressTask" class="text-xs text-fg-sub py-8 text-center">请先在上一步发起压测</div>
+      <div v-if="!stressTask" class="text-xs text-fg-sub py-6 text-center">
+        <div class="mb-3">本向导内未发起压测，或会话已被清空</div>
+        <router-link class="btn-primary inline-flex" to="/stress">前往压测中心查看历史报告</router-link>
+      </div>
       <div v-else-if="!report" class="text-xs text-fg-sub py-8 text-center flex items-center justify-center gap-2">
         <span class="w-2 h-2 rounded-full bg-neon-green animate-pulse"></span> 任务 {{ stressTask.status }}，等待完成…
       </div>
@@ -340,13 +319,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
 import StressForm from '../components/stress/StressForm.vue'
+import DataGenForm from '../components/datagen/DataGenForm.vue'
 import { taskStatusClass, issueStatusClass } from '../utils/format'
 import { appApi, dataGenApi, sourceApi, stressApi, traceApi, dbConnApi, deployApi, slowSqlApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
+import { saveQuickStart, loadQuickStart, clearQuickStart } from '../stores/quickStartNav'
 
 const route = useRoute()
 const router = useRouter()
@@ -364,10 +345,7 @@ const repos = computed(() => repoStore.repos)
 const repoId = ref<number>(0)
 const conns = ref<Array<Record<string, any>>>([])
 const connId = ref<number>(0)
-const genUsers = ref(1000)
-const genOrders = ref(2000)
-const genTask = ref<any>(null)
-const genDryPassed = ref(false)
+
 // 部署（可选步骤）：跳过或执行后进入压测
 const deployConnId = ref<number>(0)
 const deployModule = ref('')
@@ -382,6 +360,25 @@ const deployMode = ref<'auto' | 'manual'>('auto')
 /** 部署后从 agent 上报探测到的被测应用数据库连接（自动预填灌数步骤） */
 const autoDbUrl = ref('')
 
+/** agent 上报探测到的数据库所匹配的平台连接配置 ID（0 = 无匹配，由组件退回手填 URL） */
+const autoConnId = computed(() => {
+  if (!autoDbUrl.value) return 0
+  const hit = conns.value.find((c) => normalizeUrl(c.dbUrl) === normalizeUrl(autoDbUrl.value))
+  return hit ? hit.id : 0
+})
+
+/** 归一化 JDBC URL 用于比对（忽略用户名、参数顺序与末尾斜杠差异） */
+function normalizeUrl(url: string): string {
+  return (url || '').trim().replace(/\/+$/, '').toLowerCase()
+}
+
+/** 灌数任务创建成功：标记本步骤完成，并在正式灌数后自动进入压测步骤 */
+function onGenCreated(payload: { task: any; dryRun: boolean }) {
+  if (!payload?.dryRun) {
+    sessionDone.value[2] = true // 本轮正式灌数已发起
+    setTimeout(advance, 1200)
+  }
+}
 /** 手动部署：SCP 上传 agent 命令 */
 const manualScpCmd = computed(() => {
   const c = deployConns.value.find((x) => x.id === deployConnId.value)
@@ -429,6 +426,47 @@ const instBaseUrl = computed(() => {
 const stressTask = ref<any>(null)
 const report = ref<any>(null)
 const capacityText = ref('')
+
+// ===== 跨页面导航：持久化向导进度 =====
+// 用户在向导内会跳到压测中心/调用链/性能优化/AI 助手看细节，而侧边栏没有「快速开始」
+// 入口，一旦点出去就回不来。这里把进度写入 sessionStorage，由 MainLayout 顶栏渲染
+// 全局「返回快速开始」按钮，任何页面都能一步回到当前步骤。
+function cacheRunState() {
+  saveQuickStart({
+    step: step.value,
+    stepTitle: stepDefs[step.value]?.title || '',
+    repoId: repoId.value,
+    connId: connId.value,
+    sessionDone: [...sessionDone.value],
+    stressTask: stressTask.value,
+    report: report.value,
+    capacityText: capacityText.value,
+    traces: traces.value,
+    issues: issues.value,
+    savedAt: Date.now()
+  })
+}
+
+function restoreRunState() {
+  const s = loadQuickStart()
+  if (!s) return false
+  step.value = s.step ?? 0
+  repoId.value = s.repoId ?? 0
+  connId.value = s.connId ?? 0
+  sessionDone.value = s.sessionDone?.length === stepDefs.length
+    ? [...s.sessionDone]
+    : [false, false, false, false, false, false, false]
+  stressTask.value = s.stressTask ?? null
+  report.value = s.report ?? null
+  capacityText.value = s.capacityText ?? ''
+  traces.value = s.traces ?? []
+  issues.value = s.issues ?? []
+  // 压测仍在进行中：恢复轮询，避免状态卡死
+  if (stressTask.value && (stressTask.value.status === 'running' || stressTask.value.status === 'pending')) {
+    startPolling()
+  }
+  return true
+}
 const traces = ref<Array<Record<string, any>>>([])
 const issues = ref<Array<Record<string, any>>>([])
 const appInstances = ref<Array<Record<string, any>>>([])
@@ -681,43 +719,8 @@ async function loadEndpoints() {
   } catch { /* 扫描失败不阻断 */ }
 }
 
-async function runGen(dryRun: boolean) {
-  busy.value = true
-  try {
-    const r = await dataGenApi.create({
-      taskName: `向导-${dryRun ? '试运行' : '灌数'}-${repoName.value}`,
-      connId: connId.value || undefined,
-      dryRun,
-      tables: [
-        { tableName: 'perf_user', rowCount: genUsers.value },
-        { tableName: 'perf_order', rowCount: genOrders.value,
-          // API 契约：fields 为字符串型规则 JSON（TableSpecDto.fields: String）
-          fields: JSON.stringify({ user_id: { type: 'ref', table: 'perf_user', column: 'id' } }) }
-      ]
-    })
-    genTask.value = r.data
-    if (dryRun) {
-      // 轮询一次结果后放行正式灌数
-      setTimeout(checkGen, 2500)
-    } else {
-      sessionDone.value[2] = true // 本轮正式灌数已发起
-      // 自动进入压测步骤（任务异步执行，进度在数据准备 Tab 可查）
-      setTimeout(advance, 1200)
-    }
-  } finally {
-    busy.value = false
-  }
-}
-
-async function checkGen() {
-  if (!genTask.value) return
-  const r = await dataGenApi.list(5)
-  const t = (r.data || []).find((x: any) => x.id === genTask.value.id)
-  if (t) genTask.value = t
-  if (genTask.value.status === 'finished' && genTask.value.detailJson?.includes('"passed":true')) {
-    genDryPassed.value = true
-  }
-}
+// 灌数逻辑已全部交由 DataGenForm 公共组件（与压测中心「数据准备」一致），
+// 向导仅负责把项目与探测到的数据库连接预填进去，并通过 @created 感知进度。
 
 /** 发起压测：StressForm 提交标准请求体，向导补充任务名与应用归属 */
 async function startStress(payload: Record<string, unknown>) {
@@ -749,11 +752,21 @@ function startPolling() {
     if (t?.status === 'finished') {
       stopPolling()
       const rep = await stressApi.report(stressTask.value.id)
-      const stat = rep.data?.statistics || rep.data?.result?.statistics || {}
-      report.value = stat
+      // rep.data 为整个压测任务对象（含 result 字段：统计指标/分档/容量评估）
+      const data = rep.data || {}
+      const result = data.result || {}
+      report.value = result
       sessionDone.value[4] = true // 本轮报告已获取
-      const cap = rep.data?.result?.capacity || rep.data?.capacity
-      if (cap) capacityText.value = `容量评估：最大可承受并发 ${cap.maxConcurrency ?? '—'}，最大 QPS ${cap.maxQps ?? '—'}`
+      const cap = result.capacity
+      if (cap) {
+        const maxC = cap.maxConcurrency ?? '—'
+        const maxQ = cap.maxQps ?? '—'
+        const tag = cap.extrapolated ? '（外推估算）' : ''
+        capacityText.value = `容量评估：最大可承受并发 ${maxC}，最大 QPS ${maxQ}${tag}`
+      } else {
+        capacityText.value = ''
+      }
+      cacheRunState() // 压测结果已生成：写入 session 缓存供跨路由恢复
       loadTracesAndIssues()
     }
   }, 2000)
@@ -819,8 +832,12 @@ function goAiAnalyze() {
   router.push({ path: '/ai', query: { msg: `分析项目「${repoName.value}」最近的慢 SQL 与热点调用链根因，并给出修复方案` } })
 }
 
-/** 完成本轮，回到总览 */
+/** 完成本轮，回到总览：本轮结束，清除会话缓存（下次进入为全新向导）。
+ *  finishing 标记用于阻止卸载前的最后一次 watch 把状态又写回去。 */
+let finishing = false
 function finishRound() {
+  finishing = true
+  clearQuickStart()
   router.push('/dashboard')
 }
 
@@ -829,8 +846,20 @@ function onEnterStep() {
 }
 
 onMounted(async () => {
-  // 快速开始 = 每次全新流程：固定第 1 步，不预选项目、不载入历史任务（打勾只认本轮操作）
-  step.value = 0
+  // 快速开始 = 全新引导流程；但用户在向导内会跳到压测中心/调用链/性能优化看细节，
+  // 而侧边栏没有本页入口，点出去就回不来。故按入口区分：
+  //   · 带 step 参数（总览页 /quick-start?step=0）= 明确开新一轮 → 以 URL 为准，step=0 时清空旧进度
+  //   · 不带参数（从其他页面返回 / 刷新）          = 恢复上次进度，回到原步骤
+  const q = route.query.step
+  if (q !== undefined && Number.isFinite(Number(q))) {
+    // step=0 是总览页的入口语义（开新一轮）；其余值来自向导内 goStep 的 replace，
+    // 说明用户只是在本向导内刷新，数据仍需恢复，仅 step 以 URL 为准
+    if (Number(q) === 0) clearQuickStart()
+    else restoreRunState()
+    step.value = Math.max(0, Math.min(stepDefs.length - 1, Number(q)))
+  } else {
+    restoreRunState()
+  }
   const [c, a] = await Promise.allSettled([
     dbConnApi.list(), appApi.list()
   ])
@@ -840,6 +869,15 @@ onMounted(async () => {
   if (a.status === 'fulfilled') appInstances.value = a.value.data || []
   loadDeployConns()
 })
+
+// 向导进度自动持久化：任何影响进度的状态变化都写入，供跨页面返回时恢复
+watch(
+  [step, repoId, connId, sessionDone, stressTask, report, traces, issues],
+  () => {
+    if (!finishing) cacheRunState()
+  },
+  { deep: true }
+)
 
 onUnmounted(stopPolling)
 </script>

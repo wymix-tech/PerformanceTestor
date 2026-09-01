@@ -47,6 +47,17 @@
         <div class="flex items-center gap-3">
           <span class="text-lg font-semibold">{{ currentTitle }}</span>
           <span class="text-xs text-fg-sub">/ {{ route.meta.title }}</span>
+          <!-- 快速开始向导没有侧边栏入口，用户在向导内跳到本页后将无路可回；
+               只要会话内还有未结束的向导，就在顶栏提供一步返回 -->
+          <button
+            v-if="showBackToQuickStart"
+            class="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs text-neon-green border border-neon-green/30 hover:bg-neon-green/10 transition-colors cursor-pointer"
+            title="返回快速开始向导的当前步骤"
+            @click="backToQuickStart"
+          >
+            <CornerUpLeft class="w-3.5 h-3.5" />
+            返回快速开始{{ quickStartStepTitle ? `（${quickStartStepTitle}）` : '' }}
+          </button>
         </div>
         <div class="flex items-center gap-4 text-fg-sub">
           <span class="text-xs">当前时间 {{ now }}</span>
@@ -87,9 +98,10 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Bot, Server, LogOut
+  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Bot, Server, LogOut, CornerUpLeft
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { hasQuickStart, quickStartStepTitle, syncQuickStartFlag } from '@/stores/quickStartNav'
 
 const route = useRoute()
 const router = useRouter()
@@ -116,8 +128,17 @@ const menus = [
 
 const currentTitle = computed(() => String(route.meta.title ?? ''))
 
+/** 在向导外的页面且会话内仍有未结束的向导 → 显示返回按钮 */
+const showBackToQuickStart = computed(() => hasQuickStart.value && route.path !== '/quick-start')
+
+function backToQuickStart() {
+  router.push('/quick-start')
+}
+
 let timer: number | undefined
 onMounted(() => {
+  // 从既有缓存同步标记：刷新页面后返回按钮不丢失
+  syncQuickStartFlag()
   timer = window.setInterval(() => {
     now.value = new Date().toLocaleString('zh-CN')
   }, 1000)

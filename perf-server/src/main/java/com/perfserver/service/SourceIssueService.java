@@ -110,6 +110,8 @@ public class SourceIssueService {
         issue.setIssueType("stress_bottleneck");
         issue.setAppName(resolvedApp);
         issue.setTitle("压测瓶颈: " + task.getTargetUrl() + " (并发 " + task.getConcurrency() + ")");
+        // 场景快照：记录问题发现时的压测任务，作为修复后一键重放验证的基线
+        issue.setStressTaskId(stressTaskId);
         ObjectNode evidence = objectMapper.createObjectNode();
         evidence.put("taskId", task.getId());
         evidence.put("targetUrl", task.getTargetUrl());
@@ -122,6 +124,10 @@ public class SourceIssueService {
 
     /** 统一收尾：命中定位则写入源码位置，否则仅绑仓库；随后落库返回 */
     private PerformanceIssue insertIssue(PerformanceIssue issue, IssueAssociator.IssueLocation loc, long repoId) {
+        // 未关联压测场景时显式落 0（列 NOT NULL，避免 null 入参）
+        if (issue.getStressTaskId() == null) {
+            issue.setStressTaskId(0L);
+        }
         if (loc != null) {
             issue.setSourceRepoId(loc.repoId);
             issue.setSourceFileId(loc.fileId);
@@ -208,6 +214,26 @@ public class SourceIssueService {
                 loc == null ? null : loc.lineStart,
                 loc == null ? null : loc.lineEnd);
         return getIssueDetail(issueId);
+    }
+
+    /**
+     * 为已存在问题补绑压测场景快照（一键验证的前置条件）。
+     * 用于慢 SQL / 热点方法等非压测来源的问题：选定一个同场景压测任务作为验证基线。
+     */
+    public PerformanceIssue bindStressTask(long issueId, long stressTaskId) {
+        PerformanceIssue issue = issueMapper.findById(issueId);
+        if (issue == null) {
+            throw new IllegalArgumentException("问题不存在: " + issueId);
+        }
+        if (stressTaskId <= 0) {
+            throw new IllegalArgumentException("压测任务 ID 非法: " + stressTaskId);
+        }
+        if (stressTaskMapper.findById(stressTaskId) == null) {
+            throw new IllegalArgumentException("压测任务不存在: " + stressTaskId);
+        }
+        issueMapper.updateStressTask(issueId, stressTaskId);
+        issue.setStressTaskId(stressTaskId);
+        return issue;
     }
 
     /** 选定方案并生成修复提示词 */

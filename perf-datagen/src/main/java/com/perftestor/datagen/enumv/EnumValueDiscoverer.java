@@ -38,12 +38,23 @@ public class EnumValueDiscoverer {
      */
     public List<Object> discover(Connection conn, com.perftestor.datagen.spi.DatabaseDialect dialect,
                                  SchemaMetadata.ColumnMeta col, Map<String, List<String>> javaEnums) {
+        return discover(conn, dialect, null, col, javaEnums);
+    }
+
+    /**
+     * 带表名的枚举发现（DB 级查询需要表名：MySQL information_schema / PG pg_enum）。
+     *
+     * @param tableName 列所属表名（小写；可空，空则跳过 DB 级查询）
+     */
+    public List<Object> discover(Connection conn, com.perftestor.datagen.spi.DatabaseDialect dialect,
+                                 String tableName, SchemaMetadata.ColumnMeta col,
+                                 Map<String, List<String>> javaEnums) {
         List<Object> result = new ArrayList<>();
 
-        // 级别 1：DB ENUM 类型（MySQL TYPE_NAME=ENUM('A','B')；PG pg_enum 由方言实现）
+        // 级别 1：DB ENUM 类型（MySQL TYPE_NAME=ENUM('A','B')；PG pg_enum/CHECK 由方言实现）
         try {
-            if (conn != null && dialect != null) {
-                List<String> dbVals = dialect.getEnumValues(conn, "", col.getName());
+            if (conn != null && dialect != null && tableName != null && !tableName.isBlank()) {
+                List<String> dbVals = dialect.getEnumValues(conn, tableName, col.getName());
                 if (!dbVals.isEmpty()) {
                     result.addAll(dbVals);
                     return result;
