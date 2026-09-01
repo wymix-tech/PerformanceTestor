@@ -3,6 +3,7 @@ package com.perfagent;
 import com.perfagent.config.AgentConfig;
 import com.perfagent.hotspot.HotspotSampler;
 import com.perfagent.instrumentation.JdbcInterceptor;
+import com.perfagent.instrumentation.MiddlewareSupport;
 import com.perfagent.instrumentation.TraceEnhancer;
 import com.perfagent.jmx.JvmCollector;
 import com.perfagent.reporter.HttpReporter;
@@ -68,6 +69,7 @@ public class AgentPremain {
         TraceSampler sampler = new TraceSampler(config.sampleRate, config.maxTracesPerSec);
         TraceContext.init(config.appName, sampler, reporter);
         JdbcInterceptor.init(config, reporter);
+        MiddlewareSupport.init(config, reporter);
         reporter.start();
 
         // 2) 启动 JMX 采集（独立线程）
@@ -84,8 +86,8 @@ public class AgentPremain {
             hotspotSampler.start();
         }
 
-        // 3) 注册增强规则（方法埋点 + JDBC 拦截）
-        if (config.methodTraceEnabled || config.jdbcEnabled) {
+        // 3) 注册增强规则（方法埋点 + JDBC 拦截 + 中间件拦截）
+        if (config.methodTraceEnabled || config.jdbcEnabled || config.middlewareEnabled) {
             TraceEnhancer.builder(config)
                     .installOn(instrumentation);
         }

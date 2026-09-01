@@ -35,6 +35,12 @@ export const slowSqlApi = {
     http.get('/slow-sqls', { params })
 }
 
+export const slowCommandApi = {
+  // 中间件慢命令列表（Redis / ES / MQ，耗时倒序；type 为空表示全部）
+  list: (params: { app?: string; type?: string; start?: string | number; end?: string | number; minCostMs?: number; limit?: number }) =>
+    http.get('/slow-commands', { params })
+}
+
 export const hotspotApi = {
   // 方法级 CPU 热点排行（命中次数降序，最近 1 小时）
   list: (params: { app?: string; start?: string | number; end?: string | number; limit?: number }) =>
@@ -50,6 +56,16 @@ export const stressApi = {
   samples: (id: number, limit = 500) => http.get(`/stress/tasks/${id}/samples`, { params: { limit } }),
   // 压测报告（含统计/分档采样点/容量评估结果）
   report: (id: number) => http.get(`/stress/tasks/${id}/report`)
+}
+
+export const reportApi = {
+  /**
+   * 报告导出/打印页 URL（文件下载走 Blob，不能直接走 JSON 拦截器）
+   * 说明：导出接口返回裸文件流（非 ApiResponse 包壳），需带 token 访问，
+   * 故打印页用 window.open 直开、文件下载用 responseType:'blob'。
+   */
+  exportUrl: (taskId: number, format: 'html' | 'pdf' | 'doc', printMode = false) =>
+    `/api/reports/export?stressTaskId=${taskId}&format=${format}&printMode=${printMode}`
 }
 
 export const scheduleApi = {
@@ -169,6 +185,13 @@ export const sourceApi = {
   // 从压测任务创建问题（可指定归属应用）
   fromStress: (params: { stressTaskId: number; repoId: number; appName?: string }) =>
     http.post('/source/issues/from-stress', null, { params }),
+  // 一键验证修复效果：异步发起重放压测，立即返回「进行中」结论
+  verifyIssue: (issueId: number) => http.post(`/source/issues/${issueId}/verify`),
+  // 查询最近一次验证结论（含进行中状态，前端据此轮询取最终结果）
+  verifyStatus: (issueId: number) => http.get(`/source/issues/${issueId}/verify`),
+  // 补绑压测场景快照（非压测来源问题建立验证基线）
+  bindIssueStress: (issueId: number, stressTaskId: number) =>
+    http.post(`/source/issues/${issueId}/bind-stress`, null, { params: { stressTaskId } }),
   // 最近慢 SQL（源码页一键建问题用）
   recentSlowSqls: (params?: { app?: string; limit?: number }) =>
     http.get('/source/recent-slow-sqls', { params })
@@ -178,7 +201,10 @@ export const aiApi = {
   // AI 对话（Function Calling，服务端无 Key 时降级规则模式）
   chat: (data: { sessionId?: string; message: string }) => http.post('/ai/chat', data),
   // 清空会话
-  clearSession: (sessionId: string) => http.delete(`/ai/session/${sessionId}`)
+  clearSession: (sessionId: string) => http.delete(`/ai/session/${sessionId}`),
+  // 知识库检索（FULLTEXT ngram 中文检索；query 为空时返回最近结论）
+  knowledge: (params?: { query?: string; app?: string; limit?: number }) =>
+    http.get('/ai/knowledge', { params })
 }
 
 export const dbConnApi = {
@@ -196,4 +222,4 @@ export const dbConnApi = {
     http.post('/dbconns/test', data)
 }
 
-export default { appApi, jvmApi, traceApi, slowSqlApi, stressApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }
+export default { appApi, jvmApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }

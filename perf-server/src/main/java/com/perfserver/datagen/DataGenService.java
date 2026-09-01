@@ -35,7 +35,8 @@ import java.util.concurrent.Executors;
  * 数据灌入服务（宿主编排层）：任务落库 + 引擎调用 + 进度/语义提示持久化。
  * 生成逻辑全部委托 perf-datagen 模块（联表外键感知/枚举语义化/魔法值感知/Dry-Run）。
  *
- * <p>安全：JDBC URL 仅允许 jdbc:mysql:// 前缀；表名白名单正则；表组总行数上限 100 万。</p>
+ * <p>安全：JDBC URL 仅允许已注册方言的库种（当前 jdbc:mysql:// 与 jdbc:postgresql://）；
+ * 表名白名单正则；表组总行数上限 100 万。</p>
  */
 @Service
 public class DataGenService {
@@ -413,19 +414,20 @@ public class DataGenService {
         props.setProperty("user", dbUser == null ? "" : dbUser);
         props.setProperty("password", dbPassword == null ? "" : dbPassword);
         props.setProperty("connectTimeout", "5000");
-        return DriverManager.getConnection(ensureRewriteBatch(dbUrl), props);
+        return DriverManager.getConnection(enrichUrl(dbUrl), props);
     }
 
-    /** URL 增强：rewriteBatchedStatements（批量写入）+ useInformationSchema（读取列注释） */
-    private String ensureRewriteBatch(String url) {
-        String enriched = url;
-        if (!enriched.contains("rewriteBatchedStatements")) {
-            enriched += (enriched.contains("?") ? "&" : "?") + "rewriteBatchedStatements=true";
-        }
-        if (!enriched.contains("useInformationSchema")) {
-            enriched += "&useInformationSchema=true";
-        }
-        return enriched;
+    /**
+     * URL 增强：按已注册方言路由，避免把 MySQL 专有参数拼到 PG 等其它库种上。
+     * MySQL 追加 rewriteBatchedStatements（批量写入）+ useInformationSchema（读列注释），
+     * PostgreSQL 追加 reWriteBatchedInserts；未匹配方言时原样返回（调用方已前置校验）。
+     */
+    private String enrichUrl(String url) {
+        return engine.getDialects().stream()
+                .filter(d -> d.supports(url))
+                .findFirst()
+                .map(d -> d.enrichJdbcUrl(url))
+                .orElse(url);
     }
 
     /** 参数校验与上限保护（单表与表组两种形态） */
@@ -452,9 +454,16 @@ public class DataGenService {
         }
     }
 
+    /**
+     * JDBC URL 校验：仅允许已注册方言支持的库种（当前 MySQL + PostgreSQL）。
+     *
+     * <p>与 {@code DefaultDataGenEngine#resolveDialect} 使用同一套 {@code DatabaseDialect#supports}
+     * 判定，避免校验通过但引擎路由失败的不一致状态；新增库种只需注册方言实现，此处自动放行。
+     */
     private void validateDbUrl(String dbUrl) {
-        if (dbUrl == null || !dbUrl.startsWith("jdbc:mysql://")) {
-            throw new IllegalArgumentException("JDBC URL 仅支持 jdbc:mysql:// 前缀");
+        if (dbUrl == null || dbUrl.isBlank()
+                || engine.getDialects().stream().noneMatch(d -> d.supports(dbUrl))) {
+            throw new IllegalArgumentException("JDBC URL 仅支持 jdbc:mysql:// 或 jdbc:postgresql:// 前缀");
         }
     }
 

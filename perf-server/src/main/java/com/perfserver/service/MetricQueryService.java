@@ -2,10 +2,12 @@ package com.perfserver.service;
 
 import com.perfserver.entity.AppInstance;
 import com.perfserver.entity.JvmMetric;
+import com.perfserver.entity.SlowCommand;
 import com.perfserver.entity.SlowSql;
 import com.perfserver.entity.TraceChain;
 import com.perfserver.mapper.AppInstanceMapper;
 import com.perfserver.mapper.JvmMetricMapper;
+import com.perfserver.mapper.SlowCommandMapper;
 import com.perfserver.mapper.SlowSqlMapper;
 import com.perfserver.mapper.TraceChainMapper;
 import org.springframework.stereotype.Service;
@@ -28,15 +30,18 @@ public class MetricQueryService {
     private final JvmMetricMapper jvmMetricMapper;
     private final TraceChainMapper traceChainMapper;
     private final SlowSqlMapper slowSqlMapper;
+    private final SlowCommandMapper slowCommandMapper;
 
     public MetricQueryService(AppInstanceMapper appInstanceMapper,
                               JvmMetricMapper jvmMetricMapper,
                               TraceChainMapper traceChainMapper,
-                              SlowSqlMapper slowSqlMapper) {
+                              SlowSqlMapper slowSqlMapper,
+                              SlowCommandMapper slowCommandMapper) {
         this.appInstanceMapper = appInstanceMapper;
         this.jvmMetricMapper = jvmMetricMapper;
         this.traceChainMapper = traceChainMapper;
         this.slowSqlMapper = slowSqlMapper;
+        this.slowCommandMapper = slowCommandMapper;
     }
 
     /** 全部应用实例（在线优先） */
@@ -80,6 +85,22 @@ public class MetricQueryService {
             end = LocalDateTime.now();
         }
         return slowSqlMapper.query(app, start, end, minCostMs, Math.max(1, Math.min(limit, 500)));
+    }
+
+    /**
+     * 中间件慢命令：应用/类型/时间窗口/最小耗时。
+     *
+     * @param type redis/es/mq，空表示全部
+     */
+    public List<SlowCommand> slowCommands(String app, String type, LocalDateTime start, LocalDateTime end,
+                                          Double minCostMs, int limit) {
+        if (start == null) {
+            start = LocalDateTime.now().minusHours(1);
+        }
+        if (end == null) {
+            end = LocalDateTime.now();
+        }
+        return slowCommandMapper.query(app, type, start, end, minCostMs, Math.max(1, Math.min(limit, 500)));
     }
 
     /**

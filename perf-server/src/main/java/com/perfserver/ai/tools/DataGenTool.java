@@ -27,7 +27,8 @@ public class DataGenTool extends AbstractAiTool {
 
     @Override
     public String description() {
-        return "向被测数据库自动灌入测试数据（压测前置准备）。参数：dbUrl 必填（jdbc:mysql:// 开头，含库名）；"
+        return "向被测数据库自动灌入测试数据（压测前置准备）。参数：dbUrl 必填"
+                + "（jdbc:mysql:// 或 jdbc:postgresql:// 开头，含库名）；"
                 + "tableName 目标表名；rowCount 生成行数（1-1000000，默认 1000）；taskName 任务名（可选）。"
                 + "按表结构自动生成符合字段类型的数据并批量插入，返回任务 ID 与状态。";
     }

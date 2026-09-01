@@ -14,6 +14,12 @@ spring:
     hikari:
       maximum-pool-size: 20
 
+# 演示数据开关：默认 true（启动即灌 1 万用户 + 5 万订单，供压测产生可观测瓶颈）。
+# 需要纯净被测库时设为 false（或启动参数 --demo.data.enabled=false）：仅建表，不写入任何数据。
+demo:
+  data:
+    enabled: true
+
 mybatis:
   configuration:
     map-underscore-to-camel-case: true

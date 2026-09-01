@@ -21,6 +21,16 @@ public class DemoDataInitializer implements CommandLineRunner {
 
     private final JdbcTemplate jdbc;
 
+    /**
+     * 是否灌入演示数据（默认 true，保持原有行为）。
+     *
+     * <p>设为 {@code false} 时仅建表与增强 schema，不写入任何用户/订单数据，
+     * 用于需要纯净被测库的场景（如手工灌数、验证灌数引擎、干净的端到端基线）。
+     * 启动参数：{@code --demo.data.enabled=false}
+     */
+    @org.springframework.beans.factory.annotation.Value("${demo.data.enabled:true}")
+    private boolean dataEnabled;
+
     public DemoDataInitializer(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }
@@ -29,6 +39,10 @@ public class DemoDataInitializer implements CommandLineRunner {
     public void run(String... args) {
         createTables();
         upgradeSchema();
+        if (!dataEnabled) {
+            log.info("[perf-demo] 演示数据已关闭（demo.data.enabled=false）：仅建表，不灌入任何数据");
+            return;
+        }
         Long userCount = jdbc.queryForObject("SELECT COUNT(*) FROM perf_user", Long.class);
         if (userCount == null || userCount == 0) {
             seedUsers();

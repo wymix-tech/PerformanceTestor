@@ -32,8 +32,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li><b>平台不可达</b>：指数退避至 60s，队列满丢最旧——被测应用完全不受影响。</li>
  * </ul>
  *
- * <p>上报 body 格式：{"type":"trace|jvm|slowSql","appName":"...","items":[...],
- * "dropped":{"trace":n,"jvm":n,"slowSql":n}}（dropped 为自上次成功上报以来的累计丢弃数）
+ * <p>上报 body 格式：{"type":"trace|jvm|slowSql|slowCommand|hotspot","appName":"...","items":[...],
+ * "dropped":{"trace":n,"jvm":n,"slowSql":n,"slowCommand":n}}（dropped 为自上次成功上报以来的累计丢弃数）
  */
 public class MetricsReporter {
 
@@ -42,6 +42,8 @@ public class MetricsReporter {
     public static final String TYPE_JVM = "jvm";
     public static final String TYPE_SLOW_SQL = "slowSql";
     public static final String TYPE_HOTSPOT = "hotspot";
+    /** 中间件慢命令（Redis / ES / MQ，middlewareEnabled 开启后才有数据） */
+    public static final String TYPE_SLOW_COMMAND = "slowCommand";
 
     /** 单条 trace 字节估算：节点数 × 256B（Map + 装箱 + 字符串的保守均值），下限 1KB */
     private static final int BYTES_PER_NODE = 256;
@@ -86,6 +88,8 @@ public class MetricsReporter {
     private final Deque<Object> traceQueue = new ArrayDeque<>();
     private final Deque<Object> jvmQueue = new ArrayDeque<>();
     private final Deque<Object> slowSqlQueue = new ArrayDeque<>();
+    /** 中间件慢命令队列（Redis / ES / MQ） */
+    private final Deque<Object> slowCommandQueue = new ArrayDeque<>();
     /** CPU 热点批量队列（元素为单批聚合结果 Map；新批次取代旧批次） */
     private final Deque<Object> hotspotQueue = new ArrayDeque<>();
     /** trace 队列当前估算字节数（仅在 traceQueue 锁内变更） */
@@ -95,6 +99,7 @@ public class MetricsReporter {
     private final AtomicLong droppedTrace = new AtomicLong();
     private final AtomicLong droppedJvm = new AtomicLong();
     private final AtomicLong droppedSlowSql = new AtomicLong();
+    private final AtomicLong droppedSlowCommand = new AtomicLong();
 
     private final HttpReporter http;
     private final ScheduledExecutorService scheduler;
@@ -154,6 +159,9 @@ public class MetricsReporter {
         }
         if (System.currentTimeMillis() < deadline) {
             finalFlushSimple(TYPE_SLOW_SQL, slowSqlQueue);
+        }
+        if (System.currentTimeMillis() < deadline) {
+            finalFlushSimple(TYPE_SLOW_COMMAND, slowCommandQueue);
         }
         if (System.currentTimeMillis() < deadline) {
             finalFlushSimple(TYPE_HOTSPOT, hotspotQueue);
@@ -227,6 +235,12 @@ public class MetricsReporter {
         }
     }
 
+    public int pendingSlowCommandCount() {
+        synchronized (slowCommandQueue) {
+            return slowCommandQueue.size();
+        }
+    }
+
     // ===================== 上报入口（业务线程调用，非阻塞 O(1)） =====================
 
     /** 上报一条调用链（原生树直接入队，转 Map 在 reporter 线程做） */
@@ -288,6 +302,37 @@ public class MetricsReporter {
     }
 
     /**
+     * 上报一条中间件慢命令（Redis / ES / MQ；仅 middlewareEnabled 开启后产生）。
+     *
+     * @param type     中间件类型：redis/es/mq
+     * @param command  命令文本（方法名 + 参数，已截断）
+     * @param traceId  关联调用链 ID（未采样时为 null，不入表）
+     */
+    public void reportSlowCommand(String app, String type, String command, long costMs, long executeTimeMs,
+                                  List<String> methodChain, String traceId) {
+        if (!running.get()) {
+            return;
+        }
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("appName", app);
+        item.put("targetProjectName", targetProjectName);
+        item.put("type", type);
+        item.put("command", command);
+        item.put("costMs", costMs);
+        item.put("executeTime", executeTimeMs);
+        if (traceId != null && !traceId.isBlank()) {
+            item.put("traceId", traceId);
+        }
+        if (methodChain != null && !methodChain.isEmpty()) {
+            item.put("methodChain", methodChain);
+        }
+        synchronized (slowCommandQueue) {
+            dropOldest(slowCommandQueue, droppedSlowCommand);
+            slowCommandQueue.addLast(item);
+        }
+    }
+
+    /**
      * 上报一批 CPU 热点方法聚合（{@link com.perfagent.hotspot.HotspotSampler} 周期产出）。
      * 周期聚合数据具有时效性：新批次直接取代队列中未送达的旧批次。
      */
@@ -323,8 +368,9 @@ public class MetricsReporter {
         boolean okTrace = flushTrace();
         boolean okJvm = flushSimple(TYPE_JVM, jvmQueue);
         boolean okSql = flushSimple(TYPE_SLOW_SQL, slowSqlQueue);
+        boolean okCommand = flushSimple(TYPE_SLOW_COMMAND, slowCommandQueue);
         boolean okHotspot = flushSimple(TYPE_HOTSPOT, hotspotQueue);
-        if (okTrace && okJvm && okSql && okHotspot) {
+        if (okTrace && okJvm && okSql && okCommand && okHotspot) {
             backoffMs = 1000;
         }
     }
@@ -413,8 +459,9 @@ public class MetricsReporter {
         long dt = droppedTrace.getAndSet(0);
         long dj = droppedJvm.getAndSet(0);
         long ds = droppedSlowSql.getAndSet(0);
-        if (dt > 0 || dj > 0 || ds > 0) {
-            body.put("dropped", Map.of("trace", dt, "jvm", dj, "slowSql", ds));
+        long dc = droppedSlowCommand.getAndSet(0);
+        if (dt > 0 || dj > 0 || ds > 0 || dc > 0) {
+            body.put("dropped", Map.of("trace", dt, "jvm", dj, "slowSql", ds, "slowCommand", dc));
         }
         return body;
     }
@@ -437,6 +484,9 @@ public class MetricsReporter {
                 }
                 synchronized (slowSqlQueue) {
                     slowSqlQueue.clear();
+                }
+                synchronized (slowCommandQueue) {
+                    slowCommandQueue.clear();
                 }
                 System.err.println("[perf-agent] 平台不存在项目「" + targetProjectName
                         + "」，上报数据被全部丢弃，agent 已停止上报。"

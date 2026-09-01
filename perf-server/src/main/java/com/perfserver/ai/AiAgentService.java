@@ -21,39 +21,69 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
- * AI 编排服务：Function Calling 多轮循环。
+ * AI 编排服务：ReAct（Thought → Action → Observation）显式多轮循环。
  *
- * <p>维护按 sessionId 隔离的对话历史；每轮将消息与工具清单发送给大模型，
- * 若模型请求工具则执行并把结果以 tool 角色回填，循环至模型给出最终回复。
- * 无 API Key 或调用失败时降级为规则模板模式（基于真实库数据演示完整闭环）。
+ * <p>每轮流程：
+ * <ol>
+ *   <li><b>Thought</b>：模型输出本轮推理（content）；</li>
+ *   <li><b>Action</b>：模型请求工具（tool_calls），编排层逐个执行；</li>
+ *   <li><b>Observation</b>：工具返回截断到 {@value #MAX_OBSERVATION_CHARS} 字符后回填上下文，
+ *       防止大 JSON 导致上下文膨胀；</li>
+ * </ol>
+ * 循环至模型不再请求工具（FINISH）或达到 {@value #MAX_ROUNDS} 轮上限。
+ *
+ * <p>角色：按用户意图路由 {@link AiRole}，system prompt 在角色切换时原地替换（保留对话历史）。
+ *
+ * <p>流式：传入 {@link AiStreamEvent} 消费器时，正文增量实时推送，并在工具调用轮次间推送
+ * {@code thought} 心跳事件（防止代理层因长时间无数据断开连接）。
+ *
+ * <p>无 API Key 或调用失败时降级为规则模板模式（基于真实库数据演示完整闭环）。
  */
 @Service
 public class AiAgentService {
 
     private static final Logger log = LoggerFactory.getLogger(AiAgentService.class);
     /** 闭环自动执行（灌数+压测+三项观测+分析+报告）最多需 8 轮左右，留余量 */
-    private static final int MAX_ROUNDS = 10;
+    static final int MAX_ROUNDS = 10;
     private static final int MAX_HISTORY = 20;
+    /**
+     * 单条 Observation 回填上下文的字符上限：工具返回（如调用链、报告）可能上千行，
+     * 全量回填会在几轮内撑爆上下文窗口。
+     */
+    static final int MAX_OBSERVATION_CHARS = 2000;
+    /** 推送给前端的 Observation 预览长度（界面展示用，不影响回填上下文） */
+    private static final int OBSERVATION_PREVIEW_CHARS = 500;
+    /** 规则降级模式下逐段推送的块大小（模拟流式输出） */
+    private static final int FALLBACK_CHUNK_CHARS = 60;
+    /** 结论入库的最短正文长度（低于该值视为寒暄/无信息量） */
+    private static final int MIN_KNOWLEDGE_CHARS = 40;
 
     private final LlmClient llmClient;
     private final PromptBuilder promptBuilder;
+    private final AiKnowledgeService knowledgeService;
     private final MetricQueryService metricQueryService;
     private final StressTaskService stressTaskService;
     private final SourceIssueService sourceIssueService;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, AiTool> toolIndex = new ConcurrentHashMap<>();
-    private final Map<String, List<ObjectNode>> sessions = new ConcurrentHashMap<>();
+    private final Map<String, AiSession> sessions = new ConcurrentHashMap<>();
 
     public AiAgentService(LlmClient llmClient, PromptBuilder promptBuilder, List<AiTool> tools,
+                          AiKnowledgeService knowledgeService,
                           MetricQueryService metricQueryService, StressTaskService stressTaskService,
                           SourceIssueService sourceIssueService) {
         this.llmClient = llmClient;
         this.promptBuilder = promptBuilder;
+        this.knowledgeService = knowledgeService;
         this.metricQueryService = metricQueryService;
         this.stressTaskService = stressTaskService;
         this.sourceIssueService = sourceIssueService;
@@ -65,17 +95,42 @@ public class AiAgentService {
     /**
      * 处理用户消息并返回回复（含工具调用过程记录）。
      *
-     * @return {reply: 最终回复文本, toolCalls: [{name, args, result}], mode: llm|rule}
+     * @return {reply, toolCalls: [{name, args, result}], mode: llm|rule, role, steps: [ReAct 步骤]}
      */
     public Map<String, Object> chat(String sessionId, String message) {
+        return chat(sessionId, message, null, null);
+    }
+
+    /** 流式对话：正文与过程事件经 sink 实时推送 */
+    public Map<String, Object> chat(String sessionId, String message, Consumer<AiStreamEvent> sink) {
+        return chat(sessionId, message, null, sink);
+    }
+
+    /**
+     * 流式对话（带应用归属，供结论入库打标）。
+     *
+     * @param appName 关联应用名（可空，结论入库时作为 app_name）
+     * @param sink    流式事件消费器（可空，空则仅同步返回）
+     */
+    public Map<String, Object> chat(String sessionId, String message, String appName,
+                                    Consumer<AiStreamEvent> sink) {
         String sid = sessionId == null || sessionId.isBlank() ? "default" : sessionId;
-        List<ObjectNode> messages = sessions.computeIfAbsent(sid, k -> new ArrayList<>());
-        if (messages.isEmpty()) {
-            ObjectNode sys = mapper.createObjectNode();
-            sys.put("role", "system");
-            sys.put("content", promptBuilder.buildSystemPrompt());
-            messages.add(sys);
+        AiSession session = sessions.computeIfAbsent(sid, k -> new AiSession());
+        // 会话级串行：消息历史与角色是同一 sessionId 的共享状态，/ai/chat 与 /ai/chat/stream
+        // 双通道并发进入时若各自读写，会丢消息或破坏上下文顺序（ArrayList 亦非线程安全）
+        synchronized (session) {
+            return doChat(session, message, appName, sink);
         }
+    }
+
+    /** 单轮对话实现（调用方需持有 {@code session} 监视器） */
+    private Map<String, Object> doChat(AiSession session, String message, String appName,
+                                       Consumer<AiStreamEvent> sink) {
+        AiRole role = promptBuilder.detectRole(message);
+        session.role = role;
+        List<ObjectNode> messages = session.messages;
+        applySystemPrompt(messages, role);
+
         ObjectNode user = mapper.createObjectNode();
         user.put("role", "user");
         user.put("content", message == null ? "" : message);
@@ -83,60 +138,176 @@ public class AiAgentService {
         trim(messages);
 
         List<Map<String, Object>> toolLog = new ArrayList<>();
-        String reply = "";
+        List<ReactStep> steps = new ArrayList<>();
+        Set<String> usedTools = new LinkedHashSet<>();
+        String reply = null;
+        String mode = "llm";
+        ReactPhase phase = ReactPhase.THINK;
         int rounds = 0;
-        while (rounds < MAX_ROUNDS) {
-            ChatResult result = llmClient.chatWithTools(new ArrayList<JsonNode>(messages), promptBuilder.buildTools());
+
+        while (phase != ReactPhase.FINISH && rounds < MAX_ROUNDS) {
+            // 轮次心跳：工具执行期间无正文增量，防止代理层断连
+            emit(sink, AiStreamEvent.thought("第 " + (rounds + 1) + " 轮推理 · 角色[" + role.label() + "]"));
+            ChatResult result = llmClient.chatWithTools(new ArrayList<>(messages), promptBuilder.buildTools(),
+                    // 正文 token 不经 emit 吞异常：推送失败需上抛，LlmClient 据此中断读流（客户端已断开）
+                    sink == null ? null : text -> sink.accept(AiStreamEvent.token(text)));
             if (result == null) {
                 // 无 API Key / 调用失败：降级规则模板（基于真实数据）
                 reply = fallbackReply(message);
-                ObjectNode as = mapper.createObjectNode();
-                as.put("role", "assistant");
-                as.put("content", reply);
-                messages.add(as);
-                return Map.of("reply", reply, "toolCalls", toolLog, "mode", "rule");
-            }
-            if (result.getToolCalls().isEmpty()) {
-                reply = result.getContent() == null ? "" : result.getContent();
-                ObjectNode as = mapper.createObjectNode();
-                as.put("role", "assistant");
-                as.put("content", reply);
-                messages.add(as);
+                emitChunked(sink, reply);
+                appendAssistant(messages, reply);
+                mode = "rule";
+                phase = ReactPhase.FINISH;
                 break;
             }
-            // 回填模型请求的工具调用
-            ObjectNode as = mapper.createObjectNode();
-            as.put("role", "assistant");
-            as.put("content", result.getContent() == null ? "" : result.getContent());
-            ArrayNode calls = as.putArray("tool_calls");
-            for (ToolCall tc : result.getToolCalls()) {
-                ObjectNode c = calls.addObject();
-                c.put("id", tc.getId());
-                c.put("type", "function");
-                ObjectNode fn = c.putObject("function");
-                fn.put("name", tc.getName());
-                fn.put("arguments", tc.getArguments());
+            List<ToolCall> calls = result.getToolCalls() == null ? List.of() : result.getToolCalls();
+            String thought = result.getContent() == null ? "" : result.getContent();
+            if (thought.isBlank() && !calls.isEmpty()) {
+                thought = "调用工具获取证据";
             }
-            messages.add(as);
-            // 逐个执行并回填 tool 结果
-            for (ToolCall tc : result.getToolCalls()) {
-                String output = executeTool(tc.getName(), tc.getArguments());
-                ObjectNode toolMsg = mapper.createObjectNode();
-                toolMsg.put("role", "tool");
-                toolMsg.put("tool_call_id", tc.getId());
-                toolMsg.put("content", output);
-                messages.add(toolMsg);
-                toolLog.add(Map.of("name", tc.getName(), "args", tc.getArguments(), "result", Texts.truncate(output, 300)));
+            if (calls.isEmpty()) {
+                // FINISH：模型给出最终结论
+                reply = thought;
+                appendAssistant(messages, reply);
+                steps.add(new ReactStep(ReactPhase.FINISH, thought, null, null, null));
+                phase = ReactPhase.FINISH;
+                break;
+            }
+            if (!thought.isBlank()) {
+                steps.add(new ReactStep(ReactPhase.THINK, thought, null, null, null));
+                emit(sink, AiStreamEvent.thought(thought));
+            }
+            // ACT：回填 assistant（含 tool_calls）后逐个执行
+            appendAssistantWithCalls(messages, thought, calls);
+            steps.add(new ReactStep(ReactPhase.ACT, thought, joinToolNames(calls), joinToolArgs(calls), null));
+            for (ToolCall tc : calls) {
+                usedTools.add(tc.getName());
+                emit(sink, AiStreamEvent.tool(json(Map.of("name", tc.getName(), "arguments",
+                        tc.getArguments() == null ? "{}" : tc.getArguments()))));
+                String raw = executeTool(tc.getName(), tc.getArguments());
+                // OBSERVE：截断后回填上下文
+                String observation = Texts.truncate(raw, MAX_OBSERVATION_CHARS);
+                appendTool(messages, tc.getId(), observation);
+                steps.add(new ReactStep(ReactPhase.OBSERVE, thought, tc.getName(),
+                        tc.getArguments(), Texts.truncate(observation, OBSERVATION_PREVIEW_CHARS)));
+                toolLog.add(toolLogEntry(tc, observation));
+                emit(sink, AiStreamEvent.observation(json(Map.of("name", tc.getName(),
+                        "result", Texts.truncate(observation, OBSERVATION_PREVIEW_CHARS)))));
             }
             trim(messages);
             rounds++;
         }
-        return Map.of("reply", reply, "toolCalls", toolLog, "mode", "llm");
+
+        if (phase != ReactPhase.FINISH) {
+            // 轮次耗尽：用已获取的证据收尾，避免返回空回复
+            reply = "（已达最大推理轮次 " + MAX_ROUNDS + " 轮，以下基于已获取的证据给出阶段性结论）\n"
+                    + summarize(steps);
+            appendAssistant(messages, reply);
+            emitChunked(sink, reply);
+        }
+
+        if (reply == null) {
+            reply = "";
+        }
+        if ("llm".equals(mode)) {
+            saveKnowledge(appName, message, reply, role, usedTools);
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reply", reply);
+        out.put("toolCalls", toolLog);
+        out.put("mode", mode);
+        out.put("role", role.name());
+        out.put("rounds", rounds);
+        List<Map<String, Object>> stepMaps = new ArrayList<>(steps.size());
+        for (ReactStep s : steps) {
+            stepMaps.add(s.toMap());
+        }
+        out.put("steps", stepMaps);
+        emit(sink, AiStreamEvent.done(json(Map.of("mode", mode, "role", role.name(), "rounds", rounds))));
+        return out;
     }
 
-    /** 清空会话历史 */
+    /** 清空会话历史（含角色状态） */
     public void clear(String sessionId) {
         sessions.remove(sessionId);
+    }
+
+    /** 当前会话角色（无记录时返回 GENERAL） */
+    public AiRole roleOf(String sessionId) {
+        AiSession session = sessions.get(sessionId);
+        return session == null ? AiRole.GENERAL : session.role;
+    }
+
+    /**
+     * 会话上下文：消息历史 + 当前角色（二者需一起变更，故封装为同一对象加锁）。
+     *
+     * <p>{@code role} 用 volatile：{@link #roleOf} 不持锁读取，保证跨线程可见。
+     */
+    private static final class AiSession {
+        private final List<ObjectNode> messages = new ArrayList<>();
+        private volatile AiRole role = AiRole.GENERAL;
+    }
+
+    // ---------------- ReAct 内部实现 ----------------
+
+    /** 写入 system prompt；角色变化时原地替换，保留已有对话历史 */
+    private void applySystemPrompt(List<ObjectNode> messages, AiRole role) {
+        String prompt = promptBuilder.roleFor(role);
+        if (messages.isEmpty() || !"system".equals(messages.get(0).path("role").asText())) {
+            ObjectNode sys = mapper.createObjectNode();
+            sys.put("role", "system");
+            sys.put("content", prompt);
+            messages.add(0, sys);
+            return;
+        }
+        if (!prompt.equals(messages.get(0).path("content").asText())) {
+            messages.get(0).put("content", prompt);
+        }
+    }
+
+    private void appendAssistant(List<ObjectNode> messages, String content) {
+        ObjectNode as = mapper.createObjectNode();
+        as.put("role", "assistant");
+        as.put("content", content == null ? "" : content);
+        messages.add(as);
+        trim(messages);
+    }
+
+    private void appendAssistantWithCalls(List<ObjectNode> messages, String thought, List<ToolCall> calls) {
+        ObjectNode as = mapper.createObjectNode();
+        as.put("role", "assistant");
+        as.put("content", thought == null ? "" : thought);
+        ArrayNode arr = as.putArray("tool_calls");
+        for (ToolCall tc : calls) {
+            ObjectNode c = arr.addObject();
+            c.put("id", tc.getId());
+            c.put("type", "function");
+            ObjectNode fn = c.putObject("function");
+            fn.put("name", tc.getName());
+            fn.put("arguments", tc.getArguments() == null ? "{}" : tc.getArguments());
+        }
+        messages.add(as);
+    }
+
+    private void appendTool(List<ObjectNode> messages, String toolCallId, String observation) {
+        ObjectNode toolMsg = mapper.createObjectNode();
+        toolMsg.put("role", "tool");
+        toolMsg.put("tool_call_id", toolCallId);
+        toolMsg.put("content", observation);
+        messages.add(toolMsg);
+    }
+
+    /** ACT 步骤：本轮并行调用的工具名（逗号连接） */
+    private static String joinToolNames(List<ToolCall> calls) {
+        return calls.stream().map(ToolCall::getName).collect(Collectors.joining(","));
+    }
+
+    /** ACT 步骤：本轮各工具入参（顺序与 {@link #joinToolNames} 一致） */
+    private static String joinToolArgs(List<ToolCall> calls) {
+        return calls.stream()
+                .map(tc -> tc.getArguments() == null || tc.getArguments().isBlank() ? "{}" : tc.getArguments())
+                .collect(Collectors.joining(", "));
     }
 
     private String executeTool(String name, String args) {
@@ -154,6 +325,105 @@ public class AiAgentService {
             err.put("error", "工具执行异常: " + e.getMessage());
             return err.toString();
         }
+    }
+
+    /** 会话结束时沉淀结论（根因分析/修复建议等长文本才有沉淀价值） */
+    private void saveKnowledge(String appName, String message, String reply, AiRole role, Set<String> usedTools) {
+        if (reply == null || reply.trim().length() < MIN_KNOWLEDGE_CHARS) {
+            return;
+        }
+        String tags = role.name().toLowerCase() + (usedTools.isEmpty() ? "" : "," + String.join(",", usedTools));
+        try {
+            knowledgeService.save(appName, firstLine(reply), reply, tags);
+        } catch (Exception e) {
+            log.warn("save knowledge failed: {}", e.getMessage());
+        }
+    }
+
+    /** 轮次耗尽时的收尾摘要：列出已调用工具与观察结果预览 */
+    private String summarize(List<ReactStep> steps) {
+        if (steps.isEmpty()) {
+            return "本轮未获取到有效工具证据，请缩小问题范围后重试。";
+        }
+        StringBuilder sb = new StringBuilder();
+        int n = 0;
+        for (ReactStep s : steps) {
+            if (s.action() == null) {
+                continue;
+            }
+            n++;
+            sb.append(n).append(". ").append(s.action()).append(" → ")
+                    .append(Texts.truncate(s.observation(), 200)).append('\n');
+        }
+        return sb.length() == 0 ? "本轮未获取到有效工具证据，请缩小问题范围后重试。" : sb.toString();
+    }
+
+    /**
+     * 仅保留 system 首条 + 最近 {@value #MAX_HISTORY} 条。
+     *
+     * <p>截断点需回退到非 tool 消息：一次 ReAct 轮次会追加 1 条 assistant(tool_calls) + N 条
+     * tool，截断点很容易落在中间，留下没有前置 tool_call_id 的孤立 tool 消息。
+     * OpenAI 兼容接口对该形态通常直接报 400，表现为下一轮静默降级规则模式（用户无感知）。
+     */
+    private void trim(List<ObjectNode> messages) {
+        if (messages.size() <= MAX_HISTORY + 1) {
+            return;
+        }
+        // 索引 0 恒为 system，故回退下限为 1
+        int cut = Math.max(1, messages.size() - MAX_HISTORY);
+        while (cut > 1 && "tool".equals(messages.get(cut).path("role").asText())) {
+            cut--;
+        }
+        ObjectNode sys = messages.get(0);
+        List<ObjectNode> tail = new ArrayList<>(messages.subList(cut, messages.size()));
+        messages.clear();
+        messages.add(sys);
+        messages.addAll(tail);
+    }
+
+    // ---------------- 流式工具方法 ----------------
+
+    private static void emit(Consumer<AiStreamEvent> sink, AiStreamEvent event) {
+        if (sink == null) {
+            return;
+        }
+        try {
+            sink.accept(event);
+        } catch (Exception e) {
+            log.debug("stream sink error: {}", e.getMessage());
+        }
+    }
+
+    /** 规则降级文本分块推送（模拟逐段输出，保持前端渲染体验一致） */
+    private void emitChunked(Consumer<AiStreamEvent> sink, String text) {
+        if (sink == null || text == null || text.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < text.length(); i += FALLBACK_CHUNK_CHARS) {
+            emit(sink, AiStreamEvent.token(text.substring(i, Math.min(i + FALLBACK_CHUNK_CHARS, text.length()))));
+        }
+    }
+
+    private String json(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    private static Map<String, Object> toolLogEntry(ToolCall tc, String observation) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("name", tc.getName());
+        m.put("args", tc.getArguments() == null ? "{}" : tc.getArguments());
+        m.put("result", Texts.truncate(observation, 300));
+        return m;
+    }
+
+    private static String firstLine(String text) {
+        int nl = text.indexOf('\n');
+        String line = nl > 0 ? text.substring(0, nl) : text;
+        return line.trim();
     }
 
     /**
@@ -257,16 +527,5 @@ public class AiAgentService {
         return "我是 PerformanceTestor 性能检测助手。当前未配置大模型 API Key，处于演示模式（基于真实库数据）。\n"
                 + "我可以：发起压测、查询 JVM 指标 / 调用链 / 慢 SQL、灌数据、分析代码问题、生成修复提示词、"
                 + "容量评估与扩容建议、生成性能报告。配置 Key 后可获得大模型驱动的自然语言对话能力。";
-    }
-
-    private void trim(List<ObjectNode> messages) {
-        // 保留 system 首条 + 最近 MAX_HISTORY 条
-        if (messages.size() > MAX_HISTORY + 1) {
-            ObjectNode sys = messages.get(0);
-            List<ObjectNode> tail = new ArrayList<>(messages.subList(messages.size() - MAX_HISTORY, messages.size()));
-            messages.clear();
-            messages.add(sys);
-            messages.addAll(tail);
-        }
     }
 }

@@ -14,6 +14,10 @@
         DELETE FROM slow_sql WHERE app_name = #{appName}
     </delete>
 
+    <delete id="deleteSlowCommandByApp">
+        DELETE FROM slow_command WHERE app_name = #{appName}
+    </delete>
+
     <select id="findStressTaskIdsByApp" resultType="long">
         SELECT id FROM stress_task WHERE app_name = #{appName}
     </select>
