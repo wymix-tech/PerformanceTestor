@@ -31,7 +31,7 @@
 
 引入**步骤上下文引用**语法，下游步骤可直接引用任意上游步骤的响应头与响应体，无需声明 extract：
 
-- 第 N 步可引用第 1 ~ N-1 步的返回数据（含 header）；
+- 第 N 步可引用第 1 ~ N-1 步的返回数据（含 header）；**引用作用域覆盖该步骤的请求 URL、请求 body 与请求 header**（即后续步骤的请求 header 模板同样支持 `{{pN.header.x}}` / `{{pN.result.x}}`，与 URL/body 一致）；
 - 引用语法：`{{p1.header.X-Token}}`、`{{p2.result.data.token}}`；
 - `p1`/`p2`/... 指步骤序号（**默认实现**，从 1 开始）；每步可起名，用 `{{login.result.xxx}}` 亦可；
 - `header` = 从响应头取值；`result` = 从响应体取值；
@@ -129,6 +129,8 @@ TemplateRenderer（新增，吸收 ResponseVarExtractor.substitute 逻辑）
 
 实现为引擎内静态工具类 `TemplateRenderer`，吸收并委托 `ResponseVarExtractor.substitute`（后者保留，标记 `@Deprecated` 供存量单测过渡）。
 
+**渲染作用域**：上下文引用对步骤模板的**三处渲染点统一生效**——`url`、`body`、以及**每个请求 header 的 key 值**（header 名本身不渲染，值参与渲染）。即除第一步外的任意步骤，其请求 header 值（如 `Authorization: Bearer {{p1.result.data.token}}`、`X-Trace-Id: {{p1.header.X-Request-Id}}`）与 URL/body 走完全相同的解析优先级与未命中语义；第一步因尚无任何上游上下文，模板中即便写了 `{{pN.*}}` 也只会保留原文（等同未命中）。
+
 **性能**：占位符扫描沿用现有手写扫描（无正则回溯风险）；上下文引用预编译——任务启动时 `Scenario.of()` 对每个步骤的 url/headers/body 扫描一遍占位符，把"该步骤依赖哪些上下文槽位"预计算成位图，运行期仅做已登记的槽位查找，无占位符的模板直接原样发送（现状已如此，保持）。
 
 ### 2.3 StepContextStore（核心新增）
@@ -187,7 +189,7 @@ public static class ScenarioStep {
 | ---- | ---- |
 | `Scenario.of()` | 增加 `StepContextStore` 构建（别名表校验）；对每步模板做占位符预编译 |
 | `Worker.runScenario()` | 响应到达后：`ctxStore.put(stepIdx, resp)`（原子替换）→ 再走现有 extract 流程 |
-| `Worker.buildRequest()` | 头值渲染从 `substitute(v, pool)` 改为 `TemplateRenderer.render(v, pool, ctxStore)`；url/body 同理 |
+| `Worker.buildRequest()` | **请求 header 值**渲染从 `substitute(v, pool)` 改为 `TemplateRenderer.render(v, pool, ctxStore)`；url/body 同理——三处渲染点（url / headers / body）统一走双池渲染，后续步骤的请求 header 因此可直接引用上游响应头与响应体 |
 | `runSingle()` | 不变（单接口模式无上下文） |
 
 顺序关键点：**先写槽位后 extract**——extract 写 varPool 与槽位写上下文互不依赖，但 extract 结果可能又被下游以 `{{var}}` 引用，保持现状即可。
