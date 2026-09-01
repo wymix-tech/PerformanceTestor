@@ -20,7 +20,10 @@ main:
           jobs:
             backend:
               name: 后端单元测试
-              image: maven:3.9-eclipse-temurin-21
+              # 与项目 maven.compiler.release=17 及本地开发环境对齐。
+              # 高版本 JDK 编低版本目标虽可工作（--release 17），但未来版本可能移除
+              # 对旧 release 的支持，且易造成「本地过了 CI 挂」的版本漂移。
+              image: maven:3.9-eclipse-temurin-17
               # Maven 依赖缓存：跨构建复用，避免每次全量下载（cow 写时复制，支持并行 Job）
               docker:
                 volumes:
@@ -33,7 +36,9 @@ main:
                 mvn -B -ntp test
             frontend:
               name: 前端类型检查与构建
-              image: node:20
+              # 必须 >= 22：StrykerJS 10 要求 node>=22（node:20 会直接启动失败）。
+              # 前端产物是静态资源、运行期在浏览器，构建期 Node 版本不影响部署环境。
+              image: node:22
               docker:
                 volumes:
                   - cache:/root/.npm:rw
