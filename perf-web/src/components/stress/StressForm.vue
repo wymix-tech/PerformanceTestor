@@ -290,6 +290,27 @@ const KEYED_SOURCES = ['header', 'json']
  *
  * @returns 规则数组；解析失败时返回 { error } 提示，由调用方展示
  */
+/**
+ * 取跳过前 {@code n} 个空白分隔 token 后的剩余原文（保留原始空白）。
+ *
+ * <p>为什么不用 {@code split(/\s+/).slice(n).join(' ')}：该写法会把期望值中的
+ * 连续空格折叠成一个，导致 {@code body contains "a  b"}（两空格）这类断言
+ * 被静默改成单空格而永不命中。改为按位置定位，原样保留剩余子串。
+ *
+ * @param line 已去首尾空白的单行文本
+ * @param n    需跳过的 token 个数
+ * @return 剩余原文（已去前导空白）；token 不足时返回空串
+ */
+function restAfterTokens(line: string, n: number): string {
+  let idx = 0
+  for (let t = 0; t < n; t++) {
+    while (idx < line.length && /\s/.test(line[idx])) idx++
+    while (idx < line.length && !/\s/.test(line[idx])) idx++
+  }
+  while (idx < line.length && /\s/.test(line[idx])) idx++
+  return line.slice(idx)
+}
+
 function parseAssertions(text: string): { rules?: Array<Record<string, string>>; error?: string } {
   const rules: Array<Record<string, string>> = []
   const lines = (text || '').split('\n')
@@ -310,13 +331,13 @@ function parseAssertions(text: string): { rules?: Array<Record<string, string>>;
       }
       key = parts[1]
       op = parts[2]
-      expected = parts.slice(3).join(' ')
+      expected = restAfterTokens(line, 3)
     } else {
       if (parts.length < 3) {
         return { error: `第 ${i + 1} 行：${source} 断言格式为「${source} 比较 期望值」，如 ${source} eq 200` }
       }
       op = parts[1]
-      expected = parts.slice(2).join(' ')
+      expected = restAfterTokens(line, 2)
     }
     if (!ASSERT_OPS.includes(op as typeof ASSERT_OPS[number])) {
       return { error: `第 ${i + 1} 行：比较方式「${op}」不合法，可选 ${ASSERT_OPS.join(' / ')}` }
