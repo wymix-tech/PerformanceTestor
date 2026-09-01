@@ -387,6 +387,9 @@ public class HttpStressEngine implements StressEngine {
         private void runSingle() throws InterruptedException {
             HttpRequest requestObj = buildRequest(request.getTargetUrl(), request.getMethod(),
                     request.getHeaders(), request.getBody());
+            List<StressTaskRequest.Assertion> rules = request.getAssertions();
+            // 无 body 断言时不读响应体（避免无谓的字符串驻留开销）
+            boolean assertNeedsBody = ResponseAssertor.needsBody(rules);
             while (!stop.get()) {
                 if (limiter != null && !limiter.acquire(stop)) {
                     return;
@@ -397,6 +400,10 @@ public class HttpStressEngine implements StressEngine {
                     HttpResponse<String> resp = client.send(requestObj, HttpResponse.BodyHandlers.ofString());
                     if (resp.statusCode() >= 400) {
                         error = true;
+                    } else if (rules != null && !rules.isEmpty()) {
+                        // 状态码已通过，再按结果判断校验业务成败（如 200 包裹的 code=500）
+                        error = !ResponseAssertor.matches(rules, resp.statusCode(),
+                                resp.headers().map(), assertNeedsBody ? resp.body() : null);
                     }
                 } catch (Exception e) {
                     error = true;
@@ -430,17 +437,25 @@ public class HttpStressEngine implements StressEngine {
                         step.getMethod(),
                         step.getHeaders(),
                         ResponseVarExtractor.substitute(step.getBody(), scenario.pool()));
+                List<StressTaskRequest.Assertion> rules = step.getAssertions();
+                // 仅在声明了提取规则或 body/json 断言时保留响应体（避免无谓的字符串驻留开销）
+                boolean needBody = hasExtract(step) || ResponseAssertor.needsBody(rules);
                 long t0 = System.nanoTime();
                 boolean error = false;
                 String body = null;
+                Map<String, List<String>> respHeaders = null;
                 try {
                     HttpResponse<String> resp = client.send(requestObj, HttpResponse.BodyHandlers.ofString());
                     if (resp.statusCode() >= 400) {
                         error = true;
+                    } else if (rules != null && !rules.isEmpty()) {
+                        // 状态码已通过，再按本步骤的结果判断校验业务成败
+                        error = !ResponseAssertor.matches(rules, resp.statusCode(),
+                                resp.headers().map(), ResponseAssertor.needsBody(rules) ? resp.body() : null);
                     }
-                    // 仅在声明了提取规则时保留响应体（避免无谓的字符串驻留开销）
-                    if (hasExtract(step)) {
+                    if (needBody) {
                         body = resp.body();
+                        respHeaders = resp.headers().map();
                     }
                 } catch (Exception e) {
                     error = true;
@@ -452,8 +467,9 @@ public class HttpStressEngine implements StressEngine {
                 }
                 // 变量提取在计数之后：即便本次不计入统计，也应更新变量池，
                 // 保证后续步骤拿到新鲜登录态（warmup 期同样需要建立有效 token）
-                if (body != null) {
-                    ResponseVarExtractor.extract(body, step.getExtract(), scenario.pool(), MAX_EXTRACT_BODY_CHARS);
+                if (needBody) {
+                    ResponseVarExtractor.extract(body, respHeaders, step.getExtract(),
+                            scenario.pool(), MAX_EXTRACT_BODY_CHARS);
                 }
             }
         }
