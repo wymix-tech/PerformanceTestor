@@ -14,12 +14,16 @@ MYSQL_HOST=${MYSQL_HOST:-127.0.0.1}
 MYSQL_PORT=${MYSQL_PORT:-3306}
 MYSQL_USER=${MYSQL_USER:-root}
 MYSQL_PASSWORD=${MYSQL_PASSWORD:-root123}
+# 建库脚本：默认 init_empty.sql（纯净空表，无演示数据）
+# 需要演示数据时改用：SQL_FILE=sql/init.sql bash scripts/start-server.sh
+SQL_FILE=${SQL_FILE:-sql/init_empty.sql}
 
-echo "==> [1/3] 初始化数据库"
+echo "==> [1/3] 初始化数据库（脚本 ${SQL_FILE}）"
 if command -v mysql >/dev/null 2>&1; then
-  mysql -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" < sql/init.sql
+  mysql --default-character-set=utf8mb4 -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" \
+        -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" < "${SQL_FILE}"
 else
-  echo "    [WARN] 未找到 mysql 客户端，请手工执行 sql/init.sql"
+  echo "    [WARN] 未找到 mysql 客户端，请手工执行 ${SQL_FILE}"
 fi
 
 echo "==> [2/3] 启动 perf-server（端口 ${SERVER_PORT}，上报接口 /api/agent/report）"

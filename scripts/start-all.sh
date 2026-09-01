@@ -18,18 +18,22 @@ MYSQL_USER=${MYSQL_USER:-root}
 MYSQL_PASSWORD=${MYSQL_PASSWORD:-root123}
 # Agent 上报地址（单机演示指向本机 perf-server）
 AGENT_REPORT_URL=${AGENT_REPORT_URL:-"http://127.0.0.1:${SERVER_PORT}/api/agent/report"}
+# 建库脚本：默认 init_empty.sql（纯净空表，无演示数据）
+# 需要首屏演示数据时改用：SQL_FILE=sql/init.sql bash scripts/start-all.sh
+SQL_FILE=${SQL_FILE:-sql/init_empty.sql}
 
 mkdir -p logs
 echo "==> PerformanceTestor 单机演示模式启动"
 echo "    平台端口: ${SERVER_PORT} / 前端端口: ${WEB_PORT} / 被测应用端口: ${DEMO_PORT}"
 
 # ---------- 1. 初始化数据库 ----------
-echo "==> [1/5] 初始化数据库（${MYSQL_HOST}:${MYSQL_PORT}）"
+echo "==> [1/5] 初始化数据库（${MYSQL_HOST}:${MYSQL_PORT}，脚本 ${SQL_FILE}）"
 if command -v mysql >/dev/null 2>&1; then
-  mysql -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" < sql/init.sql
+  mysql --default-character-set=utf8mb4 -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" \
+        -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" < "${SQL_FILE}"
   echo "    数据库初始化完成"
 else
-  echo "    [WARN] 未找到 mysql 客户端，请手工执行 sql/init.sql 完成建表"
+  echo "    [WARN] 未找到 mysql 客户端，请手工执行 ${SQL_FILE} 完成建表"
 fi
 
 # ---------- 2. 启动 perf-server ----------
