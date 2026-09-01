@@ -337,6 +337,35 @@ class IssueVerifyServiceTest {
         verify(stressTaskService, never()).createAndRun(org.mockito.ArgumentMatchers.any());
     }
 
+    /**
+     * 验证线程池队列已满时必须在发起重放<b>之前</b>拒绝：
+     * 若先发起重放、后因队列满被拒，重放压测无法收回——白打一轮压测还留下孤儿任务。
+     */
+    @Test
+    void verifyRejectsBeforeReplayWhenQueueFull() throws Exception {
+        when(issueMapper.findById(87L)).thenReturn(issue(87, "fixed", 1L));
+        when(taskMapper.findById(1L)).thenReturn(finishedTask(1, "{\"qps\":100,\"p95Ms\":200}"));
+
+        // 反射填充内部验证线程池队列至满，模拟"等待验证的任务过多"
+        java.lang.reflect.Field field = IssueVerifyService.class.getDeclaredField("executor");
+        field.setAccessible(true);
+        java.util.concurrent.ThreadPoolExecutor pool =
+                (java.util.concurrent.ThreadPoolExecutor) field.get(service);
+        java.util.concurrent.BlockingQueue<Runnable> queue = pool.getQueue();
+        while (queue.remainingCapacity() > 0) {
+            queue.add(() -> { });
+        }
+
+        IssueVerifyService.VerifyResult r = service.verify(87);
+
+        assertTrue(r.isReplayFailed(), "队列已满应提前失败，不再发起重放压测");
+        assertTrue(r.getMessage().contains("任务过多"), r.getMessage());
+        verify(stressTaskService, never()).createAndRun(org.mockito.ArgumentMatchers.any(StressTaskRequest.class));
+        // 拒绝结论需落库，前端凭 verifyStatus 轮询可见
+        verify(issueMapper).updateVerify(eq(87L), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(), eq("fixed"));
+    }
+
     /** 状态查询：直接返回库内结论（一键验证为异步任务，前端据此轮询） */
     @Test
     void verifyStatusReturnsPersistedResult() {

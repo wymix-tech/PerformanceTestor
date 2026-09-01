@@ -149,7 +149,8 @@ public class AiAgentService {
             // 轮次心跳：工具执行期间无正文增量，防止代理层断连
             emit(sink, AiStreamEvent.thought("第 " + (rounds + 1) + " 轮推理 · 角色[" + role.label() + "]"));
             ChatResult result = llmClient.chatWithTools(new ArrayList<>(messages), promptBuilder.buildTools(),
-                    sink == null ? null : text -> emit(sink, AiStreamEvent.token(text)));
+                    // 正文 token 不经 emit 吞异常：推送失败需上抛，LlmClient 据此中断读流（客户端已断开）
+                    sink == null ? null : text -> sink.accept(AiStreamEvent.token(text)));
             if (result == null) {
                 // 无 API Key / 调用失败：降级规则模板（基于真实数据）
                 reply = fallbackReply(message);

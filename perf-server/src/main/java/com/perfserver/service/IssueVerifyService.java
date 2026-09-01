@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -68,7 +67,7 @@ public class IssueVerifyService {
     private final ObjectMapper objectMapper;
     private final int timeoutSec;
     /** 等待重放完成的线程池（轮询等待最长 timeoutSec，绝不能跑在 HTTP 工作线程上） */
-    private final ExecutorService executor;
+    private final ThreadPoolExecutor executor;
     /** 正在验证的问题 ID：防止同一问题被重复发起重放压测 */
     private final Set<Long> runningIssueIds = ConcurrentHashMap.newKeySet();
 
@@ -216,6 +215,16 @@ public class IssueVerifyService {
             return pending(issue, snapshotId, null, "已有一次验证在进行中，请勿重复发起");
         }
 
+        // 提交判定任务前先检查验证线程池队列余量：若先发起重放、后因队列满被拒，
+        // 已发起的重放压测无法收回——白白对目标服务打一轮压测，还留下无人等待判定的孤儿任务
+        if (executor.getQueue().remainingCapacity() == 0) {
+            runningIssueIds.remove(issueId);
+            VerifyResult rejected = replayFailed(issue, snapshotId, null,
+                    "当前等待验证的任务过多，请稍后再试");
+            persist(issue, rejected);
+            return rejected;
+        }
+
         StressTask replay;
         try {
             replay = stressTaskService.createAndRun(toRequest(snapshot));
@@ -244,6 +253,7 @@ public class IssueVerifyService {
                 }
             });
         } catch (RejectedExecutionException e) {
+            // 前置的队列余量检查与提交之间存在并发窗口，仍可能被拒：此处兜底保证状态一致
             runningIssueIds.remove(issueId);
             VerifyResult r = replayFailed(issue, snapshotId, replay.getId(),
                     "当前等待验证的任务过多，请稍后再试");

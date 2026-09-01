@@ -11,7 +11,10 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -56,7 +59,7 @@ public class ReportExportService {
     /** PDF 渲染并发闸门：超限请求排队等待，而非并发抢占 CPU */
     private final Semaphore pdfPermit = new Semaphore(PDF_MAX_CONCURRENT);
     /**
-     * PDF 产物缓存（LRU，按渲染 HTML 的内容哈希为键）。
+     * PDF 产物缓存（LRU，按渲染 HTML 的 SHA-256 摘要为键）。
      * 用 HTML 而非 taskId 作键：任务结果更新后 HTML 随之变化，天然不会命中旧产物。
      */
     private final Map<String, byte[]> pdfCache = Collections.synchronizedMap(
@@ -139,7 +142,7 @@ public class ReportExportService {
      * 前端「预览/导出/重试」很容易在短时间内对同一任务发起多次请求。
      */
     private ExportResult buildPdfCached(String html, String filename) {
-        String key = Integer.toHexString(html.hashCode());
+        String key = sha256Hex(html);
         byte[] cached = pdfCache.get(key);
         if (cached != null) {
             log.debug("report pdf cache hit, key={}, {} bytes", key, cached.length);
@@ -148,6 +151,22 @@ public class ReportExportService {
         byte[] pdf = renderPdf(html);
         pdfCache.put(key, pdf);
         return new ExportResult(pdf, filename, "application/pdf", fontWarning());
+    }
+
+    /**
+     * HTML 内容的 SHA-256 摘要（缓存键）。
+     *
+     * <p>不用 {@code String.hashCode}：仅 32 位，长报告在导出量累积后碰撞概率不可忽略，
+     * 且碰撞时会静默返回内容错误的 PDF，难以排查。SHA-256 为 256 位摘要，碰撞概率可忽略。
+     */
+    private static String sha256Hex(String html) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(md.digest(html.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 是 JCA 规范必备算法，理论不可达；退回 hashCode 仅损失防碰撞性，不影响可用性
+            return "h-" + Integer.toHexString(html.hashCode());
+        }
     }
 
     /** HTML → PDF（openhtmltopdf + PDFBox，A4），并发受 {@link #pdfPermit} 限制 */

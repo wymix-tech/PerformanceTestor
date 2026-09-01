@@ -179,6 +179,10 @@ public class TraceEnhancer {
     /**
      * 中间件方法匹配（Lettuce/Jedis 全命令方法）：排除静态、抽象、桥接合成、
      * 生命周期与 Object 方法，避免噪音与重复计数。
+     *
+     * <p>Lettuce 的 {@code BaseRedisCommands} 继承链上混有连接管理方法
+     * （{@code isOpen/reset/setTimeout/flushCommands/setAutoFlushCommands/size} 等），
+     * 非真实数据命令，白名单式排除列表拦不全时会产生埋点噪音，故一并排除。
      */
     private static ElementMatcher.Junction<MethodDescription> middlewareMethods() {
         return not(isStatic())
@@ -190,6 +194,13 @@ public class TraceEnhancer {
                 .and(not(named("toString")))
                 .and(not(named("hashCode")))
                 .and(not(named("equals")))
+                .and(not(named("isOpen")))
+                .and(not(named("reset")))
+                .and(not(named("size")))
+                .and(not(nameStartsWith("setTimeout")))
+                .and(not(nameStartsWith("setAutoFlushCommands")))
+                .and(not(nameStartsWith("flushCommands")))
+                .and(not(nameStartsWith("activeCommandsCount")))
                 .and(not(nameStartsWith("dispatch")))
                 .and(not(nameStartsWith("lambda$")));
     }

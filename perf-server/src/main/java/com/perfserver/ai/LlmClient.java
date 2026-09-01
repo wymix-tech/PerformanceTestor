@@ -148,6 +148,8 @@ public class LlmClient {
      *
      * <p>降级：连接中断/读流异常时，若已累积到正文则返回部分结果（token 已推给前端，
      * 丢弃会与前端已渲染内容不一致）；无任何内容时返回 null，由调用方降级规则模式。
+     * 下游 token 推送失败（客户端断开）时单独捕获并<b>中断读流</b>——继续读完只会
+     * 白耗上游 token，且不应与读流异常混为一谈；同样返回已推送的部分结果。
      *
      * @return 合并后的完整回复；无可用内容时返回 null（调用方降级规则模式）
      */
@@ -187,7 +189,16 @@ public class LlmClient {
                         break;
                     }
                     for (String token : accumulator.consume(data, objectMapper)) {
-                        tokenSink.accept(token);
+                        try {
+                            tokenSink.accept(token);
+                        } catch (Exception e) {
+                            // 下游推送失败（客户端断开等）与读流异常是两回事：
+                            // 前者应立即中断读流，不再为已断开的下游继续消费上游 token；
+                            // 已推送的部分正文降级返回，保持与前端已渲染内容一致
+                            log.info("llm stream token sink failed (client disconnected?), stop reading: {}",
+                                    e.getMessage());
+                            return partialResult(accumulator);
+                        }
                     }
                 }
             }
@@ -195,14 +206,19 @@ public class LlmClient {
         } catch (Exception e) {
             log.warn("llm stream api call failed: {}", e.getMessage());
             // 已推给前端的 token 不能丢弃：有部分正文时降级返回，保持与前端已渲染内容一致
-            String partial = accumulator.partialContent();
-            if (partial != null && !partial.isBlank()) {
-                ChatResult partialResult = new ChatResult();
-                partialResult.setContent(partial);
-                return partialResult;
-            }
+            return partialResult(accumulator);
+        }
+    }
+
+    /** 部分正文降级结果（读流中断/下游断开时用）；无任何内容时返回 null，由调用方降级规则模式 */
+    private static ChatResult partialResult(StreamAccumulator accumulator) {
+        String partial = accumulator.partialContent();
+        if (partial == null || partial.isBlank()) {
             return null;
         }
+        ChatResult result = new ChatResult();
+        result.setContent(partial);
+        return result;
     }
 
     /**

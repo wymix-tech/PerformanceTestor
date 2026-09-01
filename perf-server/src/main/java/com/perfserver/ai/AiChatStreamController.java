@@ -111,9 +111,12 @@ public class AiChatStreamController {
                         if (closed.get()) {
                             return;
                         }
-                        // 推送失败即视为客户端断开：停止后续推送，避免刷日志
+                        // 推送失败即视为客户端断开：标记关闭并上抛中断信号。
+                        // 过程事件（thought/tool/observation）由 AiAgentService 吞掉该异常仅记日志；
+                        // 正文 token 的异常由 LlmClient 捕获后中断读流，不再为已断开的下游消耗上游 token
                         if (!send(emitter, event)) {
                             closed.set(true);
+                            throw new IllegalStateException("sse client disconnected");
                         }
                     });
                     // done 事件由 AiAgentService 在返回前推送（携带 mode/role/rounds），此处仅收尾连接
