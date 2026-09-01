@@ -1,11 +1,12 @@
 package com.perfserver.stress;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -17,12 +18,10 @@ import java.util.regex.PatternSyntaxException;
  * 仅按状态码统计会让错误率严重失真，故提供结果判断把业务失败计入错误。
  *
  * <p>性能约束：断言在每个样本上执行，必须轻量——
- * 仅在存在 body/json 断言时才解析响应体；正则预编译并缓存于规则对象之外
- * （由调用方持有规则列表，此处按规则惰性解析，避免每次请求重复编译）。
+ * 仅在存在 body/json 断言时才解析响应体；正则预编译并缓存
+ * （避免每个样本重复 {@code Pattern.compile}，该开销远大于匹配本身）。
  */
 public final class ResponseAssertor {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** 参与断言解析的响应体最大字符数（超长响应截断，避免压测机被大响应拖垮） */
     static final int MAX_ASSERT_BODY_CHARS = 64 * 1024;
@@ -92,10 +91,10 @@ public final class ResponseAssertor {
                 }
             } else if ("json".equalsIgnoreCase(src)) {
                 if (!rootResolved) {
-                    root = parseJson(body);
+                    root = ResponseAccess.parseJson(body, MAX_ASSERT_BODY_CHARS);
                     rootResolved = true;
                 }
-                JsonNode node = root == null ? null : resolvePath(root, a.getKey());
+                JsonNode node = root == null ? null : ResponseAccess.resolvePath(root, a.getKey());
                 if (node == null || node.isNull() || node.isMissingNode()) {
                     // 路径未命中：除 ne / notContains 外判失败
                     String op = a.getOp() == null ? "eq" : a.getOp();
@@ -118,16 +117,7 @@ public final class ResponseAssertor {
 
     /** 响应头取值（大小写不敏感；多个同名头取第一个） */
     private static String headerValue(Map<String, List<String>> headers, String name) {
-        if (headers == null || name == null || name.isBlank()) {
-            return null;
-        }
-        for (Map.Entry<String, List<String>> e : headers.entrySet()) {
-            if (e.getKey() != null && e.getKey().equalsIgnoreCase(name.trim())
-                    && e.getValue() != null && !e.getValue().isEmpty()) {
-                return e.getValue().get(0);
-            }
-        }
-        return null;
+        return ResponseAccess.headerValue(headers, name);
     }
 
     /**
@@ -181,38 +171,43 @@ public final class ResponseAssertor {
     }
 
     private static boolean regexMatch(String actual, String pattern) {
-        try {
-            return Pattern.compile(pattern).matcher(actual).find();
-        } catch (PatternSyntaxException ignored) {
-            // 正则非法：视为不命中，但不抛异常中断压测
-            return false;
-        }
+        Optional<Pattern> compiled = compileCached(pattern);
+        // 正则非法：视为不命中，但不抛异常中断压测
+        return compiled.isPresent() && compiled.get().matcher(actual).find();
     }
 
-    private static JsonNode parseJson(String body) {
-        if (body == null || body.isBlank()) {
-            return null;
-        }
-        try {
-            String json = body.length() > MAX_ASSERT_BODY_CHARS
-                    ? body.substring(0, MAX_ASSERT_BODY_CHARS) : body;
-            return MAPPER.readTree(json);
-        } catch (Exception e) {
-            // 非 JSON 响应：无法做 json 断言
-            return null;
-        }
-    }
+    /**
+     * 预编译正则缓存。
+     *
+     * <p>为什么必须缓存：断言在压测热路径上逐样本执行，而 {@code Pattern.compile}
+     * 开销远大于匹配本身——每个样本重复编译会让 regex 断言成为 QPS 瓶颈。
+     *
+     * <p>有界性：key 来自用户配置的断言规则，数量天然只有个位数；
+     * 仍设上限兜底，防止正则由模板动态拼出时无界增长。值为
+     * {@code Optional.empty()} 表示编译失败（非法正则），同样缓存，
+     * 避免错误配置在每个样本上重复触发编译异常。
+     */
+    private static final ConcurrentHashMap<String, Optional<Pattern>> PATTERN_CACHE =
+            new ConcurrentHashMap<>();
+    /** 缓存上限（超出后整体清空：正则种类极少，清空代价可忽略） */
+    private static final int MAX_CACHED_PATTERNS = 256;
 
-    /** 按点分路径取值（与 ResponseVarExtractor 语义一致） */
-    private static JsonNode resolvePath(JsonNode root, String path) {
-        JsonNode current = root;
-        for (String segment : path.split("\\.")) {
-            if (segment.isEmpty() || current == null) {
-                return null;
-            }
-            current = current.get(segment);
+    private static Optional<Pattern> compileCached(String regex) {
+        Optional<Pattern> cached = PATTERN_CACHE.get(regex);
+        if (cached != null) {
+            return cached;
         }
-        return current;
+        Optional<Pattern> compiled;
+        try {
+            compiled = Optional.of(Pattern.compile(regex));
+        } catch (PatternSyntaxException e) {
+            compiled = Optional.empty();
+        }
+        if (PATTERN_CACHE.size() >= MAX_CACHED_PATTERNS) {
+            PATTERN_CACHE.clear();
+        }
+        PATTERN_CACHE.put(regex, compiled);
+        return compiled;
     }
 
     /** 便捷入口：直接从 HttpResponse 判定 */

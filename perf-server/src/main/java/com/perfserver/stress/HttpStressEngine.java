@@ -438,8 +438,10 @@ public class HttpStressEngine implements StressEngine {
                         step.getHeaders(),
                         ResponseVarExtractor.substitute(step.getBody(), scenario.pool()));
                 List<StressTaskRequest.Assertion> rules = step.getAssertions();
+                // 断言是否需要读响应体（body/json 断言）；结果复用于判定与取值
+                boolean assertNeedsBody = ResponseAssertor.needsBody(rules);
                 // 仅在声明了提取规则或 body/json 断言时保留响应体（避免无谓的字符串驻留开销）
-                boolean needBody = hasExtract(step) || ResponseAssertor.needsBody(rules);
+                boolean needBody = hasExtract(step) || assertNeedsBody;
                 long t0 = System.nanoTime();
                 boolean error = false;
                 String body = null;
@@ -451,7 +453,7 @@ public class HttpStressEngine implements StressEngine {
                     } else if (rules != null && !rules.isEmpty()) {
                         // 状态码已通过，再按本步骤的结果判断校验业务成败
                         error = !ResponseAssertor.matches(rules, resp.statusCode(),
-                                resp.headers().map(), ResponseAssertor.needsBody(rules) ? resp.body() : null);
+                                resp.headers().map(), assertNeedsBody ? resp.body() : null);
                     }
                     if (needBody) {
                         body = resp.body();

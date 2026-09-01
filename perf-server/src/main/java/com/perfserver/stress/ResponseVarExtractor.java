@@ -1,7 +1,6 @@
 package com.perfserver.stress;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -18,8 +17,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * 变量池用 {@link ConcurrentHashMap}，读写路径均无锁。
  */
 public final class ResponseVarExtractor {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private ResponseVarExtractor() {
     }
@@ -51,7 +48,7 @@ public final class ResponseVarExtractor {
             }
             String source = rule.getSource() == null ? "body" : rule.getSource();
             if ("header".equalsIgnoreCase(source)) {
-                String v = headerValue(headers, rule.getPath());
+                String v = ResponseAccess.headerValue(headers, rule.getPath());
                 if (v != null) {
                     pool.put(rule.getVar(), v);
                 }
@@ -61,42 +58,18 @@ public final class ResponseVarExtractor {
                 continue;
             }
             if (!rootResolved) {
-                root = parseJson(body, maxBodyChars);
+                root = ResponseAccess.parseJson(body, maxBodyChars);
                 rootResolved = true;
             }
             if (root == null) {
                 continue;
             }
-            JsonNode node = resolve(root, rule.getPath());
+            JsonNode node = ResponseAccess.resolvePath(root, rule.getPath());
             if (node == null || node.isNull() || node.isMissingNode()) {
                 continue;
             }
             String value = node.isValueNode() ? node.asText() : node.toString();
             pool.put(rule.getVar(), value);
-        }
-    }
-
-    /** 响应头取值（大小写不敏感；多个同名头取第一个） */
-    private static String headerValue(Map<String, List<String>> headers, String name) {
-        if (headers == null || name == null || name.isBlank()) {
-            return null;
-        }
-        for (Map.Entry<String, List<String>> e : headers.entrySet()) {
-            if (e.getKey() != null && e.getKey().equalsIgnoreCase(name.trim())
-                    && e.getValue() != null && !e.getValue().isEmpty()) {
-                return e.getValue().get(0);
-            }
-        }
-        return null;
-    }
-
-    private static JsonNode parseJson(String body, int maxBodyChars) {
-        try {
-            String json = body.length() > maxBodyChars ? body.substring(0, maxBodyChars) : body;
-            return MAPPER.readTree(json);
-        } catch (Exception e) {
-            // 非 JSON 响应（HTML/纯文本/错误页）：跳过提取，不影响压测继续
-            return null;
         }
     }
 
@@ -113,17 +86,12 @@ public final class ResponseVarExtractor {
     /**
      * 按点分路径取值（如 {@code data.token}）。
      *
+     * <p>实现委托 {@link ResponseAccess#resolvePath}，与断言侧共用同一份逻辑。
+     *
      * @return 命中节点；未命中返回 null
      */
     static JsonNode resolve(JsonNode root, String path) {
-        JsonNode current = root;
-        for (String segment : path.split("\\.")) {
-            if (segment.isEmpty() || current == null) {
-                return null;
-            }
-            current = current.get(segment);
-        }
-        return current;
+        return ResponseAccess.resolvePath(root, path);
     }
 
     /**
