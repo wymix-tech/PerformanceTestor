@@ -46,6 +46,13 @@ public class StressTaskRequest {
     private int rampUpSec;
     /** 请求头 */
     private Map<String, String> headers = new HashMap<>();
+    /**
+     * 结果判断（断言）规则：全部命中才算本次请求成功。
+     *
+     * <p>未配置时退化为历史行为——仅按 HTTP 状态码 >= 400 判定失败。
+     * 断言失败的样本计入错误率，但不中断压测（统计口径与网络/状态码错误一致）。
+     */
+    private List<Assertion> assertions;
     /** 请求体（POST 等） */
     private String body;
     /** 分档并发模式（容量评估）：每档 {concurrency, durationSec} */
@@ -104,8 +111,18 @@ public class StressTaskRequest {
         private String body;
         /** 权重配比（默认 1；各步权重之比即流量配比） */
         private int weight = 1;
-        /** 从响应提取变量（如 data.token → token），供后续步骤使用 */
+        /** 从响应提取变量（如 data.token → token，或响应头 Set-Cookie），供后续步骤使用 */
         private List<VarExtract> extract;
+        /** 结果判断（断言）规则：全部命中才算本步骤成功（未配置则仅按状态码判定） */
+        private List<Assertion> assertions;
+
+        public List<Assertion> getAssertions() {
+            return assertions;
+        }
+
+        public void setAssertions(List<Assertion> assertions) {
+            this.assertions = assertions;
+        }
 
         public String getName() {
             return name;
@@ -164,11 +181,18 @@ public class StressTaskRequest {
         }
     }
 
-    /** 变量提取规则：从响应 JSON 中按点分路径取值 */
+    /** 变量提取规则：从响应体 JSON 或响应头中取值 */
     public static class VarExtract {
         /** 变量名（后续步骤用 {{var}} 引用） */
         private String var;
-        /** 点分路径，如 data.token */
+        /**
+         * 提取来源：body（默认，按点分 JSON 路径） / header（按响应头名）。
+         *
+         * <p>登录态常见的两种下发方式——JSON 体的 {@code data.token} 与响应头的
+         * {@code Set-Cookie} / {@code X-Token}——故两者都需要支持。
+         */
+        private String source = "body";
+        /** 点分路径（source=body）或响应头名（source=header） */
         private String path;
 
         public String getVar() {
@@ -179,12 +203,81 @@ public class StressTaskRequest {
             this.var = var;
         }
 
+        public String getSource() {
+            return source;
+        }
+
+        public void setSource(String source) {
+            this.source = source;
+        }
+
         public String getPath() {
             return path;
         }
 
         public void setPath(String path) {
             this.path = path;
+        }
+    }
+
+    /**
+     * 结果判断（断言）规则：对单次响应做校验，全部断言命中才算本次请求成功。
+     *
+     * <p>为什么需要：仅凭 HTTP 状态码无法识别「业务失败」——例如接口返回 200
+     * 但 body 是 {@code {"code":500,"message":"库存不足"}}，或网关把后端错误
+     * 包装成 200。这类响应在压测里必须计为错误，否则错误率严重失真。
+     */
+    public static class Assertion {
+        /**
+         * 断言来源：
+         * <ul>
+         *   <li>{@code status} — HTTP 状态码（key 忽略）</li>
+         *   <li>{@code body}   — 响应体原文（key 忽略）</li>
+         *   <li>{@code header} — 指定响应头（key = 头名，大小写不敏感）</li>
+         *   <li>{@code json}   — 响应体 JSON 点分路径（key = 路径，如 data.code）</li>
+         * </ul>
+         */
+        private String source = "status";
+        /** 头名或 JSON 路径（status / body 断言忽略） */
+        private String key;
+        /**
+         * 比较方式：{@code eq} / {@code ne} / {@code contains} / {@code notContains}
+         * / {@code gt} / {@code lt} / {@code regex}
+         */
+        private String op = "eq";
+        /** 期望值（gt / lt 按数值比较；status 配 gt/lt 可判定状态码区间） */
+        private String expected;
+
+        public String getSource() {
+            return source;
+        }
+
+        public void setSource(String source) {
+            this.source = source;
+        }
+
+        public String getKey() {
+            return key;
+        }
+
+        public void setKey(String key) {
+            this.key = key;
+        }
+
+        public String getOp() {
+            return op;
+        }
+
+        public void setOp(String op) {
+            this.op = op;
+        }
+
+        public String getExpected() {
+            return expected;
+        }
+
+        public void setExpected(String expected) {
+            this.expected = expected;
         }
     }
 
@@ -349,6 +442,14 @@ public class StressTaskRequest {
 
     public void setHeaders(Map<String, String> headers) {
         this.headers = headers;
+    }
+
+    public List<Assertion> getAssertions() {
+        return assertions;
+    }
+
+    public void setAssertions(List<Assertion> assertions) {
+        this.assertions = assertions;
     }
 
     public String getBody() {

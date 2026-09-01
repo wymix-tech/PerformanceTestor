@@ -1,7 +1,6 @@
 package com.perfserver.stress;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -19,37 +18,53 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class ResponseVarExtractor {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     private ResponseVarExtractor() {
     }
 
     /**
-     * 按提取规则从响应体取值并写入变量池。
+     * 按提取规则从响应取值并写入变量池。
+     *
+     * <p>规则可来自响应体 JSON（{@code source=body}，按点分路径）或响应头
+     * （{@code source=header}，按头名，大小写不敏感）。两类规则在同一批里混用，
+     * 便于「从 Set-Cookie 取 session、从 body 取 userId」这类组合场景。
      *
      * @param body    响应体（JSON）
+     * @param headers 响应头（大小写不敏感）
      * @param rules   提取规则（null/空直接返回）
      * @param pool    任务级变量池（并发安全）
      * @param maxBodyChars 参与解析的响应体最大字符数（超长响应截断，避免压测机被大响应拖垮）
      */
-    public static void extract(String body, List<StressTaskRequest.VarExtract> rules,
+    public static void extract(String body, Map<String, List<String>> headers,
+                               List<StressTaskRequest.VarExtract> rules,
                                Map<String, String> pool, int maxBodyChars) {
-        if (body == null || body.isBlank() || rules == null || rules.isEmpty()) {
+        if (rules == null || rules.isEmpty()) {
             return;
         }
-        JsonNode root;
-        try {
-            String json = body.length() > maxBodyChars ? body.substring(0, maxBodyChars) : body;
-            root = MAPPER.readTree(json);
-        } catch (Exception e) {
-            // 非 JSON 响应（HTML/纯文本/错误页）：跳过提取，不影响压测继续
-            return;
-        }
+        JsonNode root = null;
+        boolean rootResolved = false;
         for (StressTaskRequest.VarExtract rule : rules) {
             if (rule == null || rule.getVar() == null || rule.getPath() == null) {
                 continue;
             }
-            JsonNode node = resolve(root, rule.getPath());
+            String source = rule.getSource() == null ? "body" : rule.getSource();
+            if ("header".equalsIgnoreCase(source)) {
+                String v = ResponseAccess.headerValue(headers, rule.getPath());
+                if (v != null) {
+                    pool.put(rule.getVar(), v);
+                }
+                continue;
+            }
+            if (body == null || body.isBlank()) {
+                continue;
+            }
+            if (!rootResolved) {
+                root = ResponseAccess.parseJson(body, maxBodyChars);
+                rootResolved = true;
+            }
+            if (root == null) {
+                continue;
+            }
+            JsonNode node = ResponseAccess.resolvePath(root, rule.getPath());
             if (node == null || node.isNull() || node.isMissingNode()) {
                 continue;
             }
@@ -59,19 +74,24 @@ public final class ResponseVarExtractor {
     }
 
     /**
+     * 仅从响应体提取（历史签名，供既有调用方与单测使用）。
+     *
+     * @see #extract(String, Map, List, Map, int)
+     */
+    public static void extract(String body, List<StressTaskRequest.VarExtract> rules,
+                               Map<String, String> pool, int maxBodyChars) {
+        extract(body, null, rules, pool, maxBodyChars);
+    }
+
+    /**
      * 按点分路径取值（如 {@code data.token}）。
+     *
+     * <p>实现委托 {@link ResponseAccess#resolvePath}，与断言侧共用同一份逻辑。
      *
      * @return 命中节点；未命中返回 null
      */
     static JsonNode resolve(JsonNode root, String path) {
-        JsonNode current = root;
-        for (String segment : path.split("\\.")) {
-            if (segment.isEmpty() || current == null) {
-                return null;
-            }
-            current = current.get(segment);
-        }
-        return current;
+        return ResponseAccess.resolvePath(root, path);
     }
 
     /**

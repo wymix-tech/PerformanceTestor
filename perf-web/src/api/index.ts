@@ -114,10 +114,10 @@ export const dataGenApi = {
   // 任务列表
   list: (limit = 50) => http.get('/datagen/tasks', { params: { limit } }),
   // 读取目标库表清单
-  tables: (data: { dbUrl: string; dbUser: string; dbPassword: string }) =>
+  tables: (data: { connId?: number; dbUrl: string; dbUser: string; dbPassword: string }) =>
     http.post('/datagen/tables', data),
   // 读取目标表列结构（含枚举建议值与疑似枚举标记）
-  columns: (data: { dbUrl: string; dbUser: string; dbPassword: string; tableName: string }) =>
+  columns: (data: { connId?: number; dbUrl: string; dbUser: string; dbPassword: string; tableName: string }) =>
     http.post('/datagen/columns', data),
   // 语义建议查询（hintType=value/relation；status=pending 待确认）
   suggestions: (params?: { repoId?: number; tableName?: string; hintType?: string; status?: string }) =>

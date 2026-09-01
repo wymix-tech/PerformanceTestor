@@ -39,8 +39,20 @@
               <option value="">— 先读取表清单 —</option>
               <option v-for="t in tables" :key="t" :value="t">{{ t }}</option>
             </select>
-            <button class="btn-secondary shrink-0 px-3" @click="loadTables">读取表清单</button>
+            <button class="btn-secondary shrink-0 px-3" :disabled="tablesLoading" @click="loadTables">
+              {{ tablesLoading ? '读取中…' : '读取表清单' }}
+            </button>
           </div>
+          <!-- 读取表清单的反馈：后端业务错误同样以 HTTP 200 返回，必须显式呈现 code/message，
+               否则失败时表现为「点击无响应」 -->
+          <p v-if="tableMsg" class="text-[11px] mt-1" :class="tableMsg.ok ? 'text-neon-green' : 'text-red-400'">
+            {{ tableMsg.text }}
+          </p>
+          <!-- 列结构读取反馈（含读取中与失败原因） -->
+          <p v-if="columnsLoading" class="text-[11px] mt-1 text-fg-sub">列结构读取中…</p>
+          <p v-else-if="columnMsg" class="text-[11px] mt-1" :class="columnMsg.ok ? 'text-neon-green' : 'text-red-400'">
+            {{ columnMsg.text }}
+          </p>
         </div>
         <div class="grid grid-cols-2 gap-2.5">
           <div>
@@ -203,6 +215,11 @@ const repoStore = useRepoStore()
 const conns = ref<Array<Record<string, any>>>([])
 const tables = ref<string[]>([])
 const columns = ref<Array<Record<string, any>>>([])
+/** 表清单/列结构的读取中与结果反馈（后端业务错误以 HTTP 200 返回，需显式呈现） */
+const tablesLoading = ref(false)
+const columnsLoading = ref(false)
+const tableMsg = ref<{ ok: boolean; text: string } | null>(null)
+const columnMsg = ref<{ ok: boolean; text: string } | null>(null)
 const suggestions = ref<Array<Record<string, any>>>([])
 const tasks = ref<Array<Record<string, any>>>([])
 const busy = ref(false)
@@ -265,20 +282,73 @@ function connParams() {
   }
 }
 
+/**
+ * 解包后端统一响应 { code, message, data }。
+ *
+ * <p>关键点：后端业务异常（JDBC URL 非法、连库失败等）经 GlobalExceptionHandler
+ * 处理后仍以 HTTP 200 返回，仅 code != 0、data 为 null。axios 拦截器只识别 HTTP
+ * 状态码，不会 reject，故必须在此显式判定 code，否则前端表现为「点击无响应」。
+ */
+function unwrap<T>(res: any): { ok: boolean; data: T | null; message: string } {
+  const code = res?.code
+  const message = typeof res?.message === 'string' ? res.message : ''
+  if (typeof code === 'number' && code !== 0) {
+    return { ok: false, data: null, message: message || '请求失败' }
+  }
+  return { ok: true, data: (res?.data ?? null) as T | null, message }
+}
+
 async function loadTables() {
+  // 连接参数缺失时前端直接拦截，避免发出必然失败且无反馈的请求
+  if (!gen.value.connId && !gen.value.dbUrl) {
+    tables.value = []
+    tableMsg.value = { ok: false, text: '请先选择连接配置或填写 JDBC URL' }
+    return
+  }
+  tablesLoading.value = true
+  tableMsg.value = null
   try {
-    const r = await dataGenApi.tables(connParams())
-    tables.value = r.data || []
-  } catch { /* 读取失败不阻断 */ }
+    const { ok, data, message } = unwrap<string[]>(await dataGenApi.tables(connParams()))
+    if (!ok) {
+      tables.value = []
+      tableMsg.value = { ok: false, text: message }
+      return
+    }
+    tables.value = data || []
+    tableMsg.value = tables.value.length
+      ? { ok: true, text: `已读取 ${tables.value.length} 张表` }
+      : { ok: false, text: '目标库中未读取到表，请确认库名与账号权限' }
+  } catch (e) {
+    tables.value = []
+    tableMsg.value = { ok: false, text: (e as { message?: string })?.message || '读取表清单失败' }
+  } finally {
+    tablesLoading.value = false
+  }
 }
 
 async function loadColumns() {
   if (!gen.value.tableName) return
+  columnsLoading.value = true
+  columnMsg.value = null
   try {
-    const r = await dataGenApi.columns({ ...connParams(), tableName: gen.value.tableName })
-    columns.value = r.data || []
+    const { ok, data, message } = unwrap<Array<Record<string, any>>>(
+      await dataGenApi.columns({ ...connParams(), tableName: gen.value.tableName }))
+    if (!ok) {
+      columns.value = []
+      columnMsg.value = { ok: false, text: message }
+      return
+    }
+    columns.value = data || []
+    columnMsg.value = columns.value.length
+      ? { ok: true, text: `已读取 ${columns.value.length} 个字段` }
+      : { ok: false, text: '未读取到列结构，请确认表名与账号权限' }
     loadSuggestions()
-  } catch { /* 读取失败不阻断 */ }
+  } catch (e) {
+    columns.value = []
+    columnMsg.value = { ok: false, text: (e as { message?: string })?.message || '读取列结构失败' }
+  } finally {
+    columnsLoading.value = false
+  }
 }
 
 async function loadSuggestions() {
