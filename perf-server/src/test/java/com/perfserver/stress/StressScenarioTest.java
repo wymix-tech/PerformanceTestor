@@ -62,7 +62,9 @@ class StressScenarioTest {
     void runsWeightedScenarioWithVariablePassing() {
         StressTaskRequest request = new StressTaskRequest();
         request.setConcurrency(4);
-        request.setDurationSec(3);
+        // 时长取 5s：本用例要验证 2:8 权重的流量配比，需要足够样本量才能体现
+        // 差异；CI 机器负载高时短窗口样本过少，比例断言会随机失败
+        request.setDurationSec(5);
         request.setWarmupSec(0);
         request.setSampleIntervalSec(1);
 
@@ -90,7 +92,9 @@ class StressScenarioTest {
 
         assertNotNull(result.getStepStats(), "场景模式应产出分步骤统计");
         assertEquals(2, result.getStepStats().size());
-        assertTrue(result.getTotalRequests() > 0, "应实际发出请求");
+        // 样本量下限：两步都要有足够请求，否则「权重配比」的比较不具统计意义
+        // （如 login=1 order=1 时比较结果随机，会让本用例在慢机器上随机失败）
+        assertTrue(result.getTotalRequests() >= 10, "应实际发出足量请求，实际 " + result.getTotalRequests());
 
         StressStatistician.StepStats loginStats = byName(result.getStepStats(), "login");
         StressStatistician.StepStats orderStats = byName(result.getStepStats(), "order");
@@ -111,7 +115,7 @@ class StressScenarioTest {
 
     @Test
     void singleInterfaceModeHasNoStepStats() {
-        StressTaskRequest request = StressTaskRequest.single(base + "/home", 2, 2);
+        StressTaskRequest request = StressTaskRequest.single(base + "/home", 2, 3);
         request.setWarmupSec(0);
         request.setSampleIntervalSec(1);
 
@@ -126,7 +130,9 @@ class StressScenarioTest {
     void scenarioStatsAreSortedByName() {
         StressTaskRequest request = new StressTaskRequest();
         request.setConcurrency(2);
-        request.setDurationSec(2);
+        // 时长取 3s：需保证两步都至少各发出一次请求（否则某步无统计条目，
+        // 排序断言会因缺项而失败）；慢机器上 2s 窗口有此风险
+        request.setDurationSec(3);
         request.setWarmupSec(0);
         request.setScenario(List.of(step("zeta", base + "/home", 1), step("alpha", base + "/home", 1)));
 
