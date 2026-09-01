@@ -110,6 +110,28 @@ class ResponseAssertorTest {
         assertFalse(ResponseAssertor.matches(List.of(a("body", null, "regex", "[invalid")), 200, null, BIZ_OK));
     }
 
+    /** 正则预编译缓存：结果必须与即时编译一致（含跨规则复用与非法正则缓存） */
+    @Test
+    void regexCacheKeepsResultsConsistent() {
+        List<Assertion> rules = List.of(a("body", null, "regex", "\"code\":0"));
+        for (int i = 0; i < 1000; i++) {
+            assertTrue(ResponseAssertor.matches(rules, 200, null, BIZ_OK));
+            assertFalse(ResponseAssertor.matches(rules, 200, null, BIZ_FAIL));
+        }
+        // 非法正则被缓存后，重复调用仍应稳定返回「不命中」而非抛异常
+        List<Assertion> bad = List.of(a("body", null, "regex", "[invalid"));
+        for (int i = 0; i < 100; i++) {
+            assertFalse(ResponseAssertor.matches(bad, 200, null, BIZ_OK));
+        }
+    }
+
+    /** 断言中连续空格应被精确保留（前端解析与后端比较共同保证） */
+    @Test
+    void preservesConsecutiveSpacesInExpected() {
+        assertTrue(ResponseAssertor.matches(List.of(a("body", null, "contains", "a  b")), 200, null, "xa  by"));
+        assertFalse(ResponseAssertor.matches(List.of(a("body", null, "contains", "a b")), 200, null, "xa  by"));
+    }
+
     /** 未知来源/操作符应容错，不因配置笔误让整轮压测全判失败 */
     @Test
     void toleratesUnknownSourceAndOp() {
