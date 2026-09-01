@@ -8,7 +8,8 @@
 /workspace/
 ├── perf-agent/     # 监控探针（Java 17 + ByteBuddy）：方法埋点 / JDBC 拦截 / JMX 采集 / HTTP 批量上报
 ├── perf-datagen/   # Mock 数据生成引擎（独立纯 Java 库，SPI 可插拔）：联表外键感知 / 无外键语义关联识别 /
-│                   #   枚举语义化 / 魔法值感知 / Dry-Run 试运行；MySQL+MyBatis 本期实现，多库多 ORM 预留扩展点
+│                   #   枚举语义化 / 魔法值感知 / Dry-Run 试运行；MySQL + PostgreSQL 双方言可用，
+│                   #   ORM 侧实现 MyBatis，多 ORM 预留扩展点
 ├── perf-server/    # 后端平台（Spring Boot 3.x + MyBatis + MySQL）：采集存储 / 压测引擎 / 灌数据 /
 │                   #   容量评估 / 扩容建议 / 数据库连接管理 / 源码管理 / AI Function Calling 编排
 ├── perf-web/       # 前端（Vue3 + TS + Vite + ECharts）：七屏可视化
@@ -16,7 +17,8 @@
 ├── sql/init.sql    # 平台库全量建表脚本（幂等，含演示数据）
 ├── sql/init_empty.sql # 平台库全量建表脚本（幂等，无演示数据，用于一键初始化空库）
 ├── scripts/        # build.sh / start-all.sh(单机) / start-server.sh / start-agent.sh(多机) /
-│                   #   link-codebuddy.sh / verify-datagen-mysql.sh(灌数引擎端到端验收)
+│                   #   link-codebuddy.sh / verify-datagen-mysql.sh / verify-datagen-postgres.sh
+│                   #   (灌数引擎端到端验收) / perf-gate.sh(性能回归门禁 CI 调用)
 └── docs/           # 本文档 + design / reports / issues / artifacts / plans 归档
 ```
 
@@ -103,7 +105,8 @@ Mock 数据生成能力沉淀为**独立纯 Java 库**（`com.perftestor.datagen
 - **枚举语义化**：MySQL ENUM → CHECK 约束 → 列注释「PENDING=待支付…」→ Java 枚举 四级发现 + weights 权重分布；
 - **魔法值感知**：扫描 MyBatis XML/注解 SQL/静态常量/Java 枚举，产出「表列→候选值（文件：行号）」，范围谓词生成 `overThreshold` 规则；源码不可读自动降级纯 DB 元数据并黄色警告；
 - **Dry-Run 试运行**：完整执行元数据/规则/关联/拓扑/外键池预检但不 INSERT，前端试运行通过后启用正式执行；
-- **SPI 可插拔**：`DatabaseDialect` / `OrmSourceParser` / `BatchExecutor` 三扩展点本期实现 MySQL+MyBatis，扩展 PG/JPA 仅需新增实现类；单元测试通过 H2（MySQL 模式）子类化方言驱动全流程，突变测试杀死率 92%（覆盖内）。
+- **SPI 可插拔**：`DatabaseDialect` / `OrmSourceParser` / `BatchExecutor` 三扩展点本期实现 MySQL + PostgreSQL 双方言与 MyBatis ORM，扩展 Oracle/JPA 仅需新增实现类；单元测试通过 H2（MySQL 模式）子类化方言驱动全流程，突变测试杀死率 92%（覆盖内）。
+- **PostgreSQL 方言**：URL 前缀 `jdbc:postgresql:`，自动追加 `reWriteBatchedInserts=true`（多行 VALUES 合并）与 `stringtype=unspecified`（参数按目标列类型推断，避免字符串写入原生枚举列报类型不匹配）；元数据走 JDBC `DatabaseMetaData` + `information_schema`；枚举发现查 `pg_enum`，降级走 CHECK 约束（`pg_get_constraintdef` 文本解析）；`SERIAL/BIGSERIAL` 的 `nextval(...)` 默认值识别为自增并跳过插值；标识符用双引号（PG 未加引号标识符折成小写）。
 
 规则 JSON 契约（前端编辑器 / 引擎 / AI 工具三方一致）：
 
@@ -113,7 +116,9 @@ Mock 数据生成能力沉淀为**独立纯 Java 库**（`com.perftestor.datagen
  "order.amount":  {"type": "range", "min": 100, "max": 5000, "overThreshold": {"op": ">", "value": 1000, "share": 30}}}
 ```
 
-端到端验收：`scripts/verify-datagen-mysql.sh`（Dry-Run 拦截错误表名 / 联表 refSkew / weights / 语义建议接口）。
+端到端验收：
+- `scripts/verify-datagen-mysql.sh` —— MySQL：Dry-Run 拦截错误表名 / 联表 refSkew / weights / 语义建议接口。
+- `scripts/verify-datagen-postgres.sh` —— PostgreSQL：同上用例，并额外校验原生枚举（`CREATE TYPE ... AS ENUM`）写入、BIGSERIAL 自增列跳过、枚举建议值发现。
 
 ## 七屏 Web 后台
 

@@ -12,6 +12,7 @@
         <result column="password" property="password"/>
         <result column="is_default" property="isDefault"/>
         <result column="create_time" property="createTime"/>
+        <result column="has_password" property="hasPassword"/>
     </resultMap>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
@@ -19,8 +20,15 @@
         VALUES (#{connName}, #{host}, #{appName}, #{dbUrl}, #{username}, #{password}, #{isDefault})
     </insert>
 
+    <!-- 非敏感列 + has_password 计算列：列表接口只查这些，凭据不出库 -->
     <sql id="BaseColumns">
-        id, conn_name, host, app_name, db_url, username, password, is_default, create_time
+        id, conn_name, host, app_name, db_url, username, is_default, create_time,
+        CASE WHEN COALESCE(password, '') &lt;&gt; '' THEN 1 ELSE 0 END AS has_password
+    </sql>
+
+    <!-- 凭据列：仅服务端真实建连的场景（findById / 匹配）查询 -->
+    <sql id="SecretColumns">
+        password
     </sql>
 
     <select id="list" resultMap="BaseResultMap">
@@ -31,18 +39,18 @@
     </select>
 
     <select id="findById" resultMap="BaseResultMap">
-        SELECT <include refid="BaseColumns"/> FROM db_conn WHERE id = #{id} LIMIT 1
+        SELECT <include refid="BaseColumns"/>, <include refid="SecretColumns"/> FROM db_conn WHERE id = #{id} LIMIT 1
     </select>
 
     <select id="matchOrder" resultMap="BaseResultMap">
-        SELECT <include refid="BaseColumns"/>
+        SELECT <include refid="BaseColumns"/>, <include refid="SecretColumns"/>
         FROM db_conn
         ORDER BY is_default DESC, id ASC
         LIMIT 10
     </select>
 
     <select id="findByAppOrHost" resultMap="BaseResultMap">
-        SELECT <include refid="BaseColumns"/>
+        SELECT <include refid="BaseColumns"/>, <include refid="SecretColumns"/>
         FROM db_conn
         WHERE app_name = #{appName}
            OR (host IS NOT NULL AND host != '' AND (

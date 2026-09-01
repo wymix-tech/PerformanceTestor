@@ -107,16 +107,34 @@
                         <param>com.perfserver.config.*</param>
                         <param>com.perfserver.mapper.*</param>
                         <param>com.perfserver.PerfServerApplication</param>
+                        <!--
+                          含「无上界轮询循环」的类：突变破坏退出条件（判反取反常量/删标志位赋值）
+                          即成真死循环，每个都要耗满 timeout 才被强杀——128 个突变单元能拖到 30 分钟
+                          以上，且 PIT 把 TIMED_OUT 计入 killed，会虚高分数。
+                          这些类改用 pit-blocking profile 单独跑（长超时 + 限流）。
+                          注意排除的是具体类而非整个包：stress 包内的 StepSelector /
+                          ResponseVarExtractor / StressTaskRequest 是纯逻辑，突变价值高，予以保留。
+                        -->
+                        <param>com.perfserver.stress.HttpStressEngine</param>
+                        <param>com.perfserver.stress.JmeterStressEngine</param>
+                        <param>com.perfserver.service.StressGateService</param>
+                        <param>com.perfserver.service.IssueVerifyService</param>
+                        <param>com.perfserver.deploy.DeployService</param>
                     </excludedClasses>
                     <outputFormats>
                         <outputFormat>XML</outputFormat>
                         <outputFormat>HTML</outputFormat>
                     </outputFormats>
                     <timestampedReports>false</timestampedReports>
-                    <!-- 放宽单突变超时：压测/PDF 渲染类用例本身耗时数秒，
-                         默认 4s 会把大量突变判为 TIMED_OUT（计入 killed，虚高分数） -->
-                    <timeoutConstant>15000</timeoutConstant>
-                    <timeoutFactor>1.5</timeoutFactor>
+                    <!--
+                      超时按「排除死循环类后的真实耗时」定：剩余用例均在 5s 内完成，
+                      取 6s 下限。原先的 15000×1.5≈22s 是按压测引擎用例定的，
+                      对常规用例纯属浪费——一次死循环就要白等 22 秒。
+                    -->
+                    <timeoutConstant>6000</timeoutConstant>
+                    <timeoutFactor>1.25</timeoutFactor>
+                    <!-- 并行跑突变：PIT 默认单线程，多核机器上这是最直接的时间收益 -->
+                    <threads>4</threads>
                     <jvmArgs>
                         <jvmArg>-XX:+EnableDynamicAgentLoading</jvmArg>
                     </jvmArgs>
@@ -135,4 +153,46 @@
             </plugin>
         </plugins>
     </build>
+
+    <!--
+      含阻塞循环的类单独跑：
+        mvn -pl perf-server -P pit-blocking org.pitest:pitest-maven:mutationCoverage
+
+      之所以要拆出来：这些类（压测引擎 / 门禁等待 / 修复验证轮询 / SSH 部署）
+      含基于标志位或 deadline 的无上界轮询循环，突变后必然死循环，只能靠超时兜底。
+      混进常规执行会拖垮整体耗时，且 TIMED_OUT 计入 killed 会虚高分数；
+      但直接不测又会漏掉压测引擎这类核心逻辑，故单独一个 profile、
+      用更长超时串行跑，按需手动触发，不进 CI。
+    -->
+    <profiles>
+        <profile>
+            <id>pit-blocking</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pitest</groupId>
+                        <artifactId>pitest-maven</artifactId>
+                        <configuration>
+                            <targetClasses>
+                                <param>com.perfserver.stress.HttpStressEngine</param>
+                                <param>com.perfserver.stress.JmeterStressEngine</param>
+                                <param>com.perfserver.service.StressGateService</param>
+                                <param>com.perfserver.service.IssueVerifyService</param>
+                                <param>com.perfserver.deploy.DeployService</param>
+                            </targetClasses>
+                            <targetTests>
+                                <param>com.perfserver.*</param>
+                            </targetTests>
+                            <!-- 死循环靠超时兜底，超时设小了会把存活突变误判为超时 -->
+                            <timeoutConstant>30000</timeoutConstant>
+                            <timeoutFactor>1.5</timeoutFactor>
+                            <!-- 串行：这类用例本身起线程池打真实 HTTP，并行会把机器打满 -->
+                            <threads>1</threads>
+                            <timestampedReports>false</timestampedReports>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

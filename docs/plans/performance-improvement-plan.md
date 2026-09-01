@@ -105,3 +105,54 @@ perf-web/src/                               # stores/{auth,repo,app}.ts [NEW] / 
                                             # components/stress/{StressForm,StressReport}.vue [NEW] / http.ts+router 改造
 scripts/*.sh                                # 密码环境变量化
 ```
+## 六、第二轮改进（Issue #4 建议落地）
+
+> 来源：CNB Issue #4「项目改进方案」NPC 建议 10 条；本轮采纳 8 条，**不采纳第 2 条**（账号体系增强）。
+
+| # | 建议项 | 状态 | 落地要点 |
+| - | ------ | ---- | -------- |
+| 1 | 敏感凭据加密存储 | ✅ 已完成 | `security/CryptoService`（AES-256-GCM，密钥 `PERF_CRYPTO_SECRET`）；`ENC:` 前缀兼容存量明文、脏数据/密钥轮换降级返回原值；`DbConn`/`DeployConn` 列表经 SQL 计算列只返回 `hasPassword`/`hasCredential`，凭据不出口；`DeployService`/`PerformanceAnalyzer`/`DataGenController` 取用点解密 |
+| 2 | 账号体系增强 | ⏭ 本轮不做 | 多用户表 / 改密 / 登录失败限制 / API Key 页面，待后续排期 |
+| 3 | 探针上报鉴权 | ✅ 已完成 | `auth/AgentAuthInterceptor` 校验 `X-Perf-Agent-Token`，常量时间比较；令牌为空放行兼容存量 agent；失败计数摘要降噪；agent 侧 `agentToken=<值>` 启动参数透传（`scripts/start-agent.sh` 支持 `AGENT_TOKEN`） |
+| 4 | 压测场景编排 | ✅ 已完成 | `StressTaskRequest.scenario` 多步骤 + 权重（`StepSelector` 累积权重二分 O(log n)）+ `ResponseVarExtractor` 点分路径提取与 `{{var}}` 传递；`StressStatistician` 分步骤统计；无 `scenario` 退化单接口；JMeter 多步骤回退 http 引擎 |
+| 5 | 持续性能守护门禁 | ✅ 已完成 | `JwtAuthInterceptor` 并行支持静态 API Token（`X-Perf-Api-Token`，`PERF_API_TOKEN`）并标记 CI 调用方；`service/StressGateService` 同步门禁（创建→等待→基线 diff→结论）；`POST /api/stress/gate` + `scripts/perf-gate.sh` 退出码判定 |
+| 6 | PG 灌数验收 | ✅ 已完成 | `scripts/verify-datagen-postgres.sh`（对齐 MySQL 版 5 组用例，新增原生枚举写入 / BIGSERIAL 跳过 / 枚举建议值发现）；docs 中 PG 由「预留」改为「可用」 |
+| 7 | JVM 阈值告警 | ✅ 已完成 | 新表 `jvm_alert_rule`；`service/JvmAlertService` 60s 扫描 + 冷却期抑制 + 堆使用率/Full GC 增量/线程数三类指标；复用 `NotifyService`；`GET|POST /api/jvm-alert-rules` + 监控页 `components/monitor/JvmAlertRulePanel.vue` 配置面板 |
+| 8 | 前端拆分与单测 | ✅ 已完成 | StressCenterView 788→419 行、QuickStartView 883→693 行、OptimizeView 717→620 行；新增 `components/{stress,quickstart,optimize,monitor}` 子组件；引入 vitest + @vue/test-utils，21 个用例覆盖工具函数与任务列表组件 |
+| 9 | CI 流水线门禁 | ✅ 已完成 | `.cnb.yml`（原为空文件）补齐为 PR 触发的双 Job：后端 `mvn -B test` 全模块 + 前端 `npm ci && npm run build`（`vue-tsc -b && vite build`） |
+| 10 | 报告历史趋势 | ✅ 已完成 | `GET /api/stress/trend`（同应用 + 同 URL 聚合）；`components/stress/StressTrendChart.vue` 多版本折线（QPS / P95 / P99 / 错误率）+ 明细表，接入 `StressReport` |
+
+### 附带修复的既有缺陷
+
+- **报告 PDF 缓存键含秒级时间戳**：报告正文内嵌「生成时间」，跨秒后缓存必然未命中，缓存形同虚设且 `ReportExportServiceTest.pdfReusesCachedBytesForSameContent` 偶发失败。改为摘要前剔除时间戳。
+- **前端分档并发从未生效**：前端提交 `stageConcurrencies`，后端 `StressTaskRequest` 只认 `stages`，用户填了分档却静默退化成单档压测、容量曲线无从产生。后端新增 `stageConcurrencies` 字段 + `resolveStages()` 归一化（时长按档数均分），引擎与校验统一走归一化结果。
+- **任务列表请求失败未捕获**：`StressTaskList` 轮询失败会产生未处理的 Promise 拒绝。已加就地兜底并保留上次数据。
+
+### 验证结论
+
+- 后端 `mvn -B test` 全模块 **218 个用例全绿**
+- 前端 `vue-tsc -b && vite build` 通过，`vitest run` **21 个用例全绿**
+
+## 六、第二轮改进（Issue #4 建议落地）
+
+> 来源：CNB Issue #4「项目改进方案」NPC 建议 10 条；本轮采纳 8 条，**不采纳第 2 条**（账号体系增强）。
+
+| # | 建议项 | 状态 | 落地要点 |
+| - | ------ | ---- | -------- |
+| 1 | 敏感凭据加密存储 | ✅ 已完成 | 新增 `security/CryptoService`（AES-256-GCM，密钥走 `PERF_CRYPTO_SECRET`）；`ENC:` 前缀兼容存量明文，脏数据/密钥轮换降级返回原值；`DbConn`/`DeployConn` 列表经 SQL 计算列只返回 `hasPassword`/`hasCredential`，凭据不出库；`DeployService`/`PerformanceAnalyzer`/`DataGenController` 取用点解密 |
+| 2 | 账号体系增强 | ⏭ 本轮不做 | 多用户表 / 改密 / 登录失败限制 / API Key 页面，待后续排期 |
+| 3 | 探针上报鉴权 | ✅ 已完成 | `auth/AgentAuthInterceptor` 校验 `X-Perf-Agent-Token`，常量时间比较；令牌为空即放行以兼容存量 agent；失败计数摘要降噪；agent 侧 `agentToken=<值>` 启动参数透传（`scripts/start-agent.sh` 支持 `AGENT_TOKEN`） |
+| 4 | 压测场景编排 | ✅ 已完成 | `StressTaskRequest.scenario` 多步骤 + 权重（`StepSelector` 累积权重二分 O(log n)）+ `ResponseVarExtractor` 点分路径提取与 `{{var}}` 传递；`StressStatistician` 分步骤统计；无 `scenario` 退化单接口；JMeter 多步骤回退 http 引擎 |
+| 5 | 持续性能守护门禁 | ✅ 已完成 | `JwtAuthInterceptor` 并行支持静态 API Token（`X-Perf-Api-Token`，`PERF_API_TOKEN`）并标记 CI 调用方；`service/StressGateService` 同步门禁（创建→等待→基线 diff→结论）；`POST /api/stress/gate` + `scripts/perf-gate.sh` 退出码判定 |
+| 6 | PG 灌数验收 | ✅ 已完成 | `scripts/verify-datagen-postgres.sh`（对齐 MySQL 版用例，新增原生枚举写入 / BIGSERIAL 跳过 / 枚举建议值发现）；docs 中 PG 由「预留」改为「可用」 |
+| 7 | JVM 阈值告警 | ✅ 已完成 | 新表 `jvm_alert_rule`；`service/JvmAlertService` 60s 扫描 + 冷却期抑制 + 堆使用率/Full GC 增量/线程数三类指标；复用 `NotifyService`；`/api/jvm-alert-rules` CRUD + 监控页 `components/monitor/JvmAlertRulePanel.vue` 配置面板 |
+| 8 | 前端拆分与单测 | ✅ 已完成 | StressCenterView 788→419 行、QuickStartView 883→654 行、OptimizeView 717→601 行；抽出 `components/stress/{StressTaskList,CapacityAdvicePanel,SchedulePanel}.vue`、`components/quickstart/DeployStepPanel.vue`、`components/optimize/DbConnPanel.vue`；引入 vitest，补 21 个基础用例 |
+| 9 | CI 流水线 | ✅ 已完成 | `.cnb.yml` 由空文件补齐为 PR 门禁：后端 `mvn -B test`（全模块）+ 前端 `npm ci && npm run build` 并行双 Job；m2 数据卷缓存依赖 |
+| 10 | 报告历史趋势 | ✅ 已完成 | `GET /api/stress/trend`（同应用 + 同 URL 指标序列）；`components/stress/StressTrendChart.vue` 折线图（QPS / P95 / P99 / 错误率）+ 明细表，≥2 次记录才展示曲线 |
+
+### 附带修复（本轮发现并修复的既存缺陷）
+
+- **报告缓存键含秒级时间戳**：`ReportExportService` 缓存键取渲染 HTML 的 SHA-256，而 HTML 内嵌「生成时间」，跨秒必然缓存未命中，缓存形同虚设且导致 `pdfReusesCachedBytesForSameContent` 用例随机失败——改为摘要前剔除该时间戳。
+- **分档并发从未生效**：前端提交 `stageConcurrencies`（并发数简写列表），后端 `StressTaskRequest` 只认 `stages`，用户填了分档却静默退化成单档压测，容量曲线无从产生——新增 `resolveStages()` 归一化，引擎与校验统一走该方法。
+- **Full GC 增量用 max-min 聚合**：应用重启导致计数器回退时会算出巨大虚增（500→100 得 400）——改为按时间序取「末 − 初」并钳制为 0。
+- **任务列表轮询缺错误处理**：`StressTaskList` 加载失败会产生未处理的 Promise 拒绝并中断后续轮询——就地吞掉并保留上次数据。

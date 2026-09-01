@@ -70,30 +70,8 @@
         </div>
       </div>
 
-      <div class="glass-card p-5 xl:col-span-2">
-        <div class="text-sm font-medium mb-3 flex items-center justify-between">
-          <span>最近任务</span>
-          <button class="text-xs text-neon-blue hover:underline cursor-pointer" @click="loadTasks">刷新</button>
-        </div>
-        <div v-if="!tasks.length" class="text-xs text-fg-sub py-8 text-center">暂无压测任务</div>
-        <div v-else class="space-y-2 max-h-[430px] overflow-y-auto pr-1">
-          <div v-for="t in tasks" :key="t.id" class="px-4 py-3 rounded-lg bg-white/5 hover:bg-white/10 transition-all cursor-pointer"
-            @click="showReport(t.id)">
-            <div class="flex items-center justify-between">
-              <div class="text-sm text-fg-main truncate">{{ t.taskName || t.targetUrl }}</div>
-              <span class="flex items-center gap-2 shrink-0">
-                <span v-if="t.appName" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue">{{ t.appName }}</span>
-                <span v-if="t.appVersion" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-purple/10 text-neon-purple">v{{ t.appVersion }}</span>
-                <span class="text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t.status)">{{ t.status }}</span>
-              </span>
-            </div>
-            <div class="flex items-center justify-between mt-2 text-[11px] text-fg-sub">
-              <span>{{ t.concurrency }} 并发 · {{ t.durationSec }}s · {{ t.engineType }}</span>
-              <span v-if="t.finishTime">{{ fmtTime(t.finishTime) }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <!-- 最近任务（含 3s 轮询刷新） -->
+      <StressTaskList ref="taskListRef" @select="showReport" />
     </div>
 
     <!-- 压测报告（公共组件；版本对比经 #extra 插槽注入） -->
@@ -144,157 +122,28 @@
     </StressReport>
 
     <!-- 容量建议 Tab -->
-    <div v-else-if="activeTab === 'capacity'" class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      <div class="glass-card p-5">
-        <div class="text-sm font-medium mb-3">扩容建议（基于监控数据）</div>
-        <div v-if="!advice?.capacity" class="text-xs text-fg-sub py-10 text-center">暂无建议，先在压测 Tab 完成分档压测并评估容量</div>
-        <div v-else class="space-y-3">
-          <div
-            v-for="(a, i) in advice.capacity.advices" :key="i"
-            class="px-4 py-3 rounded-lg border"
-            :class="riskClass(a.riskLevel)"
-          >
-            <div class="flex items-center justify-between">
-              <div class="text-sm text-fg-main">{{ a.title }}</div>
-              <span class="text-[11px] px-2 py-0.5 rounded-full" :class="riskClass(a.riskLevel)">{{ a.riskLevel }}</span>
-            </div>
-            <div class="text-xs text-fg-sub mt-1.5">{{ a.description }}</div>
-            <div class="text-xs mt-1.5 flex gap-3">
-              <span class="text-neon-green">方式：{{ a.scaleType }}</span>
-              <span v-if="a.suggestedInstances">实例：{{ a.suggestedInstances }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="glass-card p-5">
-        <div class="text-sm font-medium mb-3">JVM 配置建议</div>
-        <div v-if="advice?.capacity?.jvmAdvice" class="space-y-3">
-          <div class="px-4 py-3 rounded-lg bg-white/5">
-            <div class="text-xs text-fg-sub">堆峰值 {{ advice.capacity.jvmAdvice.peakHeapUsedMb }}MB / 上限 {{ advice.capacity.jvmAdvice.heapMaxMb }}MB（{{ advice.capacity.jvmAdvice.peakHeapRatio }}%）</div>
-            <div class="text-sm text-fg-main mt-1">建议：{{ advice.capacity.jvmAdvice.heapSize }}</div>
-          </div>
-          <div class="px-4 py-3 rounded-lg bg-white/5">
-            <div class="text-xs text-fg-sub">GC 收集器</div>
-            <div class="text-sm text-fg-main mt-1">{{ advice.capacity.jvmAdvice.gcCollector }}</div>
-          </div>
-          <div v-if="advice.capacity.jvmAdvice.params?.length" class="px-4 py-3 rounded-lg bg-white/5">
-            <div class="text-xs text-fg-sub mb-2">关键参数</div>
-            <div class="flex flex-wrap gap-2">
-              <code v-for="(p, i) in advice.capacity.jvmAdvice.params" :key="i" class="text-[11px] px-2 py-1 rounded bg-white/5 text-neon-blue font-mono">{{ p }}</code>
-            </div>
-          </div>
-        </div>
-        <div v-else class="text-xs text-fg-sub py-10 text-center">暂无 JVM 配置建议</div>
-      </div>
-    </div>
+    <CapacityAdvicePanel v-else-if="activeTab === 'capacity'" />
 
     <!-- 数据准备 Tab：与快速开始向导「灌注数据」共用 DataGenForm，能力完全一致 -->
     <div v-else-if="activeTab === 'datagen'">
       <DataGenForm :poll="true" />
     </div>
     <!-- 定时压测 Tab：调度管理 + 版本基线对比（回归门禁） -->
-    <div v-else-if="activeTab === 'schedule'" class="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <div class="glass-card p-5">
-        <div class="text-sm font-medium mb-4">新建定时压测</div>
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs text-fg-sub">调度名称</label>
-            <input v-model="sch.name" class="input-text w-full" placeholder="如：核心接口回归门禁" />
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">压测模板（基于当前表单参数）</label>
-            <div class="text-[11px] text-fg-sub bg-white/5 rounded-lg px-3 py-2 font-mono break-all">
-              {{ sch.templatePreview || '在「压测」Tab 配置参数后回到此处（或直接填下方模板 JSON）' }}
-            </div>
-            <textarea v-model="sch.taskJson" rows="4" class="input-text w-full font-mono text-xs mt-2"
-              placeholder='{"targetUrl":"http://127.0.0.1:8081/api/user/list?limit=200","concurrency":20,"durationSec":30}'></textarea>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="text-xs text-fg-sub">间隔（分钟）</label>
-              <input v-model.number="sch.intervalMinutes" type="number" class="input-text w-full" min="1" max="10080" />
-            </div>
-            <div>
-              <label class="text-xs text-fg-sub">基线任务 ID（0=自动）</label>
-              <input v-model.number="sch.baselineTaskId" type="number" class="input-text w-full" min="0" />
-            </div>
-          </div>
-          <div>
-            <label class="text-xs text-fg-sub">告警 Webhook（钉钉/飞书/自定义，可选）</label>
-            <input v-model="sch.webhookUrl" class="input-text w-full" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" />
-            <div class="text-[11px] text-fg-sub mt-1">回归阈值：QPS↓&gt;10% / P95↑&gt;20% / 错误率↑&gt;5pct 任一命中即告警</div>
-          </div>
-          <button class="btn-primary w-full justify-center" :disabled="creatingSchedule" @click="createSchedule">
-            {{ creatingSchedule ? '创建中…' : '创建调度' }}
-          </button>
-        </div>
-      </div>
-
-      <div class="glass-card p-5 xl:col-span-2">
-        <div class="text-sm font-medium mb-3 flex items-center justify-between">
-          <span>调度列表</span>
-          <button class="text-xs text-neon-blue hover:underline cursor-pointer" @click="loadSchedules">刷新</button>
-        </div>
-        <div v-if="!schedules.length" class="text-xs text-fg-sub py-8 text-center">暂无定时压测调度</div>
-        <div v-else class="space-y-2 max-h-[430px] overflow-y-auto pr-1">
-          <div v-for="s in schedules" :key="s.id" class="px-4 py-3 rounded-lg bg-white/5">
-            <div class="flex items-center justify-between">
-              <div class="text-sm text-fg-main">{{ s.scheduleName }}</div>
-              <div class="flex items-center gap-2">
-                <span class="text-[11px] px-2 py-0.5 rounded-full" :class="s.enabled ? 'bg-neon-green/10 text-neon-green' : 'bg-white/5 text-fg-sub'">
-                  {{ s.enabled ? '运行中' : '已暂停' }}
-                </span>
-                <button class="text-[11px] text-neon-blue hover:underline cursor-pointer" @click="toggleSchedule(s)">
-                  {{ s.enabled ? '暂停' : '启用' }}
-                </button>
-                <button class="text-[11px] text-neon-green hover:underline cursor-pointer" @click="loadDiff(s)">基线对比</button>
-                <button class="text-[11px] text-red-400 hover:underline cursor-pointer" @click="removeSchedule(s)">删除</button>
-              </div>
-            </div>
-            <div class="text-[11px] text-fg-sub mt-1.5 flex flex-wrap gap-3">
-              <span>每 {{ s.intervalMinutes }} 分钟</span>
-              <span v-if="s.lastRunTime">上次触发 {{ fmtTime(s.lastRunTime) }}</span>
-              <span v-if="s.nextRunTime">下次 {{ fmtTime(s.nextRunTime) }}</span>
-              <span v-if="s.lastTaskId">任务 #{{ s.lastTaskId }}</span>
-            </div>
-            <!-- 基线对比结果 -->
-            <div v-if="diffOf[s.id]" class="mt-3">
-              <div v-if="diffOf[s.id].noBaseline" class="text-[11px] text-amber-400">暂无可用基线（首次执行或历史任务缺失）</div>
-              <template v-else>
-                <div class="flex items-center gap-2 mb-1.5">
-                  <span class="text-[11px] text-fg-sub">基线 #{{ diffOf[s.id].baseline?.id }}</span>
-                  <span class="text-fg-sub">→</span>
-                  <span class="text-[11px] text-fg-sub">当前 #{{ diffOf[s.id].current?.id }}</span>
-                  <span v-if="diffOf[s.id].regressed" class="text-[11px] px-2 py-0.5 rounded-full bg-red-400/10 text-red-400">⚠ 检测到性能回归</span>
-                  <span v-else class="text-[11px] px-2 py-0.5 rounded-full bg-neon-green/10 text-neon-green">✓ 指标正常</span>
-                </div>
-                <table class="w-full text-[11px]">
-                  <tbody>
-                    <tr v-for="r in diffOf[s.id].rows" :key="r.label" class="border-b border-white/5">
-                      <td class="py-1 text-fg-dim">{{ r.label }}</td>
-                      <td class="text-right text-fg-sub">{{ r.base }}</td>
-                      <td class="text-right text-fg-main">{{ r.cur }}</td>
-                      <td class="text-right font-medium" :class="r.regressed ? 'text-red-400' : r.improved ? 'text-neon-green' : 'text-fg-sub'">{{ r.deltaPct || '—' }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </template>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <SchedulePanel v-else-if="activeTab === 'schedule'" :template="stressFormRef?.snapshot?.() || null" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Gauge } from 'lucide-vue-next'
 import StressForm from '../components/stress/StressForm.vue'
 import StressReport from '../components/stress/StressReport.vue'
+import StressTaskList from '../components/stress/StressTaskList.vue'
+import CapacityAdvicePanel from '../components/stress/CapacityAdvicePanel.vue'
+import SchedulePanel from '../components/stress/SchedulePanel.vue'
 import DataGenForm from '../components/datagen/DataGenForm.vue'
-import { taskStatusClass as statusClass, fmtTime } from '../utils/format'
-import { stressApi, dataGenApi, capacityApi, sourceApi, appApi, dbConnApi, scheduleApi } from '../api'
+import { fmtTime } from '../utils/format'
+import { stressApi, sourceApi, appApi, capacityApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 import { useRoute } from 'vue-router'
 
@@ -314,14 +163,11 @@ watch(() => route.query.tab, (t) => {
   if (t && ['stress', 'capacity', 'datagen', 'schedule'].includes(String(t))) activeTab.value = String(t)
 })
 const running = ref(false)
-const tasks = ref<Array<Record<string, any>>>([])
 const report = ref<Record<string, any> | null>(null)
 const samples = ref<Array<Record<string, any>>>([])
 const capacity = ref<Record<string, any> | null>(null)
-const advice = ref<Record<string, any> | null>(null)
-const genTasks = ref<Array<Record<string, any>>>([])
-const tables = ref<string[]>([])
-const columns = ref<Array<{ name: string; type: string; suggestedValues?: any[]; suspectEnum?: boolean }>>([])
+/** 任务列表子组件引用：发起压测后立即刷新 */
+const taskListRef = ref<InstanceType<typeof StressTaskList> | null>(null)
 
 // ---------- 项目选择与接口扫描（视图特有逻辑，表单细节在 StressForm 公共组件） ----------
 const repoId = ref(0)
@@ -410,92 +256,6 @@ function onEndpointSelected(e: Record<string, any>) {
   }
 }
 
-// ---------- 灌数（数据准备 Tab） ----------
-const gen = ref({
-  connId: 0,
-  dbUrl: '',
-  dbUser: 'root',
-  dbPassword: '',
-  tableName: '',
-  rowCount: 1000,
-  ruleJson: '',
-  tablesJson: '',
-  orphanRate: 0,
-  repoId: 0
-})
-const suggestions = ref<Array<Record<string, any>>>([])
-const dryRunPassed = ref(false)
-
-// refSkew 高倾斜警告：hotShare/hotPercent 比值 > 2.5 视为热行承载过大
-const skewWarn = computed(() => {
-  try {
-    const root = JSON.parse(gen.value.ruleJson || '{}')
-    const fields = root.fields || root || {}
-    return Object.values(fields).some((r: any) =>
-      r?.type === 'refSkew' && (r.hotShare || 80) / Math.max(r.hotPercent || 20, 1) > 2.5)
-  } catch {
-    return false
-  }
-})
-
-function parseDetail(json: string): any {
-  try {
-    return typeof json === 'string' ? JSON.parse(json) : json
-  } catch {
-    return {}
-  }
-}
-
-function fillTableGroupExample() {
-  gen.value.tablesJson = JSON.stringify([
-    { tableName: gen.value.tableName || 'user', rowCount: 10000 },
-    { tableName: 'order', rowCount: 50000, fields: { user_id: { type: 'ref', table: 'user', column: 'id' } } }
-  ], null, 0)
-}
-
-async function loadSuggestions() {
-  try {
-    const r = await dataGenApi.suggestions({
-      repoId: gen.value.repoId || undefined,
-      tableName: gen.value.tableName || undefined,
-      status: 'pending'
-    })
-    suggestions.value = r.data || []
-  } catch { /* 建议查询失败不阻断 */ }
-}
-
-async function adoptHint(id: number, adopt: boolean) {
-  await dataGenApi.adopt(id, adopt)
-  await loadSuggestions()
-}
-
-function riskClass(r: string) {
-  return r === 'high'
-    ? 'border-red-400/30 bg-red-400/5 text-red-300'
-    : r === 'medium'
-      ? 'border-amber-400/30 bg-amber-400/5 text-amber-300'
-      : 'border-neon-green/30 bg-neon-green/5 text-neon-green'
-}
-
-async function loadTasks() {
-  const r = await stressApi.list({ limit: 20 })
-  tasks.value = r.data
-}
-
-let pollTimer: ReturnType<typeof setInterval> | null = null
-function startPolling() {
-  stopPolling()
-  pollTimer = setInterval(() => {
-    loadTasks()
-  }, 3000)
-}
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
 /** 发起压测：StressForm 提交标准请求体，本视图补充任务名与应用归属 */
 async function startStress(payload: Record<string, unknown>) {
   const body = {
@@ -507,7 +267,7 @@ async function startStress(payload: Record<string, unknown>) {
   running.value = true
   try {
     await stressApi.create(body)
-    await loadTasks()
+    await taskListRef.value?.refresh()
     setTimeout(() => { running.value = false }, 3000)
   } catch {
     running.value = false
@@ -526,6 +286,9 @@ async function showReport(id: number) {
 }
 
 // ---------- 版本对比 ----------
+/** 任务列表数据由 StressTaskList 子组件持有并轮询刷新 */
+const tasks = computed(() => taskListRef.value?.tasks ?? [])
+
 // 可对比候选：同应用（或双方均无应用）的其他已完成任务
 const compareCandidates = computed(() => {
   const cur = report.value?.task
@@ -617,172 +380,16 @@ async function runCapacity() {
   await showReport(report.value.task.id)
 }
 
-async function loadAdvice() {
-  const r = await capacityApi.advice()
-  advice.value = r.data
-}
-
-async function loadTables() {
-  const r = await dataGenApi.tables({ dbUrl: gen.value.dbUrl, dbUser: gen.value.dbUser, dbPassword: gen.value.dbPassword })
-  tables.value = r.data
-}
-
-async function loadColumns() {
-  if (!gen.value.tableName) return
-  const r = await dataGenApi.columns({ dbUrl: gen.value.dbUrl, dbUser: gen.value.dbUser, dbPassword: gen.value.dbPassword, tableName: gen.value.tableName })
-  columns.value = r.data
-  loadSuggestions()
-}
-
-async function startDataGen(dryRun: boolean) {
-  let tables
-  if (gen.value.tablesJson && gen.value.tablesJson.trim()) {
-    try {
-      tables = JSON.parse(gen.value.tablesJson)
-    } catch {
-      alert('表组 JSON 解析失败，请检查格式')
-      return
-    }
-  }
-  await dataGenApi.create({
-    taskName: `${dryRun ? '试运行' : '灌数据'}-${tables ? tables[0].tableName : gen.value.tableName}`,
-    connId: gen.value.connId || undefined,
-    dbUrl: gen.value.dbUrl,
-    dbUser: gen.value.dbUser,
-    dbPassword: gen.value.dbPassword,
-    tableName: gen.value.tableName,
-    rowCount: gen.value.rowCount,
-    ruleJson: gen.value.ruleJson || undefined,
-    tables,
-    orphanRate: gen.value.orphanRate || undefined,
-    repoId: gen.value.repoId || undefined,
-    dryRun
-  })
-  if (dryRun) {
-    dryRunPassed.value = true
-  }
-  const r = await dataGenApi.list()
-  genTasks.value = r.data
-}
-
 onMounted(() => {
-  loadTasks()
-  startPolling()
-  loadAdvice()
   repoStore.load()
   loadApps()
-  loadConns()
-  dataGenApi.list().then((r) => { genTasks.value = r.data }).catch(() => {})
-  loadSchedules()
 })
 
-onUnmounted(stopPolling)
-
-// 项目/应用/连接配置（数据准备 Tab 复用连接配置）
-const conns = ref<Array<Record<string, any>>>([])
-
+/** 应用实例列表（StressForm 自动预填服务地址用） */
 async function loadApps() {
   try {
     const r = await appApi.list()
     appInstances.value = r.data || []
   } catch { /* 应用列表失败不阻断 */ }
-}
-
-async function loadConns() {
-  try {
-    const r = await dbConnApi.list()
-    conns.value = r.data || []
-  } catch { /* 连接配置失败不阻断 */ }
-}
-
-// 数据准备：从连接配置选择后自动填连接参数（仍可手改）
-function applyConn() {
-  const c = conns.value.find((x) => x.id === gen.value.connId)
-  if (c) {
-    gen.value.dbUrl = c.dbUrl
-    gen.value.dbUser = c.username
-    gen.value.dbPassword = c.password || ''
-  }
-}
-
-// ---------- 定时压测（调度管理 + 基线对比） ----------
-const schedules = ref<Array<Record<string, any>>>([])
-const diffOf = ref<Record<number, any>>({})
-const creatingSchedule = ref(false)
-const sch = ref({
-  name: '',
-  intervalMinutes: 60,
-  baselineTaskId: 0,
-  webhookUrl: '',
-  taskJson: '',
-  /** 表单模板预览（当前压测表单快照派生） */
-  templatePreview: ''
-})
-
-// 切到定时 Tab 时，用当前表单快照预填模板
-watch(activeTab, (tab) => {
-  if (tab === 'schedule' && !sch.value.taskJson) {
-    const snap = stressFormRef.value?.snapshot()
-    if (snap?.targetUrl) {
-      sch.value.templatePreview = `${snap.method} ${snap.targetUrl} · ${snap.concurrency}并发 × ${snap.durationSec}s`
-      sch.value.taskJson = JSON.stringify(snap)
-    }
-  }
-})
-
-async function loadSchedules() {
-  try {
-    const r = await scheduleApi.list()
-    schedules.value = r.data || []
-  } catch { /* 列表加载失败静默 */ }
-}
-
-async function createSchedule() {
-  if (!sch.value.name.trim() || !sch.value.taskJson.trim()) return
-  let task: Record<string, unknown>
-  try {
-    task = JSON.parse(sch.value.taskJson)
-  } catch {
-    alert('压测模板 JSON 解析失败，请检查格式')
-    return
-  }
-  creatingSchedule.value = true
-  try {
-    const r = await scheduleApi.create({
-      scheduleName: sch.value.name.trim(),
-      intervalMinutes: sch.value.intervalMinutes,
-      baselineTaskId: sch.value.baselineTaskId,
-      webhookUrl: sch.value.webhookUrl.trim(),
-      task
-    })
-    // http 拦截器已解包为 { code, message, data }（类型断言与现有视图模式一致）
-    const res = r as unknown as { code: number; message: string; data: unknown }
-    if (res.code === 0) {
-      sch.value.name = ''
-      await loadSchedules()
-    } else {
-      alert(res.message || '创建失败')
-    }
-  } finally {
-    creatingSchedule.value = false
-  }
-}
-
-async function toggleSchedule(s: Record<string, any>) {
-  await scheduleApi.toggle(s.id, !s.enabled)
-  await loadSchedules()
-}
-
-async function removeSchedule(s: Record<string, any>) {
-  if (!confirm(`确认删除调度「${s.scheduleName}」？`)) return
-  await scheduleApi.remove(s.id)
-  await loadSchedules()
-}
-
-async function loadDiff(s: Record<string, any>) {
-  try {
-    const r = await scheduleApi.diff(s.id)
-    diffOf.value = { ...diffOf.value, [s.id]: r.data }
-  } catch { /* 对比失败静默 */ }
 }
 </script>

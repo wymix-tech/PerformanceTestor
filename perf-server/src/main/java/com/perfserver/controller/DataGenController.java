@@ -8,6 +8,7 @@ import com.perfserver.entity.DataGenTask;
 import com.perfserver.entity.DbConn;
 import com.perfserver.entity.SemanticHint;
 import com.perfserver.mapper.DbConnMapper;
+import com.perfserver.security.CryptoService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,23 +30,32 @@ public class DataGenController {
 
     private final DataGenService dataGenService;
     private final DbConnMapper dbConnMapper;
+    private final CryptoService cryptoService;
 
-    public DataGenController(DataGenService dataGenService, DbConnMapper dbConnMapper) {
+    public DataGenController(DataGenService dataGenService, DbConnMapper dbConnMapper,
+                             CryptoService cryptoService) {
         this.dataGenService = dataGenService;
         this.dbConnMapper = dbConnMapper;
+        this.cryptoService = cryptoService;
     }
 
-    /** 按 connId 取连接凭据并覆盖手填值（connId 为空或不存在时原样返回） */
+    /** 按 connId 取连接凭据并覆盖手填值（connId 为空、非数字或不存在时原样返回） */
     private void applyConn(Map<String, String> body) {
         String connIdStr = body.get("connId");
         if (connIdStr == null || connIdStr.isBlank()) {
             return;
         }
-        DbConn conn = dbConnMapper.findById(Long.parseLong(connIdStr));
+        DbConn conn;
+        try {
+            conn = dbConnMapper.findById(Long.parseLong(connIdStr.trim()));
+        } catch (NumberFormatException e) {
+            // connId 非数字：视同未指定，继续用手填凭据，不因辅助参数报错
+            return;
+        }
         if (conn != null) {
             body.put("dbUrl", conn.getDbUrl());
             body.put("dbUser", conn.getUsername());
-            body.put("dbPassword", conn.getPassword() == null ? "" : conn.getPassword());
+            body.put("dbPassword", cryptoService.decrypt(conn.getPassword()));
         }
     }
 
@@ -57,7 +67,7 @@ public class DataGenController {
             if (conn != null) {
                 request.setDbUrl(conn.getDbUrl());
                 request.setDbUser(conn.getUsername());
-                request.setDbPassword(conn.getPassword() == null ? "" : conn.getPassword());
+                request.setDbPassword(cryptoService.decrypt(conn.getPassword()));
             }
         }
         return ApiResponse.ok(dataGenService.createAndRun(request));

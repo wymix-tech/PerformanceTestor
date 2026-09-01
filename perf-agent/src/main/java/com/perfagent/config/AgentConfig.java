@@ -87,6 +87,11 @@ public class AgentConfig {
     public int hotspotReportSec = 30;
     /** 每次上报的热点方法数上限 */
     public int hotspotTopN = 50;
+    /**
+     * 探针上报令牌（agentToken=&lt;值&gt;）：与平台 perf.auth.agent-token 保持一致时，
+     * 上报请求会携带 X-Perf-Agent-Token 头。留空则不携带（平台未配置令牌时保持兼容）。
+     */
+    public String agentToken = "";
 
     /** 由 agentArgs 与默认值构造配置 */
     public static AgentConfig fromArgs(String agentArgs) {
@@ -126,6 +131,7 @@ public class AgentConfig {
         if (kv.containsKey("hotspotIntervalMs")) cfg.hotspotIntervalMs = Integer.parseInt(kv.get("hotspotIntervalMs"));
         if (kv.containsKey("hotspotReportSec")) cfg.hotspotReportSec = Integer.parseInt(kv.get("hotspotReportSec"));
         if (kv.containsKey("hotspotTopN")) cfg.hotspotTopN = Integer.parseInt(kv.get("hotspotTopN"));
+        if (kv.containsKey("agentToken")) cfg.agentToken = kv.get("agentToken");
         return cfg;
     }
 }

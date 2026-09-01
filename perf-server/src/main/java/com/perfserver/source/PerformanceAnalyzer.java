@@ -16,6 +16,7 @@ import com.perfserver.mapper.FixSuggestionMapper;
 import com.perfserver.mapper.PerformanceIssueMapper;
 import com.perfserver.mapper.SlowSqlMapper;
 import com.perfserver.mapper.SourceFileMapper;
+import com.perfserver.security.CryptoService;
 import com.perfserver.service.DbExplainService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,13 +46,14 @@ public class PerformanceAnalyzer {
     private final SlowSqlMapper slowSqlMapper;
     private final DbConnMapper dbConnMapper;
     private final DbExplainService dbExplainService;
+    private final CryptoService cryptoService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PerformanceAnalyzer(LlmClient llmClient, PerformanceIssueMapper issueMapper,
                                FixSuggestionMapper suggestionMapper, SourceFileMapper sourceFileMapper,
                                SourceFileService sourceFileService, SourceManager sourceManager,
                                SlowSqlMapper slowSqlMapper, DbConnMapper dbConnMapper,
-                               DbExplainService dbExplainService) {
+                               DbExplainService dbExplainService, CryptoService cryptoService) {
         this.llmClient = llmClient;
         this.issueMapper = issueMapper;
         this.suggestionMapper = suggestionMapper;
@@ -61,6 +63,7 @@ public class PerformanceAnalyzer {
         this.slowSqlMapper = slowSqlMapper;
         this.dbConnMapper = dbConnMapper;
         this.dbExplainService = dbExplainService;
+        this.cryptoService = cryptoService;
     }
 
     /**
@@ -117,8 +120,10 @@ public class PerformanceAnalyzer {
             if (conn == null) {
                 return "";
             }
+            // 取用点解密：库内凭据为密文，明文不入 AI 上下文与日志
             Map<String, Object> explain = dbExplainService.analyzeSql(
-                    conn.getDbUrl(), conn.getUsername(), conn.getPassword(), slowSql.getSqlText());
+                    conn.getDbUrl(), conn.getUsername(),
+                    cryptoService.decrypt(conn.getPassword()), slowSql.getSqlText());
             String summary = dbExplainService.formatSummary(explain);
             if (summary.isBlank()) {
                 return "";

@@ -433,7 +433,26 @@ CREATE TABLE IF NOT EXISTS deploy_conn (
 ) ENGINE = InnoDB COMMENT = '被测服务器 SSH 连接配置';
 
 -- ---------------------------------------------------------------------
--- 7.7 ai_knowledge：AI 性能知识库（分析结论沉淀 + 中文全文检索）
+-- 7.7 jvm_alert_rule：JVM 指标阈值告警规则（持续性能守护）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS jvm_alert_rule (
+    id              BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name        VARCHAR(128)  NOT NULL COMMENT '应用名称（空串=全部应用）',
+    metric_key      VARCHAR(32)   NOT NULL COMMENT '指标键：heapUsedRatio/fullGcCountDelta/threadCount',
+    threshold       DOUBLE        NOT NULL COMMENT '告警阈值',
+    window_sec      INT           NOT NULL DEFAULT 300 COMMENT '统计窗口秒',
+    quiet_sec       INT           NOT NULL DEFAULT 900 COMMENT '冷却期秒',
+    enabled         TINYINT       NOT NULL DEFAULT 1 COMMENT '是否启用',
+    webhook         VARCHAR(512)  NULL COMMENT '通知地址',
+    last_alert_time DATETIME      NULL COMMENT '上次告警时间',
+    create_time     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_app_enabled (app_name, enabled),
+    UNIQUE KEY uk_app_metric (app_name, metric_key)
+) ENGINE = InnoDB COMMENT = 'JVM 指标阈值告警规则';
+
+-- ---------------------------------------------------------------------
+-- 7.8 ai_knowledge：AI 性能知识库（分析结论沉淀 + 中文全文检索）
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ai_knowledge (
     id          BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',

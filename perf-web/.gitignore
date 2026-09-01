@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# 突变测试报告（Stryker 生成，属构建产物）
+reports/
+
+# Stryker 沙箱临时目录
+.stryker-tmp/
