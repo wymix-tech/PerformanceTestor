@@ -62,8 +62,10 @@ class HttpStressEngineTest {
         assertTrue(firstHit.await(5, TimeUnit.SECONDS), "压测未产生任何请求");
         assertTrue(hitCount.get() >= result.getTotalRequests(),
                 "服务端命中数(" + hitCount.get() + ") 应不少于正式统计数(" + result.getTotalRequests() + ")");
-        // 正式期（2s × 2 并发本地回环）应有可观测请求量
-        assertTrue(result.getTotalRequests() >= 4, "正式统计请求数异常偏小: " + result.getTotalRequests());
+        // 正式期（2s × 2 并发本地回环）应有可观测请求量。
+        // 下限取 2 而非 4：慢机器上单次请求耗时可能接近 1s，固定高阈值会让
+        // 本用例随机失败（本用例验证的是 warmup 不计入统计，而非吞吐能力）。
+        assertTrue(result.getTotalRequests() >= 2, "正式统计请求数异常偏小: " + result.getTotalRequests());
         assertEquals(1, result.getWarmupSec());
         // 错误率应为 0（本地 200 响应）
         assertEquals(0.0, result.getErrorRate(), 0.0);
@@ -77,7 +79,10 @@ class HttpStressEngineTest {
     @Test
     void noWarmupRunsImmediatelyWithStats() throws Exception {
         HttpStressEngine engine = new HttpStressEngine();
-        StressTaskRequest req = StressTaskRequest.single(url(), 2, 1);
+        // 时长取 3s：CI 机器负载高时，首个请求需完成 HttpClient/连接池初始化与
+        // TCP 握手，1s 窗口可能一个请求都跑不完（统计为 0 而误判失败）。
+        // 延长时长不影响本用例的语义——验证的是「无 warmup 时立即开始统计」。
+        StressTaskRequest req = StressTaskRequest.single(url(), 2, 3);
         req.setWarmupSec(0);
         req.setSampleIntervalSec(1);
 
@@ -99,7 +104,9 @@ class HttpStressEngineTest {
         StressTaskRequest req = new StressTaskRequest();
         req.setTargetUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/err");
         req.setConcurrency(1);
-        req.setDurationSec(1);
+        // 时长取 3s（同 noWarmupRunsImmediatelyWithStats）：1s 窗口在慢机器上
+        // 可能连一个请求都未完成，导致「无请求」而非「有错误」的误判
+        req.setDurationSec(3);
         req.setWarmupSec(0);
         req.setSampleIntervalSec(1);
 

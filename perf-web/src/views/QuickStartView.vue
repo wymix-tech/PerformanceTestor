@@ -132,6 +132,29 @@
     <div v-else-if="step === 3" class="glass-card p-5">
       <div class="text-sm font-medium mb-1">配置并发起压测 <span class="text-neon-green text-xs ml-1">项目：{{ repoName }}</span></div>
       <div class="text-[11px] text-fg-sub mb-4">参数与压测中心一致（接口/方法/引擎/预热/分档并发）。需要完整配置？<router-link class="text-neon-blue hover:underline" to="/stress">打开压测中心</router-link></div>
+      <!-- 接口清单加载/失败反馈：列表为空时下拉会被整块隐藏，此处保证状态可见且可重试 -->
+      <div class="flex items-center gap-2 mb-3 text-[11px]">
+        <span v-if="resyncing" class="text-fg-sub">与源码同步中…</span>
+        <span v-else-if="endpointsLoading" class="text-fg-sub">接口扫描中…</span>
+        <template v-else-if="endpoints.length">
+          <span class="text-neon-green">已扫描到 {{ endpoints.length }} 个接口，可在上方下拉选择</span>
+        </template>
+        <template v-else-if="endpointMsg">
+          <span class="text-red-400">{{ endpointMsg.text }}</span>
+          <button class="text-neon-blue hover:underline cursor-pointer" @click="loadEndpoints">重试</button>
+        </template>
+        <span v-else-if="repoId" class="text-fg-sub">该项目暂无接口清单</span>
+        <!-- 源码变更后重新拉取并重建索引，再重扫接口（与压测中心「↻ 与源码重新同步」一致） -->
+        <button
+          v-if="repoId"
+          class="text-neon-blue hover:underline cursor-pointer shrink-0"
+          :disabled="resyncing || endpointsLoading"
+          @click="resyncAndScan"
+        >{{ resyncing ? '同步中…' : '↻ 与源码重新同步' }}</button>
+        <span v-if="resyncMsg" class="shrink-0" :class="resyncMsg.ok ? 'text-neon-green' : 'text-red-400'">
+          {{ resyncMsg.text }}
+        </span>
+      </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <!-- 压测参数公共组件（与压测中心共用同一表单实现） -->
         <StressForm
@@ -220,7 +243,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rocket, Check, ArrowRight, Bot } from 'lucide-vue-next'
 import StressForm from '../components/stress/StressForm.vue'
@@ -273,6 +296,12 @@ function onGenCreated(payload: { task: any; dryRun: boolean }) {
   }
 }
 const endpoints = ref<Array<Record<string, any>>>([])
+/** 接口清单加载态与结果反馈（为空时下拉会被隐藏，必须将失败原因显式呈现） */
+const endpointsLoading = ref(false)
+const endpointMsg = ref<{ ok: boolean; text: string } | null>(null)
+/** 与源码重新同步状态（重拉源码 + 重建索引 + 重扫接口） */
+const resyncing = ref(false)
+const resyncMsg = ref<{ ok: boolean; text: string } | null>(null)
 const stressFormRef = ref<InstanceType<typeof StressForm> | null>(null)
 /** agent 上报的服务地址（StressForm 自动预填；模板命令与预填共用实例探测） */
 const instBaseUrl = computed(() => {
@@ -404,7 +433,7 @@ function selectRepo(r: any) {
   }
   repoId.value = r.id
   sessionDone.value[0] = true // 本轮亲自选择项目
-  loadEndpoints()
+  // 接口清单由 repoId 的 watcher 自动加载，此处不再重复调用
   loadTracesAndIssues()
 }
 
@@ -500,19 +529,94 @@ function stopImportPoll() {
   if (importPoll) { clearInterval(importPoll); importPoll = null }
 }
 
+/**
+ * 加载项目接口清单。
+ *
+ * <p>接口清单为空时 StressForm 会整块隐藏「接口」下拉（v-if="endpoints.length"），
+ * 表现为「无法选择接口」，故此处必须把加载态与失败原因暴露到界面，并支持重试。
+ */
 async function loadEndpoints() {
   endpoints.value = []
+  endpointMsg.value = null
   if (!repoId.value) return
+  endpointsLoading.value = true
   try {
     // agent 上报的应用实例自动预填服务地址（host + 可选端口，经 StressForm autoBaseUrl）
-    const r = await sourceApi.endpoints(repoId.value)
-    endpoints.value = r.data || [] // GET/POST 全保留（与压测中心一致）
-    if (endpoints.value.length) {
-      // 自动选中首个接口（表单内完成方法与 URL 拼接）
-      stressFormRef.value?.selectFirstEndpoint()
+    // http 拦截器已解包为 { code, message, data }（axios 类型无法感知，需断言）
+    const r = (await sourceApi.endpoints(repoId.value)) as unknown as {
+      code?: number; message?: string; data?: Array<Record<string, any>>
     }
-  } catch { /* 扫描失败不阻断 */ }
+    // 后端业务错误同样以 HTTP 200 返回（code!=0），需显式判定
+    if (typeof r?.code === 'number' && r.code !== 0) {
+      endpointMsg.value = { ok: false, text: r.message || '接口扫描失败' }
+      return
+    }
+    endpoints.value = r?.data || [] // GET/POST 全保留（与压测中心一致）
+    if (endpoints.value.length) {
+      // 等表单挂载完成再回填（会话恢复到压测步骤时 StressForm 尚未渲染）
+      await nextTick()
+      stressFormRef.value?.selectFirstEndpoint()
+    } else {
+      endpointMsg.value = { ok: false, text: '项目源码中未扫描到接口，可到「项目管理」重新同步后再试' }
+    }
+  } catch (e) {
+    endpointMsg.value = {
+      ok: false,
+      text: '接口扫描失败：' + ((e as { message?: string })?.message || '请求异常')
+    }
+  } finally {
+    endpointsLoading.value = false
+  }
 }
+
+/**
+ * 与源码重新同步：重新拉取源码并重建索引，再重扫接口。
+ *
+ * <p>源码变更后（新增/修改了 Controller）接口清单不会自动更新，
+ * 向导此前无此入口，只能去项目管理页操作，故补齐（与压测中心一致）。
+ */
+async function resyncAndScan() {
+  if (!repoId.value || resyncing.value) return
+  resyncing.value = true
+  resyncMsg.value = null
+  try {
+    const r = (await sourceApi.resync(repoId.value)) as unknown as { code?: number; message?: string }
+    if (typeof r?.code === 'number' && r.code !== 0) {
+      resyncMsg.value = { ok: false, text: r.message || '同步失败' }
+      return
+    }
+    await loadEndpoints()
+    resyncMsg.value = endpoints.value.length
+      ? { ok: true, text: `已同步，扫描到 ${endpoints.value.length} 个接口` }
+      : { ok: false, text: '同步完成，但未扫描到接口' }
+  } catch (e) {
+    resyncMsg.value = {
+      ok: false,
+      text: '同步失败：' + ((e as { message?: string })?.message || '请求异常')
+    }
+  } finally {
+    resyncing.value = false
+  }
+}
+
+/**
+ * 接口清单跟随项目自动加载。
+ *
+ * <p>此前仅在 selectRepo()（用户主动点选项目卡片）内调用，而跨页面返回 / 刷新页面时
+ * repoId 由 restoreRunState() 从会话缓存直接恢复，不会经过 selectRepo，
+ * 导致 endpoints 始终为空 → 压测步骤无接口可选。改为监听 repoId 后，
+ * 主动点选、会话恢复、跨页返回三条路径都会自动加载。
+ */
+watch(
+  () => repoId.value,
+  (id) => {
+    if (id) loadEndpoints()
+    else {
+      endpoints.value = []
+      endpointMsg.value = null
+    }
+  }
+)
 
 // 灌数逻辑已全部交由 DataGenForm 公共组件（与压测中心「数据准备」一致），
 // 向导仅负责把项目与探测到的数据库连接预填进去，并通过 @created 感知进度。
