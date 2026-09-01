@@ -5,6 +5,10 @@ import java.time.LocalDateTime;
 /**
  * 数据库连接配置：慢 SQL 分析时按 host/appName 匹配，
  * 用于执行 EXPLAIN、SHOW INDEX 等只读检测语句。
+ *
+ * <p>安全约束：{@code password} 经 {@link com.perfserver.security.CryptoService}
+ * 加密后落库（{@code ENC:} 前缀），仅列表接口返回脱敏值 + {@code hasPassword} 标记；
+ * 明文只在真正建立 JDBC 连接的取用点解密，不进入日志、AI 上下文与接口出口。
  */
 public class DbConn {
 
@@ -17,10 +21,12 @@ public class DbConn {
     /** JDBC URL（jdbc:mysql://...） */
     private String dbUrl;
     private String username;
-    /** 内网演示明文存储，生产环境应加密 */
+    /** 数据库密码：加密存储（ENC: 前缀 + AES-GCM），列表接口返回脱敏值 */
     private String password;
     private Integer isDefault;
     private LocalDateTime createTime;
+    /** 是否已配置密码（脱敏输出用，前端据此区分「已配置/未配置」；不落库） */
+    private Boolean hasPassword;
 
     public Long getId() {
         return id;
@@ -92,5 +98,13 @@ public class DbConn {
 
     public void setCreateTime(LocalDateTime createTime) {
         this.createTime = createTime;
+    }
+
+    public Boolean getHasPassword() {
+        return hasPassword;
+    }
+
+    public void setHasPassword(Boolean hasPassword) {
+        this.hasPassword = hasPassword;
     }
 }

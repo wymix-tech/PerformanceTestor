@@ -116,17 +116,22 @@
       <div class="text-xs text-fg-sub mb-2">容量拟合曲线（实测点 / 拟合趋势 / 95% 置信带 / 拐点）</div>
       <MetricChart :option="fitOption" height="240px" />
     </div>
+
+    <!-- 历史趋势：同应用 + 同目标的多版本指标折线（≥2 次记录才展示曲线） -->
+    <StressTrendChart v-if="trend.length" :points="trend" :current-task-id="report?.task?.id" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import axios from 'axios'
+import { onMounted, watch } from 'vue'
 import MetricChart from '../charts/MetricChart.vue'
-import { reportApi } from '../../api'
+import StressTrendChart from './StressTrendChart.vue'
+import { reportApi, stressApi } from '../../api'
 
 /**
- * 压测报告公共组件：指标卡 + QPS/分档曲线 + 容量评估卡片。
+ * 压测报告公共组件：指标卡 + QPS/分档曲线 + 容量评估卡片 + 历史趋势。
  * 版本对比等视图特有内容经 #extra / #actions 插槽注入。
  */
 const props = defineProps<{
@@ -148,6 +153,32 @@ const taskFinished = computed(() => {
   const s = props.report?.task?.status
   return s === 'finished' || s === 'failed'
 })
+
+/**
+ * 历史趋势数据（同应用 + 同目标 URL 的近期指标序列）。
+ *
+ * <p>仅在归属了应用名的任务上有意义（未归属应用的历史无法可靠归集），
+ * 且趋势加载失败时静默降级——报告主体不受影响。
+ */
+const trend = ref<Array<Record<string, any>>>([])
+
+async function loadTrend() {
+  const task = props.report?.task
+  if (!task?.appName || !task?.targetUrl) {
+    trend.value = []
+    return
+  }
+  try {
+    const r = await stressApi.trend({
+      appName: task.appName,
+      url: task.targetUrl,
+      limit: 20
+    })
+    trend.value = r.data || []
+  } catch {
+    trend.value = [] // 趋势是增强信息，失败不影响报告主体
+  }
+}
 
 /** 正在导出的格式（'' 表示空闲，用于按钮 loading 态与防重复点击） */
 const exporting = ref('')
@@ -340,4 +371,8 @@ const fitOption = computed(() => {
       : []
   }
 })
+
+// 切换报告时重新拉取对应场景的历史趋势
+onMounted(loadTrend)
+watch(() => props.report?.task?.id, loadTrend)
 </script>

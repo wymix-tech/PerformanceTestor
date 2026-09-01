@@ -10,7 +10,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -47,7 +50,8 @@ public class HttpStressEngine implements StressEngine {
 
     @Override
     public StressTaskResult run(StressTaskRequest request, StressSampleListener listener) {
-        List<StressTaskRequest.Stage> stages = request.getStages();
+        // 分档配置归一化：兼容前端提交的 stageConcurrencies 简写形式
+        List<StressTaskRequest.Stage> stages = request.resolveStages();
         StressTaskResult result = new StressTaskResult();
         result.setEngineType("http");
         result.setTargetUrl(request.getTargetUrl());
@@ -56,6 +60,7 @@ public class HttpStressEngine implements StressEngine {
         result.setRampUpSec(request.getRampUpSec());
 
         List<StressTaskResult.Sample> allSamples = new ArrayList<>();
+        List<StressStatistician.StepStats> allStepStats = new ArrayList<>();
 
         if (stages == null || stages.isEmpty()) {
             // 单档模式
@@ -75,6 +80,7 @@ public class HttpStressEngine implements StressEngine {
             result.setAvgMs(outcome.avg);
             result.setSamples(outcome.samples);
             result.setStagePoints(java.util.List.of(outcome.toStagePoint()));
+            allStepStats.addAll(outcome.stepStats);
         } else {
             // 分档模式（容量评估）：仅第一档执行 warmup（后续档 JIT/连接池已热）
             long total = 0;
@@ -88,6 +94,7 @@ public class HttpStressEngine implements StressEngine {
                 total += o.total;
                 errors += o.errors;
                 allSamples.addAll(o.samples);
+                allStepStats.addAll(o.stepStats);
             }
             result.setConcurrency(request.getConcurrency());
             result.setTotalRequests(total);
@@ -103,7 +110,49 @@ public class HttpStressEngine implements StressEngine {
                 result.setP99Ms(last.getP99Ms());
             }
         }
+        // 分步骤统计（多接口场景编排；单接口模式为空列表）
+        result.setStepStats(mergeStepStats(allStepStats));
         return result;
+    }
+
+    /**
+     * 合并多档的分散步骤统计（按步骤名聚合）。
+     *
+     * <p>各档时长可能不同，QPS 无法简单相加，故这里只聚合请求数/错误数/耗时/最大值，
+     * 平均值由「总耗时 ÷ 总请求数」重算。场景压测通常为单档，本方法主要保证
+     * 「场景 + 分档」组合下汇总仍正确。
+     */
+    private static List<StressStatistician.StepStats> mergeStepStats(
+            List<StressStatistician.StepStats> inputs) {
+        if (inputs.isEmpty()) {
+            return List.of();
+        }
+        Map<String, StepAccumulator> acc = new LinkedHashMap<>();
+        for (StressStatistician.StepStats s : inputs) {
+            acc.computeIfAbsent(s.getStepName(), k -> new StepAccumulator())
+                    .add(s.getTotalRequests(), s.getErrorCount(),
+                            Math.round(s.getAvgMs() * s.getTotalRequests()), (long) s.getMaxMs());
+        }
+        List<StressStatistician.StepStats> merged = new ArrayList<>(acc.size());
+        acc.forEach((name, a) -> merged.add(StressStatistician.StepStats.of(
+                name, a.total, a.errors, a.costMs, a.maxMs)));
+        merged.sort(Comparator.comparing(StressStatistician.StepStats::getStepName));
+        return merged;
+    }
+
+    /** 分档合并用的轻量累加器 */
+    private static final class StepAccumulator {
+        private long total;
+        private long errors;
+        private long costMs;
+        private long maxMs;
+
+        void add(long t, long e, long cost, long max) {
+            total += t;
+            errors += e;
+            costMs += cost;
+            maxMs = Math.max(maxMs, max);
+        }
     }
 
     /**
@@ -126,13 +175,16 @@ public class HttpStressEngine implements StressEngine {
         // 全局 QPS 令牌桶（虚拟时钟 CAS，替代每 worker sleep 整形）
         QpsLimiter limiter = request.getQpsLimit() > 0 ? new QpsLimiter(request.getQpsLimit()) : null;
 
+        // 场景编排：步骤选择器 + 任务级变量池（多 worker 共享，均为线程安全结构）
+        Scenario scenario = request.isScenarioMode() ? Scenario.of(request) : null;
+
         ExecutorService pool = Executors.newFixedThreadPool(concurrency);
         HttpClient client = buildClient();
         long rampUpMs = request.getRampUpSec() * 1000L;
         for (int i = 0; i < concurrency; i++) {
             // 爬坡：worker i 在 [stageStart, stageStart+rampUpMs] 内线性依次激活
             long activateAt = rampUpMs > 0 ? stageStart + rampUpMs * i / concurrency : stageStart;
-            pool.submit(new Worker(client, request, stop, stats, warmupDone, limiter, activateAt));
+            pool.submit(new Worker(client, request, stop, stats, warmupDone, limiter, activateAt, scenario));
         }
 
         // 正式统计起点（warmup 结束时刻；无 warmup 即 stageStart）
@@ -214,6 +266,7 @@ public class HttpStressEngine implements StressEngine {
         outcome.errorRate = outcome.total == 0 ? 0 : round2(outcome.errors * 100.0 / outcome.total);
         outcome.samples = samples;
         outcome.concurrency = concurrency;
+        outcome.stepStats = stats.stepStats(formalElapsedSec);
         return outcome;
     }
 
@@ -293,9 +346,12 @@ public class HttpStressEngine implements StressEngine {
         private final QpsLimiter limiter;
         /** 爬坡激活时刻（ms epoch） */
         private final long activateAt;
+        /** 多接口场景（单接口模式为 null） */
+        private final Scenario scenario;
 
         Worker(HttpClient client, StressTaskRequest request, AtomicBoolean stop,
-               StressStatistician stats, AtomicBoolean warmupDone, QpsLimiter limiter, long activateAt) {
+               StressStatistician stats, AtomicBoolean warmupDone, QpsLimiter limiter, long activateAt,
+               Scenario scenario) {
             this.client = client;
             this.request = request;
             this.stop = stop;
@@ -303,6 +359,7 @@ public class HttpStressEngine implements StressEngine {
             this.warmupDone = warmupDone;
             this.limiter = limiter;
             this.activateAt = activateAt;
+            this.scenario = scenario;
         }
 
         @Override
@@ -316,53 +373,182 @@ public class HttpStressEngine implements StressEngine {
                     }
                     Thread.sleep(Math.min(remain, 50));
                 }
-                HttpRequest requestObj = buildRequest();
-                while (!stop.get()) {
-                    if (limiter != null && !limiter.acquire(stop)) {
-                        return;
-                    }
-                    long t0 = System.nanoTime();
-                    boolean error = false;
-                    try {
-                        HttpResponse<String> resp = client.send(requestObj, HttpResponse.BodyHandlers.ofString());
-                        if (resp.statusCode() >= 400) {
-                            error = true;
-                        }
-                    } catch (Exception e) {
-                        error = true;
-                    }
-                    long costMs = (System.nanoTime() - t0) / 1_000_000;
-                    // stop 置位后（含 shutdownNow 中断的在途请求）不记录：
-                    // 收尾期结果不具代表性，且中断异常会被误计为业务错误
-                    if (warmupDone.get() && !stop.get()) {
-                        stats.record(costMs, error);
-                    }
+                if (scenario == null) {
+                    runSingle();
+                } else {
+                    runScenario();
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
 
-        private HttpRequest buildRequest() {
-            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(request.getTargetUrl()));
+        /** 单接口模式：预构建一次请求复用（与历史行为一致） */
+        private void runSingle() throws InterruptedException {
+            HttpRequest requestObj = buildRequest(request.getTargetUrl(), request.getMethod(),
+                    request.getHeaders(), request.getBody());
+            while (!stop.get()) {
+                if (limiter != null && !limiter.acquire(stop)) {
+                    return;
+                }
+                long t0 = System.nanoTime();
+                boolean error = false;
+                try {
+                    HttpResponse<String> resp = client.send(requestObj, HttpResponse.BodyHandlers.ofString());
+                    if (resp.statusCode() >= 400) {
+                        error = true;
+                    }
+                } catch (Exception e) {
+                    error = true;
+                }
+                long costMs = (System.nanoTime() - t0) / 1_000_000;
+                // stop 置位后（含 shutdownNow 中断的在途请求）不记录：
+                // 收尾期结果不具代表性，且中断异常会被误计为业务错误
+                if (warmupDone.get() && !stop.get()) {
+                    stats.record(costMs, error);
+                }
+            }
+        }
+
+        /**
+         * 多接口场景模式：每次迭代按权重选一个步骤，用当前变量池渲染后发送，
+         * 并按步骤声明的提取规则把响应中的值写回变量池（供后续步骤使用）。
+         */
+        private void runScenario() throws InterruptedException {
+            while (!stop.get()) {
+                if (limiter != null && !limiter.acquire(stop)) {
+                    return;
+                }
+                int stepIdx = scenario.select();
+                if (stepIdx < 0) {
+                    // 全部步骤权重 <= 0：无可发步骤，直接结束该 worker
+                    return;
+                }
+                StressTaskRequest.ScenarioStep step = scenario.stepAt(stepIdx);
+                HttpRequest requestObj = buildRequest(
+                        ResponseVarExtractor.substitute(step.getUrl(), scenario.pool()),
+                        step.getMethod(),
+                        step.getHeaders(),
+                        ResponseVarExtractor.substitute(step.getBody(), scenario.pool()));
+                long t0 = System.nanoTime();
+                boolean error = false;
+                String body = null;
+                try {
+                    HttpResponse<String> resp = client.send(requestObj, HttpResponse.BodyHandlers.ofString());
+                    if (resp.statusCode() >= 400) {
+                        error = true;
+                    }
+                    // 仅在声明了提取规则时保留响应体（避免无谓的字符串驻留开销）
+                    if (hasExtract(step)) {
+                        body = resp.body();
+                    }
+                } catch (Exception e) {
+                    error = true;
+                }
+                long costMs = (System.nanoTime() - t0) / 1_000_000;
+                boolean counted = warmupDone.get() && !stop.get();
+                if (counted) {
+                    stats.record(costMs, error, scenario.stepName(stepIdx));
+                }
+                // 变量提取在计数之后：即便本次不计入统计，也应更新变量池，
+                // 保证后续步骤拿到新鲜登录态（warmup 期同样需要建立有效 token）
+                if (body != null) {
+                    ResponseVarExtractor.extract(body, step.getExtract(), scenario.pool(), MAX_EXTRACT_BODY_CHARS);
+                }
+            }
+        }
+
+        private static boolean hasExtract(StressTaskRequest.ScenarioStep step) {
+            return step.getExtract() != null && !step.getExtract().isEmpty();
+        }
+
+        private HttpRequest buildRequest(String url, String method,
+                                        Map<String, String> headers, String body) {
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url));
             // 压测流量标记（默认注入；被测应用可据此路由影子表/隔离数据，用户显式设置不覆盖）
-            if (request.getHeaders() == null || !request.getHeaders().containsKey(TRAFFIC_MARK_HEADER)) {
+            if (headers == null || !headers.containsKey(TRAFFIC_MARK_HEADER)) {
                 builder.header(TRAFFIC_MARK_HEADER, "1");
             }
-            if (request.getHeaders() != null) {
-                request.getHeaders().forEach(builder::header);
+            if (headers != null) {
+                if (scenario != null) {
+                    // 场景模式：头值支持 {{var}} 占位（如 Authorization: Bearer {{token}}）
+                    headers.forEach((k, v) -> builder.header(k,
+                            ResponseVarExtractor.substitute(v, scenario.pool())));
+                } else {
+                    headers.forEach(builder::header);
+                }
             }
-            HttpRequest.BodyPublisher body = request.getBody() == null || request.getBody().isEmpty()
+            HttpRequest.BodyPublisher publisher = body == null || body.isEmpty()
                     ? HttpRequest.BodyPublishers.noBody()
-                    : HttpRequest.BodyPublishers.ofString(request.getBody());
-            String method = request.getMethod() == null ? "GET" : request.getMethod().toUpperCase();
-            builder.method(method, body);
+                    : HttpRequest.BodyPublishers.ofString(body);
+            String m = method == null || method.isBlank() ? "GET" : method.toUpperCase();
+            builder.method(m, publisher);
             return builder.build();
+        }
+    }
+
+    /** 参与变量提取的响应体最大字符数（超长响应截断，避免压测机被大响应拖垮） */
+    private static final int MAX_EXTRACT_BODY_CHARS = 64 * 1024;
+
+    /**
+     * 多接口场景运行时上下文：步骤选择器 + 任务级变量池。
+     *
+     * <p>由所有 worker 共享：选择器无状态、变量池为并发容器，均无锁访问。
+     */
+    private static final class Scenario {
+        /** 步骤快照（不可变，避免运行期请求对象被改动导致索引错位） */
+        private final List<StressTaskRequest.ScenarioStep> steps;
+        private final StepSelector selector;
+        private final Map<String, String> pool;
+        /** 步骤下标 → 展示名（未命名步骤按序号生成） */
+        private final String[] stepNames;
+
+        private Scenario(List<StressTaskRequest.ScenarioStep> steps, StepSelector selector,
+                         Map<String, String> pool, String[] stepNames) {
+            this.steps = steps;
+            this.selector = selector;
+            this.pool = pool;
+            this.stepNames = stepNames;
+        }
+
+        static Scenario of(StressTaskRequest request) {
+            List<StressTaskRequest.ScenarioStep> steps = List.copyOf(request.getScenario());
+            String[] names = new String[steps.size()];
+            for (int i = 0; i < steps.size(); i++) {
+                String name = steps.get(i).getName();
+                names[i] = (name == null || name.isBlank()) ? "step-" + (i + 1) : name;
+            }
+            return new Scenario(steps, StepSelector.of(steps),
+                    ResponseVarExtractor.createPool(request.getVariables()), names);
+        }
+
+        /**
+         * 按权重随机选中一个步骤下标（O(log n)）。
+         *
+         * @return 步骤下标；全部步骤权重 <= 0 时返回 -1
+         */
+        int select() {
+            return selector.select();
+        }
+
+        StressTaskRequest.ScenarioStep stepAt(int idx) {
+            return steps.get(idx);
+        }
+
+        /** 步骤名（按下标直接取，避免热路径上的身份查找） */
+        String stepName(int idx) {
+            return stepNames[idx];
+        }
+
+        Map<String, String> pool() {
+            return pool;
         }
     }
 
     /** 单档压测结果汇总 */
     private static class StageOutcome {
+        /** 分步骤统计（多接口场景；单接口为空列表） */
+        private List<StressStatistician.StepStats> stepStats = List.of();
         private int concurrency;
         private long total;
         private long errors;

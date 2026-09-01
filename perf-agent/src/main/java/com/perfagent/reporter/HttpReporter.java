@@ -18,12 +18,22 @@ public class HttpReporter {
     public record PostResult(boolean ok, int statusCode, String body) {
     }
 
+    /** 探针令牌请求头（与平台 AgentAuthInterceptor 一致） */
+    public static final String TOKEN_HEADER = "X-Perf-Agent-Token";
+
     private final HttpClient client;
+    /** 探针令牌（空则不携带请求头，兼容平台未启用令牌校验） */
+    private final String agentToken;
 
     public HttpReporter() {
+        this("");
+    }
+
+    public HttpReporter(String agentToken) {
         this.client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(3))
                 .build();
+        this.agentToken = agentToken == null ? "" : agentToken;
     }
 
     /**
@@ -35,10 +45,14 @@ public class HttpReporter {
      */
     public PostResult postJson(String url, String body) {
         try {
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofSeconds(10))
-                    .header("Content-Type", "application/json")
+                    .header("Content-Type", "application/json");
+            if (!agentToken.isEmpty()) {
+                builder.header(TOKEN_HEADER, agentToken);
+            }
+            HttpRequest request = builder
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());

@@ -49,13 +49,24 @@
         <MetricChart :option="cpuOption" height="240px" />
       </div>
     </div>
+
+    <!-- 阈值告警规则 -->
+    <div class="mt-4">
+      <JvmAlertRulePanel ref="rulePanel" :app="app" @notify="onNotify" />
+    </div>
+
+    <!-- 轻量提示条（规则操作反馈） -->
+    <div v-if="toast" class="fixed bottom-6 right-6 glass-card px-4 py-2 text-xs neon-text">
+      {{ toast }}
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Activity } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
+import JvmAlertRulePanel from '../components/monitor/JvmAlertRulePanel.vue'
 import { jvmApi, appApi } from '../api'
 
 const app = ref('')
@@ -63,7 +74,17 @@ const range = ref(3600000)
 const auto = ref(true)
 const appList = ref<Array<{ appName: string }>>([])
 const rows = ref<Array<Record<string, any>>>([])
+const rulePanel = ref<InstanceType<typeof JvmAlertRulePanel> | null>(null)
+const toast = ref('')
 let timer: number | undefined
+let toastTimer: number | undefined
+
+/** 规则面板操作反馈（自动消失） */
+function onNotify(msg: string) {
+  toast.value = msg
+  if (toastTimer) window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => (toast.value = ''), 2500)
+}
 
 const metricCards = computed(() => {
   const last = rows.value[rows.value.length - 1] || {}
@@ -165,5 +186,10 @@ onMounted(() => {
   loadData()
   timer = window.setInterval(loadData, 5000)
 })
-onUnmounted(() => timer && window.clearInterval(timer))
+onUnmounted(() => {
+  if (timer) window.clearInterval(timer)
+  if (toastTimer) window.clearTimeout(toastTimer)
+})
+// 应用切换时同步刷新告警规则列表（规则按应用隔离）
+watch(app, () => rulePanel.value?.load())
 </script>

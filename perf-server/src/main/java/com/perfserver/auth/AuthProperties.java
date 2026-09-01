@@ -28,6 +28,34 @@ public class AuthProperties {
     /** token 有效期（小时） */
     private long expireHours = 12;
 
+    /**
+     * 探针上报令牌（PERF_AGENT_TOKEN）：配置后 /api/agent/** 需携带 X-Perf-Agent-Token。
+     * 留空 = 不校验，保持开放（兼容存量 agent 与内网演示）。
+     */
+    private String agentToken = "";
+
+    /**
+     * 静态 API Token（PERF_API_TOKEN）：供 CI 流水线调用压测/门禁接口。
+     * 与 JWT 并行生效，命中即放行并标记调用方为 CI。留空 = 不启用。
+     */
+    private String apiToken = "";
+
+    public String getAgentToken() {
+        return agentToken;
+    }
+
+    public void setAgentToken(String agentToken) {
+        this.agentToken = agentToken;
+    }
+
+    public String getApiToken() {
+        return apiToken;
+    }
+
+    public void setApiToken(String apiToken) {
+        this.apiToken = apiToken;
+    }
+
     public boolean isEnabled() {
         return enabled;
     }

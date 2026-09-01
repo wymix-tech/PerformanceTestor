@@ -64,7 +64,8 @@ public class AgentPremain {
         config.targetProjectName = project;
 
         // 1) 初始化上报器与采样器（采样率控制比例 + 每秒令牌桶控制绝对量）
-        HttpReporter http = new HttpReporter();
+        // 探针令牌由启动参数 agentToken 下发，未配置时不携带请求头（兼容平台未启用令牌校验）
+        HttpReporter http = new HttpReporter(config.agentToken);
         MetricsReporter reporter = new MetricsReporter(config, http);
         TraceSampler sampler = new TraceSampler(config.sampleRate, config.maxTracesPerSec);
         TraceContext.init(config.appName, sampler, reporter);

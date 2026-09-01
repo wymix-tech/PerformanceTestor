@@ -34,6 +34,8 @@ public class StressTaskResult {
     private List<Sample> samples = new ArrayList<>();
     /** 分档采样点（容量评估曲线） */
     private List<StagePoint> stagePoints = new ArrayList<>();
+    /** 分步骤统计（多接口混合场景；单接口模式为空列表） */
+    private List<StressStatistician.StepStats> stepStats = new ArrayList<>();
 
     /** 周期采样点 */
     public static class Sample {
@@ -311,5 +313,13 @@ public class StressTaskResult {
 
     public void setStagePoints(List<StagePoint> stagePoints) {
         this.stagePoints = stagePoints;
+    }
+
+    public List<StressStatistician.StepStats> getStepStats() {
+        return stepStats;
+    }
+
+    public void setStepStats(List<StressStatistician.StepStats> stepStats) {
+        this.stepStats = stepStats == null ? new ArrayList<>() : stepStats;
     }
 }

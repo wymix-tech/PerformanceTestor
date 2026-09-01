@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
@@ -24,5 +25,11 @@ export default defineConfig({
     build: {
         outDir: 'dist',
         chunkSizeWarningLimit: 1500
+    },
+    // 单元测试（vitest + jsdom）：与构建共用同一套别名，测试文件为 **/__tests__/*.spec.ts
+    test: {
+        environment: 'jsdom',
+        globals: true,
+        include: ['src/**/__tests__/**/*.spec.ts']
     }
 });

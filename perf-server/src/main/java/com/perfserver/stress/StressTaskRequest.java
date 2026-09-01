@@ -4,12 +4,17 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 压测任务请求：单档并发或分档阶梯（stages）两种模式。
+ * 压测任务请求：单档并发、分档阶梯（stages）、多接口场景（scenario）三种模式。
  *
  * <p>stages 模式用于容量评估：按多档并发依次执行，每档结束后生成一个采样点
  * （并发/QPS/RT 分位数），供容量曲线插值分析。
+ *
+ * <p>scenario 模式用于混合场景压测：按权重编排多个接口步骤，并支持从响应中
+ * 提取登录态等变量在步骤间传递，更贴近真实流量模型。
+ * 未配置 scenario 时退化为单接口模式，存量调用与前端旧表单零改动。
  */
 public class StressTaskRequest {
 
@@ -45,8 +50,26 @@ public class StressTaskRequest {
     private String body;
     /** 分档并发模式（容量评估）：每档 {concurrency, durationSec} */
     private List<Stage> stages;
+    /**
+     * 分档并发的简写形式（前端表单用）：只给并发数列表，每档时长按
+     * {@code durationSec / 档数} 均分，由 {@link #resolveStages()} 展开为 {@link #stages}。
+     *
+     * <p>存在意义：前端表单填「10,50,100」即可，不必构造完整 Stage 对象数组。
+     */
+    private List<Integer> stageConcurrencies;
     /** 采样周期秒（默认 5，用于实时图表） */
     private int sampleIntervalSec = 5;
+    /**
+     * 多接口混合场景步骤（为空 = 单接口模式，沿用 targetUrl/method/headers/body）。
+     *
+     * <p>每步带权重：按权重比例随机选中执行，模拟真实流量中不同接口的访问配比。
+     */
+    private List<ScenarioStep> scenario;
+    /**
+     * 场景初始变量（如预置 token），可被步骤提取结果覆盖。
+     * 步骤 URL / 头 / body 中的 {@code {{var}}} 占位会被替换为变量值。
+     */
+    private Map<String, String> variables = new ConcurrentHashMap<>();
 
     /** 分档配置 */
     public static class Stage {
@@ -68,6 +91,167 @@ public class StressTaskRequest {
         public void setDurationSec(int durationSec) {
             this.durationSec = durationSec;
         }
+    }
+
+    /** 场景步骤：一个接口的一种调用形态 */
+    public static class ScenarioStep {
+        /** 步骤名（用于分步骤统计；留空按序号生成） */
+        private String name;
+        /** 请求地址，支持 {{var}} 占位 */
+        private String url;
+        private String method = "GET";
+        private Map<String, String> headers = new HashMap<>();
+        private String body;
+        /** 权重配比（默认 1；各步权重之比即流量配比） */
+        private int weight = 1;
+        /** 从响应提取变量（如 data.token → token），供后续步骤使用 */
+        private List<VarExtract> extract;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public void setUrl(String url) {
+            this.url = url;
+        }
+
+        public String getMethod() {
+            return method;
+        }
+
+        public void setMethod(String method) {
+            this.method = method;
+        }
+
+        public Map<String, String> getHeaders() {
+            return headers;
+        }
+
+        public void setHeaders(Map<String, String> headers) {
+            this.headers = headers;
+        }
+
+        public String getBody() {
+            return body;
+        }
+
+        public void setBody(String body) {
+            this.body = body;
+        }
+
+        public int getWeight() {
+            return weight;
+        }
+
+        public void setWeight(int weight) {
+            this.weight = weight;
+        }
+
+        public List<VarExtract> getExtract() {
+            return extract;
+        }
+
+        public void setExtract(List<VarExtract> extract) {
+            this.extract = extract;
+        }
+    }
+
+    /** 变量提取规则：从响应 JSON 中按点分路径取值 */
+    public static class VarExtract {
+        /** 变量名（后续步骤用 {{var}} 引用） */
+        private String var;
+        /** 点分路径，如 data.token */
+        private String path;
+
+        public String getVar() {
+            return var;
+        }
+
+        public void setVar(String var) {
+            this.var = var;
+        }
+
+        public String getPath() {
+            return path;
+        }
+
+        public void setPath(String path) {
+            this.path = path;
+        }
+    }
+
+    /** 是否多接口场景模式（scenario 非空且含有效步骤） */
+    public boolean isScenarioMode() {
+        return scenario != null && !scenario.isEmpty();
+    }
+
+    /**
+     * 取得生效的分档配置：优先 {@code stages}；为空时把 {@code stageConcurrencies}
+     * 简写形式展开为完整分档（每档时长 = durationSec / 档数，至少 1 秒）。
+     *
+     * <p>做这一层归一化的原因：前端表单提交的是并发数简写列表，而引擎只认完整 Stage。
+     * 若不做兼容，用户填了分档并发却会静默退化成单档压测，容量曲线无从产生。
+     *
+     * @return 生效的分档列表；无分档返回 null
+     */
+    public List<Stage> resolveStages() {
+        if (stages != null && !stages.isEmpty()) {
+            return stages;
+        }
+        if (stageConcurrencies == null || stageConcurrencies.isEmpty()) {
+            return null;
+        }
+        List<Integer> valid = new ArrayList<>();
+        for (Integer c : stageConcurrencies) {
+            if (c != null && c > 0) {
+                valid.add(c);
+            }
+        }
+        if (valid.isEmpty()) {
+            return null;
+        }
+        // 时长按档数均分，保证总耗时与 durationSec 大致相当（不再叠加 N 倍时长）
+        int per = Math.max(1, durationSec / valid.size());
+        List<Stage> resolved = new ArrayList<>(valid.size());
+        for (Integer c : valid) {
+            Stage s = new Stage();
+            s.setConcurrency(c);
+            s.setDurationSec(per);
+            resolved.add(s);
+        }
+        return resolved;
+    }
+
+    public List<Integer> getStageConcurrencies() {
+        return stageConcurrencies;
+    }
+
+    public void setStageConcurrencies(List<Integer> stageConcurrencies) {
+        this.stageConcurrencies = stageConcurrencies;
+    }
+
+    public List<ScenarioStep> getScenario() {
+        return scenario;
+    }
+
+    public void setScenario(List<ScenarioStep> scenario) {
+        this.scenario = scenario;
+    }
+
+    public Map<String, String> getVariables() {
+        return variables;
+    }
+
+    public void setVariables(Map<String, String> variables) {
+        this.variables = variables == null ? new ConcurrentHashMap<>() : new ConcurrentHashMap<>(variables);
     }
 
     /** 便捷构造单档请求 */

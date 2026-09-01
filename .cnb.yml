@@ -1,0 +1,37 @@
+# =====================================================================
+# PerformanceTestor PR 门禁流水线
+# 目标：防回归——后端全模块单元测试 + 前端类型检查与构建
+#
+# 说明：
+#   - 后端为 Maven 多模块（perf-server / perf-agent / perf-datagen / perf-demo）
+#   - 依赖真实数据库的 *LiveTest 已用 Assumptions.assumeTrue 自跳过，
+#     无需额外排除规则即可无库运行
+#   - 两个 Job 并行执行，任一失败则 PR 门禁不通过
+# =====================================================================
+main:
+  pull_request:
+    - name: pr-gate
+      docker:
+        image: cnbcool/default-build-env
+        # Maven 本地仓库缓存：跨构建复用依赖，避免每次全量下载
+        volumes:
+          - m2:/root/.m2:rw
+      env:
+        MAVEN_OPTS: -Dmaven.repo.local=/root/.m2/repository
+      stages:
+        - name: quality-gate
+          jobs:
+            backend:
+              name: 后端单元测试
+              image: maven:3.9-eclipse-temurin-21
+              script: |
+                set -e
+                mvn -B -ntp test
+            frontend:
+              name: 前端类型检查与构建
+              image: node:20
+              script: |
+                set -e
+                cd perf-web
+                npm ci
+                npm run build

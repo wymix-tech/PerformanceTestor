@@ -68,4 +68,23 @@
         LIMIT #{limit}
     </select>
 
+    <!-- 同场景历史（趋势图用）：过滤下推到 SQL，避免全表拉取后再在内存筛选 -->
+    <select id="queryByScene" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM stress_task
+        <where>
+            <if test="status != null and status != ''">
+                status = #{status}
+            </if>
+            <if test="appName != null and appName != ''">
+                AND app_name = #{appName}
+            </if>
+            <if test="targetUrl != null and targetUrl != ''">
+                AND target_url = #{targetUrl}
+            </if>
+        </where>
+        ORDER BY create_time DESC
+        LIMIT #{limit}
+    </select>
+
 </mapper>

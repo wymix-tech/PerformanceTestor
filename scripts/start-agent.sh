@@ -26,6 +26,8 @@ SLOW_SQL_THRESHOLD_MS=${SLOW_SQL_THRESHOLD_MS:-200}
 MIDDLEWARE_ENABLED=${MIDDLEWARE_ENABLED:-false}
 # 中间件慢命令阈值 ms（中间件单次命令远快于 SQL，默认更严格）
 SLOW_COMMAND_THRESHOLD_MS=${SLOW_COMMAND_THRESHOLD_MS:-100}
+# 探针上报令牌（需与平台 PERF_AGENT_TOKEN 一致；留空 = 平台未启用令牌校验）
+AGENT_TOKEN=${AGENT_TOKEN:-}
 
 echo "==> PerformanceTestor 被测端启动"
 echo "    被测应用端口: ${DEMO_PORT} / 上报地址: ${REPORT_URL}"
@@ -40,8 +42,13 @@ AGENT_ARGS="reportUrl=${REPORT_URL},appName=perf-demo,appPort=${DEMO_PORT},sampl
 if [ "${MIDDLEWARE_ENABLED}" = "true" ]; then
   AGENT_ARGS="${AGENT_ARGS},middlewareEnabled=true,slowCommandThresholdMs=${SLOW_COMMAND_THRESHOLD_MS}"
 fi
+# 探针令牌：非空时追加（agent 上报请求携带 X-Perf-Agent-Token 头）
+if [ -n "${AGENT_TOKEN}" ]; then
+  AGENT_ARGS="${AGENT_ARGS},agentToken=${AGENT_TOKEN}"
+fi
 
 echo "    中间件拦截: ${MIDDLEWARE_ENABLED}（阈值 ${SLOW_COMMAND_THRESHOLD_MS}ms）"
+echo "    探针令牌:   $([ -n "${AGENT_TOKEN}" ] && echo '已配置' || echo '未配置（平台需同步留空 PERF_AGENT_TOKEN）')"
 
 nohup java \
   -javaagent:perf-agent/target/perf-agent.jar=${AGENT_ARGS} \

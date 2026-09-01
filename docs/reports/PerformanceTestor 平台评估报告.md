@@ -85,7 +85,7 @@
 11. **容量评估科学化**：多项式/QTCP 拟合容量曲线，输出置信区间与拐点检测，替代分段线性插值。
 
 **第四阶段：生态扩展**
-12. **多数据库方言**：PG/Oracle 落地（SPI 已就绪，补 `PostgreSQLDialect` 即可）；ORM 扩展 JPA/Hibernate；
+12. **多数据库方言**：~~PG/Oracle 落地~~（PG 已完成并端到端验收，见 `scripts/verify-datagen-postgres.sh`）；剩余 Oracle 落地；ORM 扩展 JPA/Hibernate；
 13. **中间件观测**：Redis/ES/MQ 客户端拦截（沿用 JDBC 拦截模式），慢命令与慢查询统一治理；
 14. **报表导出**：性能检测报告导出 PDF/Word（AI 已能生成报告文本，缺格式化输出）。
 

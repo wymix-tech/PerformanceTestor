@@ -32,4 +32,14 @@ public interface StressTaskMapper {
 
     /** 任务列表：按状态过滤（空查全部），时间倒序 */
     List<StressTask> query(@Param("status") String status, @Param("limit") int limit);
+
+    /**
+     * 同场景历史任务：按应用名 + 目标 URL + 状态过滤，时间倒序。
+     *
+     * <p>过滤下推到 SQL，避免把全量任务拉到内存再筛——任务表会随使用持续增长。
+     */
+    List<StressTask> queryByScene(@Param("appName") String appName,
+                                  @Param("targetUrl") String targetUrl,
+                                  @Param("status") String status,
+                                  @Param("limit") int limit);
 }

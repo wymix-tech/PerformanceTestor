@@ -25,9 +25,13 @@
           </div>
           <div>
             <label class="text-xs text-fg-sub">密码</label>
-            <input v-model="gen.dbPassword" type="password" class="input-text w-full" />
+            <input v-model="gen.dbPassword" type="password" class="input-text w-full"
+                   :placeholder="gen.connId ? '已选连接：留空则使用库中加密凭据' : ''" />
           </div>
         </div>
+        <p v-if="gen.connId" class="text-[11px] text-fg-sub -mt-1">
+          已选中保存的连接，密码由服务端按连接配置解密使用（列表中不返回明文）
+        </p>
         <div>
           <label class="text-xs text-fg-sub">目标表</label>
           <div class="flex gap-2">
@@ -251,9 +255,19 @@ function fillTableGroupExample() {
   ], null, 0)
 }
 
+/** 连接参数：选中已保存连接时带 connId，由服务端解析加密凭据 */
+function connParams() {
+  return {
+    connId: gen.value.connId || undefined,
+    dbUrl: gen.value.dbUrl,
+    dbUser: gen.value.dbUser,
+    dbPassword: gen.value.dbPassword
+  }
+}
+
 async function loadTables() {
   try {
-    const r = await dataGenApi.tables({ dbUrl: gen.value.dbUrl, dbUser: gen.value.dbUser, dbPassword: gen.value.dbPassword })
+    const r = await dataGenApi.tables(connParams())
     tables.value = r.data || []
   } catch { /* 读取失败不阻断 */ }
 }
@@ -261,7 +275,7 @@ async function loadTables() {
 async function loadColumns() {
   if (!gen.value.tableName) return
   try {
-    const r = await dataGenApi.columns({ dbUrl: gen.value.dbUrl, dbUser: gen.value.dbUser, dbPassword: gen.value.dbPassword, tableName: gen.value.tableName })
+    const r = await dataGenApi.columns({ ...connParams(), tableName: gen.value.tableName })
     columns.value = r.data || []
     loadSuggestions()
   } catch { /* 读取失败不阻断 */ }
@@ -299,13 +313,17 @@ async function loadConns() {
   } catch { /* 连接配置失败不阻断 */ }
 }
 
-/** 选择连接配置后自动填连接参数（仍可手改） */
+/**
+ * 选择连接配置后自动填连接参数（仍可手改）。
+ * 密码字段刻意留空：凭据已加密存储、列表仅返回脱敏值，
+ * 真实密码由服务端按 connId 解析（见 DataGenController.applyConn）。
+ */
 function applyConn() {
   const c = conns.value.find((x) => x.id === gen.value.connId)
   if (c) {
     gen.value.dbUrl = c.dbUrl
     gen.value.dbUser = c.username
-    gen.value.dbPassword = c.password || ''
+    gen.value.dbPassword = ''
   }
 }
 
