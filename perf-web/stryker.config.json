@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "前端突变测试（StrykerJS + vitest runner）。运行：npm run test:mutation。两个易踩的坑：(1) ignorePatterns 绝不能排除 __tests__/ 或 *.spec.ts——Stryker 的沙箱复制会遵守该规则，排除后测试文件不会进沙箱，直接报 No tests were executed；(2) vitest.related 必须关闭，它按依赖图只跑与突变文件直接相关的测试，本项目测试位于 __tests__ 子目录且大量使用桩替身，依赖图无法可靠关联。",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vite.config.ts",
+    "related": false
+  },
+  "reporters": ["html", "clear-text", "progress"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
+  "coverageAnalysis": "perTest",
+  "_mutateNote": "以下为「已有测试覆盖」的文件，随单测补充逐步把更多文件加入本列表。只突变有覆盖的文件，是因为 Stryker 的总分把 no-cov（无测试覆盖）突变计入分母：本项目 22 个 .vue 组件目前多数零覆盖，全量 mutate 会产生 1800+ 个 no-cov 突变并把总分压到个位数，门禁将常态化红灯而无法反映真实质量。当前已覆盖代码的杀死率约 87%，具备门禁意义。跑全量（仅出报告、不卡 CI）用 npm run test:mutation:all。",
+  "mutate": [
+    "src/utils/format.ts",
+    "src/components/stress/StressTaskList.vue",
+    "!src/**/__tests__/**",
+    "!src/**/*.spec.ts"
+  ],
+  "ignorePatterns": [
+    "src/main.ts",
+    "src/router/index.ts",
+    "src/**/*.d.ts"
+  ],
+  "thresholds": {
+    "high": 90,
+    "low": 75,
+    "break": 70
+  },
+  "concurrency": 4,
+  "timeoutMS": 20000,
+  "timeoutFactor": 1.5,
+  "logLevel": "info"
+}

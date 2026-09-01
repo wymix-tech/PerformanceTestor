@@ -45,3 +45,6 @@ main:
                 cd perf-web
                 npm ci
                 npm run build
+                # 突变测试门禁（仅对已有单测覆盖的文件，约 12 秒）。
+                # 全量突变（npm run test:mutation:all）需约 40 分钟，不接入 CI。
+                npm run test:mutation
