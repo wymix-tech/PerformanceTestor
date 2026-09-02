@@ -210,6 +210,23 @@
       </div>
     </div>
 
+    <!-- 按接口准备数据：把当前接口/场景与压测参数交给后端分析源码调用链，
+         推导出待造表、数据构成与行数，生成方案后跳到数据准备页确认 -->
+    <div v-if="prepareDataEnabled">
+      <button
+        class="btn-ghost w-full justify-center"
+        type="button"
+        :disabled="disabled || !canPrepareData || preparing"
+        :title="prepareDataHint"
+        @click="emitPrepareData"
+      >
+        {{ preparing ? '分析中…' : '按接口准备数据' }}
+      </button>
+      <div class="text-[10px] text-fg-sub mt-1 leading-relaxed">
+        分析当前接口涉及的数据库表与查询条件，自动生成数据方案（需先选择源码项目）
+      </div>
+    </div>
+
     <button
       class="btn-primary w-full justify-center"
       :disabled="disabled || !canSubmit"
@@ -217,6 +234,9 @@
     >
       {{ disabled ? '压测进行中…' : submitLabel }}
     </button>
+
+    <!-- 分析失败内联提示：不弹窗、不跳转，避免用户丢失已填的压测参数 -->
+    <div v-if="prepareError" class="text-[11px] text-red-400 mt-1">{{ prepareError }}</div>
   </div>
 </template>
 
@@ -244,6 +264,10 @@ const props = withDefaults(
     submitLabel?: string
     /** 是否展示多接口场景编排区（定时压测等轻量场景可关闭） */
     scenarioEnabled?: boolean
+    /** 是否展示「按接口准备数据」入口（需调用方能提供 repoId 才可用） */
+    prepareDataEnabled?: boolean
+    /** _analysis 进行中（由父组件置位，按钮显示 loading） */
+    preparing?: boolean
   }>(),
   {
     endpoints: () => [],
@@ -252,13 +276,17 @@ const props = withDefaults(
     disabled: false,
     submitLabel: '开始压测',
     /** 是否展示多接口场景编排（定时压测等轻量场景可关闭） */
-    scenarioEnabled: true
+    scenarioEnabled: true,
+    prepareDataEnabled: true,
+    preparing: false
   }
 )
 
 const emit = defineEmits<{
   (e: 'submit', payload: Record<string, unknown>): void
   (e: 'endpoint-selected', endpoint: Record<string, any>): void
+  /** 按接口准备数据：payload 为标准压测请求体（含接口/场景与压测参数） */
+  (e: 'prepare-data', payload: Record<string, unknown>): void
 }>()
 
 // ---------------- 多接口场景编排 ----------------
@@ -679,6 +707,34 @@ function emitSubmit() {
   emit('submit', buildPayload())
 }
 
+/** 分析失败的内联提示（由父组件经 setPrepareError 回写） */
+const prepareError = ref('')
+
+/**
+ * 按接口准备数据的可用性：
+ * 需要至少一个接口/步骤，且这些接口来自源码项目扫描（否则后端无法按 path 定位 Controller 方法）。
+ */
+const canPrepareData = computed(() => {
+  if (!props.prepareDataEnabled) return false
+  if (isScenario.value) {
+    return scenario.value.some((s) => String(s.url).trim().startsWith('http'))
+  }
+  return !!targetUrl.value.trim()
+})
+
+/** 未满足分析条件时的悬浮说明（按钮置灰要告诉用户为什么） */
+const prepareDataHint = computed(() => {
+  if (!props.prepareDataEnabled) return '按接口准备数据需在压测中心内使用'
+  if (!canPrepareData.value) return '请先填写目标 URL 或编排至少一个场景步骤'
+  return '分析当前接口涉及的数据库表与查询条件，生成数据方案'
+})
+
+function emitPrepareData() {
+  if (!canPrepareData.value || props.preparing) return
+  prepareError.value = ''
+  emit('prepare-data', buildPayload())
+}
+
 defineExpose({
   /** "再来一次"回填：把已完成任务的配置回填表单 */
   fillFrom(task: Record<string, any>, stagePoints: Array<Record<string, any>> = []) {
@@ -720,6 +776,12 @@ defineExpose({
     method: method.value,
     concurrency: concurrency.value,
     durationSec: durationSec.value
-  })
+  }),
+  /** 标准压测请求体（按接口准备数据复用同一份参数） */
+  buildPayload,
+  /** 由父组件回写分析失败原因（内联展示，不弹窗） */
+  setPrepareError(msg: string) {
+    prepareError.value = msg || ''
+  }
 })
 </script>

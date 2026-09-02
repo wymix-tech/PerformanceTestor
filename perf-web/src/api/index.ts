@@ -126,6 +126,28 @@ export const dataGenApi = {
   adopt: (id: number, adopt = true) => http.post(`/datagen/suggestions/${id}/adopt`, null, { params: { adopt } })
 }
 
+/**
+ * 接口驱动数据方案：按压测接口分析源码调用链，推导出待造表、数据构成与行数。
+ * 方案落库后可回看（推荐理由带 文件:行号 证据）与重复执行。
+ */
+export const dataGenPlanApi = {
+  // 按接口分析并生成方案（异步分析，立即返回已落库方案，前端轮询 detail 取结果）
+  analyze: (data: Record<string, unknown>) => http.post('/datagen/plans/analyze', data),
+  // 方案列表（按仓库 + 时间倒序）
+  list: (params?: { repoId?: number; status?: string; limit?: number }) =>
+    http.get('/datagen/plans', { params }),
+  // 方案详情（表清单 / 规则 / 证据 / 告警）
+  detail: (id: number) => http.get(`/datagen/plans/${id}`),
+  // 方案采纳/放弃
+  adopt: (id: number, adopt = true) =>
+    http.post(`/datagen/plans/${id}/adopt`, null, { params: { adopt } }),
+  // 按方案执行灌数（dryRun=true 仅试运行；conn 用于方案未指定连接时按当前选定值执行）
+  execute: (id: number, dryRun = true, conn?: { connId?: number; dbUrl?: string }) =>
+    http.post(`/datagen/plans/${id}/execute`, conn || null, { params: { dryRun } }),
+  // 删除方案
+  remove: (id: number) => http.delete(`/datagen/plans/${id}`)
+}
+
 export const deployApi = {
   // SSH 连接列表
   conns: (limit = 50) => http.get('/deploy/conns', { params: { limit } }),
@@ -247,4 +269,4 @@ export const dbConnApi = {
     http.post('/dbconns/test', data)
 }
 
-export default { appApi, jvmApi, jvmAlertApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, capacityApi, sourceApi, aiApi, dbConnApi }
+export default { appApi, jvmApi, jvmAlertApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, dataGenPlanApi, capacityApi, sourceApi, aiApi, dbConnApi }

@@ -63,6 +63,10 @@ public class DataGenService {
     private final com.perfserver.source.EndpointScanner endpointScanner;
     private final com.perfserver.mapper.AppInstanceMapper appInstanceMapper;
     private final com.perfserver.mapper.SourceRepoMapper sourceRepoMapper;
+    private final com.perfserver.mapper.DataGenPlanMapper planMapper;
+    private final com.perfserver.mapper.DbConnMapper dbConnMapper;
+    private final com.perfserver.security.CryptoService cryptoService;
+    private final com.perfserver.datagen.plan.EndpointDataPlanService planService;
     private final com.perftestor.datagen.enumv.EnumValueDiscoverer enumDiscoverer =
             new com.perftestor.datagen.enumv.EnumValueDiscoverer();
 
@@ -71,7 +75,11 @@ public class DataGenService {
                           DefaultDataGenEngine engine, SourceFileProvider sourceFileProvider,
                           com.perfserver.source.EndpointScanner endpointScanner,
                           com.perfserver.mapper.AppInstanceMapper appInstanceMapper,
-                          com.perfserver.mapper.SourceRepoMapper sourceRepoMapper) {
+                          com.perfserver.mapper.SourceRepoMapper sourceRepoMapper,
+                          com.perfserver.mapper.DataGenPlanMapper planMapper,
+                          com.perfserver.mapper.DbConnMapper dbConnMapper,
+                          com.perfserver.security.CryptoService cryptoService,
+                          com.perfserver.datagen.plan.EndpointDataPlanService planService) {
         this.taskMapper = taskMapper;
         this.hintMapper = hintMapper;
         this.objectMapper = objectMapper;
@@ -81,6 +89,10 @@ public class DataGenService {
         this.endpointScanner = endpointScanner;
         this.appInstanceMapper = appInstanceMapper;
         this.sourceRepoMapper = sourceRepoMapper;
+        this.planMapper = planMapper;
+        this.dbConnMapper = dbConnMapper;
+        this.cryptoService = cryptoService;
+        this.planService = planService;
     }
 
     /** 创建任务并异步执行（dryRun=true 时仅校验预检） */
@@ -340,6 +352,192 @@ public class DataGenService {
             }
         }
         return columns;
+    }
+
+    /**
+     * 按接口数据方案执行灌数。
+     *
+     * <p>执行时序（顺序不可调换，见评审补充）：</p>
+     * <ol>
+     *   <li>读方案表清单</li>
+     *   <li>{@code PlanIntegrityChecker} 补父表——<b>必须在构建 DataGenSpec 之前</b>，
+     *       否则 explicit 边被引擎的 metaMap 过滤掉，ref 池为空且无任何报错</li>
+     *   <li>{@code SeqStartResolver} 连库探测并刷新 seqStart（保证方案可重复执行）</li>
+     *   <li>组装 DataGenRequest</li>
+     *   <li>复用 {@link #createAndRun}（引擎内部拓扑排序保证父表先灌）</li>
+     * </ol>
+     *
+     * @param planId 方案 ID
+     * @param dryRun 是否仅试运行
+     * @return 灌数任务
+     */
+    public DataGenTask runFromPlan(long planId, boolean dryRun) {
+        com.perfserver.entity.DataGenPlan plan = planMapper.findById(planId);
+        if (plan == null) {
+            throw new IllegalArgumentException("方案不存在: " + planId);
+        }
+        validatePlanConnection(plan);
+
+        // ① 读方案
+        List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> tables =
+                planService.parseTables(plan.getTablesJson());
+        if (tables.isEmpty()) {
+            throw new IllegalArgumentException("方案尚未分析出表清单（可能分析失败或接口未定位）");
+        }
+
+        // ② 补父表（早于构建 spec）
+        com.perfserver.datagen.plan.PlanIntegrityChecker integrity =
+                new com.perfserver.datagen.plan.PlanIntegrityChecker(objectMapper);
+        com.perfserver.datagen.plan.PlanIntegrityChecker.CheckResult checked =
+                integrity.completeParents(tables);
+        List<String> warnings = new ArrayList<>(checked.getWarnings());
+
+        // ③ 刷新 seqStart
+        List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> finalTables = checked.getTables();
+        if (plan.getConnId() != null || plan.getDbUrl() != null) {
+            refreshSeqStarts(plan, finalTables, warnings);
+        }
+
+        // ④ 组装请求
+        DataGenRequest request = new DataGenRequest();
+        request.setTaskName(plan.getPlanName());
+        request.setConnId(plan.getConnId());
+        request.setDbUrl(plan.getDbUrl());
+        request.setRepoId(plan.getRepoId());
+        request.setDryRun(dryRun);
+        List<DataGenRequest.TableSpecDto> specs = new ArrayList<>();
+        for (com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable t : finalTables) {
+            DataGenRequest.TableSpecDto dto = new DataGenRequest.TableSpecDto();
+            dto.setTableName(t.getTable());
+            dto.setRowCount(Math.max(1, t.getRowCount()));
+            dto.setFields(t.getFields());
+            specs.add(dto);
+        }
+        request.setTables(specs);
+
+        // ⑤ 执行（引擎内部拓扑排序保证父先子后）
+        DataGenTask task = createAndRun(request);
+        if (task != null && task.getId() != null) {
+            try {
+                planMapper.updateTaskId(planId, task.getId());
+            } catch (Exception e) {
+                log.warn("update plan taskId failed, planId={}: {}", planId, e.getMessage());
+            }
+        }
+        if (!warnings.isEmpty()) {
+            plan.setWarningsJson(toJson(warnings));
+            try {
+                planMapper.update(plan);
+            } catch (Exception e) {
+                log.warn("persist plan warnings failed, planId={}: {}", planId, e.getMessage());
+            }
+        }
+        return task;
+    }
+
+    /** 方案是否尚未指定连接（分析阶段允许留空，执行前需补上） */
+    public boolean planNeedsConnection(long planId) {
+        com.perfserver.entity.DataGenPlan plan = planMapper.findById(planId);
+        if (plan == null) {
+            throw new IllegalArgumentException("方案不存在: " + planId);
+        }
+        return plan.getConnId() == null && (plan.getDbUrl() == null || plan.getDbUrl().isBlank());
+    }
+
+    /**
+     * 回填方案连接（connId 与 dbUrl 二选一）。
+     * 用于「分析时未指定连接、在数据准备页选定后执行」的流程。
+     */
+    public void applyPlanConnection(long planId, Map<String, Object> conn) {
+        com.perfserver.entity.DataGenPlan plan = planMapper.findById(planId);
+        if (plan == null) {
+            throw new IllegalArgumentException("方案不存在: " + planId);
+        }
+        Long connId = toLong(conn.get("connId"));
+        String dbUrl = conn.get("dbUrl") == null ? null : String.valueOf(conn.get("dbUrl"));
+        boolean hasConn = connId != null;
+        boolean hasUrl = dbUrl != null && !dbUrl.isBlank();
+        if (hasConn == hasUrl) {
+            throw new IllegalArgumentException("数据库连接配置 ID 与 JDBC URL 必须且只能提供其一");
+        }
+        if (hasConn) {
+            if (dbConnMapper == null || dbConnMapper.findById(connId) == null) {
+                throw new IllegalArgumentException("数据库连接配置不存在: " + connId);
+            }
+            plan.setConnId(connId);
+            plan.setDbUrl(null);
+        } else {
+            plan.setConnId(null);
+            plan.setDbUrl(dbUrl);
+        }
+        planMapper.update(plan);
+    }
+
+    private static Long toLong(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        String s = String.valueOf(v).trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 连接参数强校验：connId 与 dbUrl 必须且只能其一（DDL 不加 CHECK，统一在服务层校验） */
+    private void validatePlanConnection(com.perfserver.entity.DataGenPlan plan) {
+        boolean hasConn = plan.getConnId() != null;
+        boolean hasUrl = plan.getDbUrl() != null && !plan.getDbUrl().isBlank();
+        if (hasConn == hasUrl) {
+            throw new IllegalArgumentException("方案的数据库连接配置 ID 与 JDBC URL 必须且只能提供其一");
+        }
+        if (hasConn && dbConnMapper != null && dbConnMapper.findById(plan.getConnId()) == null) {
+            throw new IllegalArgumentException("数据库连接配置不存在: " + plan.getConnId());
+        }
+    }
+
+    /** 刷新方案中所有 seq 规则的起始值（探测失败回退 1 并写告警） */
+    private void refreshSeqStarts(com.perfserver.entity.DataGenPlan plan,
+                                  List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> tables,
+                                  List<String> warnings) {
+        String url = plan.getDbUrl();
+        String user = null;
+        String password = null;
+        if (plan.getConnId() != null && dbConnMapper != null) {
+            com.perfserver.entity.DbConn conn = dbConnMapper.findById(plan.getConnId());
+            if (conn == null) {
+                warnings.add("数据库连接配置不存在，序号起始值未刷新");
+                return;
+            }
+            url = conn.getDbUrl();
+            user = conn.getUsername();
+            password = cryptoService.decrypt(conn.getPassword());
+        }
+        if (url == null || url.isBlank()) {
+            return;
+        }
+        com.perfserver.datagen.plan.SeqStartResolver resolver =
+                new com.perfserver.datagen.plan.SeqStartResolver(objectMapper);
+        try (Connection conn = connect(url, user, password)) {
+            for (com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable t : tables) {
+                if (t.getFields() == null || !t.getFields().contains("\"seq\"")) {
+                    continue;
+                }
+                var refreshed = resolver.refresh(conn, t.getTable(), t.getFields());
+                t.setFields(refreshed.getFieldsJson());
+                warnings.addAll(refreshed.getWarnings());
+            }
+        } catch (Exception e) {
+            warnings.add("序号起始值刷新失败（若库内已有数据可能撞唯一键）: " + e.getMessage());
+            log.warn("refresh seqStart failed, planId={}: {}", plan.getId(), e.getMessage());
+        }
     }
 
     /** 任务列表（时间倒序） */

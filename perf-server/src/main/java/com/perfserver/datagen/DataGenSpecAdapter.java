@@ -147,6 +147,13 @@ public class DataGenSpecAdapter {
             t.setShare(ot.path("share").asDouble(30));
             r.setOverThreshold(t);
         }
+        if (node.hasNonNull("seqPrefix")) {
+            r.setSeqPrefix(node.path("seqPrefix").asText());
+        }
+        if (node.hasNonNull("seqStart")) {
+            // 由 SeqStartResolver 在执行时刷新；方案 JSON 里不固化起始值
+            r.setSeqStart(node.path("seqStart").asLong());
+        }
         return r;
     }
 }

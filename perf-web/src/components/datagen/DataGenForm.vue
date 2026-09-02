@@ -1,6 +1,75 @@
 <template>
   <div :class="mode === 'compact' ? 'space-y-4' : 'grid grid-cols-1 xl:grid-cols-2 gap-4'">
     <div class="glass-card p-5">
+      <!-- 接口方案卡：由压测中心「按接口准备数据」分析生成，回显待造表/行数/证据 -->
+      <div v-if="plan" ref="planCardRef" class="mb-4 rounded-lg border border-neon-blue/25 bg-neon-blue/5 overflow-hidden">
+        <div class="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-white/10">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium text-fg-main truncate">{{ plan.planName }}</span>
+              <span v-if="planDirty" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-400/10 text-amber-400 shrink-0">已手动调整</span>
+            </div>
+            <div class="text-[11px] text-fg-sub mt-0.5">
+              来自接口分析 · {{ planRepoName }}
+              <span v-if="planRtSource" class="ml-1">· RT 基线 {{ planRtSource }}</span>
+            </div>
+          </div>
+          <button class="text-[11px] text-fg-sub hover:text-fg-main hover:underline cursor-pointer shrink-0" @click="clearPlan">清除方案</button>
+        </div>
+
+        <!-- 未覆盖提示：静态分析无法解析的调用链/子查询，引导手工补表 -->
+        <div v-if="planWarnings.length" class="px-3 py-2 border-b border-white/10 space-y-1">
+          <div v-for="(w, wi) in planWarnings" :key="wi"
+               :class="w.startsWith('响应时间基线') ? 'text-[11px] text-fg-sub' : 'text-[11px] text-amber-400'">
+            {{ w.startsWith('响应时间基线') ? 'ⓘ ' : '⚠ ' }}{{ w }}
+          </div>
+        </div>
+
+        <!-- 表清单：表名 + 读写类型 + 可编辑行数 + 证据折叠 -->
+        <div v-if="planTables.length" class="divide-y divide-white/5">
+          <div v-for="(t, ti) in planTables" :key="ti">
+            <div class="flex items-center gap-2 px-3 py-2">
+              <button class="text-[10px] text-fg-sub hover:text-fg-main cursor-pointer shrink-0" @click="toggleEvidence(ti)">
+                {{ expandedEvidence[ti] ? '▼' : '▶' }}
+              </button>
+              <span class="text-xs text-fg-main font-medium">{{ t.table }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                    :class="t.access === 'WRITE' ? 'bg-neon-green/15 text-neon-green' : 'bg-neon-blue/15 text-neon-blue'">
+                {{ t.access === 'WRITE' ? '写' : '读' }}
+              </span>
+              <span v-if="t.predicateSummary" class="text-[10px] text-fg-sub truncate" :title="t.predicateSummary">
+                {{ t.predicateSummary }}
+              </span>
+              <div class="ml-auto flex items-center gap-1 shrink-0">
+                <input
+                  v-model.number="t.rowCount" type="number" min="1" max="1000000"
+                  class="input-text w-24 text-xs text-right" @change="markPlanDirty"
+                />
+                <span class="text-[10px] text-fg-sub">行</span>
+              </div>
+            </div>
+            <div v-if="expandedEvidence[ti] && (t.evidence || []).length" class="px-3 pb-2 pl-8">
+              <div class="text-[10px] text-fg-sub mb-1">推荐理由（源码位置）</div>
+              <div v-for="(ev, ei) in t.evidence" :key="ei" class="text-[10px] text-fg-sub font-mono">{{ ev }}</div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="px-3 py-4 text-[11px] text-fg-sub text-center">
+          <span v-if="planAnalyzing">正在分析源码调用链…</span>
+          <span v-else>该接口未分析出涉及的表，可在下方手动选表，或检查告警提示</span>
+        </div>
+
+        <div class="px-3 py-2 border-t border-white/10 flex items-center justify-between gap-2">
+          <span class="text-[10px] text-fg-sub">确认表与行数后执行试运行，通过后即可正式灌数</span>
+          <button class="btn-ghost px-3 py-1 text-[11px]" :disabled="planBusy || !planTables.length" @click="executePlan(true)">
+            {{ planBusy ? '执行中…' : '试运行' }}
+          </button>
+          <button class="btn-secondary px-3 py-1 text-[11px]" :disabled="planBusy || !planDryRunPassed" @click="executePlan(false)">
+            正式灌数
+          </button>
+        </div>
+      </div>
+
       <div class="flex items-center justify-between mb-4">
         <div class="text-sm font-medium">自动灌数据</div>
         <div v-if="autoFilled" class="text-[11px] text-neon-green">✓ 项目与数据库连接已自动带入</div>
@@ -167,7 +236,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { dataGenApi, dbConnApi } from '../../api'
+import { dataGenApi, dataGenPlanApi, dbConnApi } from '../../api'
 import { useRepoStore } from '../../stores/repoStore'
 import { taskStatusClass } from '../../utils/format'
 
@@ -199,6 +268,8 @@ const props = withDefaults(defineProps<{
   mode?: 'full' | 'compact'
   /** 是否轮询刷新任务列表（压测中心需要，向导按需关闭） */
   poll?: boolean
+  /** 接口驱动数据方案 ID（压测中心「按接口准备数据」生成后传入，回显待造表与行数） */
+  initialPlanId?: number
 }>(), {
   initialRepoId: 0,
   initialConnId: 0,
@@ -206,10 +277,11 @@ const props = withDefaults(defineProps<{
   initialDbUser: '',
   initialDbPassword: '',
   mode: 'full',
-  poll: false
+  poll: false,
+  initialPlanId: 0
 })
 
-const emit = defineEmits(['created'])
+const emit = defineEmits(['created', 'plan-cleared'])
 
 const repoStore = useRepoStore()
 const conns = ref<Array<Record<string, any>>>([])
@@ -244,6 +316,171 @@ const advancedOpen = ref(false)
 
 /** 是否由调用方自动带入（用于提示用户"已自动填充"） */
 const autoFilled = computed(() => !!(props.initialRepoId || props.initialConnId || props.initialDbUrl))
+
+// ---------- 接口驱动数据方案（压测中心「按接口准备数据」分析产出） ----------
+const plan = ref<Record<string, any> | null>(null)
+const planCardRef = ref<HTMLElement | null>(null)
+const planBusy = ref(false)
+const planDirty = ref(false)
+const planDryRunPassed = ref(false)
+/** 证据折叠展开状态：表下标 → 是否展开 */
+const expandedEvidence = ref<Record<number, boolean>>({})
+/** 分析异步完成前的轮询定时器 */
+let planPollTimer: ReturnType<typeof setInterval> | null = null
+
+/** 方案涉及的表（含行数与证据；行数可编辑） */
+const planTables = ref<Array<Record<string, any>>>([])
+
+/** 方案告警（降级/未覆盖/超限等） */
+const planWarnings = computed<string[]>(() => {
+  const raw = plan.value?.warningsJson
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
+})
+
+/** 方案所属项目名（卡片副标题展示） */
+const planRepoName = computed(() => {
+  const rid = Number(plan.value?.repoId || 0)
+  const r = repoStore.repos.find((x) => x.id === rid)
+  return r ? r.repoName : '未关联项目'
+})
+
+/** RT 基线取值来源（历史压测/采样点/默认），让用户知道行数是不是精算值 */
+const planRtSource = computed(() => {
+  const hit = planWarnings.value.find((w) => w.includes('响应时间基线取值来源'))
+  if (!hit) return ''
+  const m = hit.match(/来源:\s*([^（]+)/)
+  return m ? m[1].trim() : ''
+})
+
+/** 方案仍在分析中（表清单为空且无失败告警时视为进行中） */
+const planAnalyzing = computed(() =>
+  !!plan.value && !planTables.value.length && planWarnings.value.length === 0)
+
+/** 谓词摘要：把字段规则里的枚举/范围/seq 规则压缩成一行可读文本 */
+function predicateSummaryOf(fields: any): string {
+  try {
+    const f = typeof fields === 'string' ? JSON.parse(fields) : fields
+    if (!f || typeof f !== 'object') return ''
+    const parts: string[] = []
+    for (const [col, rule] of Object.entries<any>(f || {})) {
+      if (!rule || typeof rule !== 'object') continue
+      if (rule.type === 'enum' && Array.isArray(rule.values)) {
+        parts.push(`${col}=${rule.values.slice(0, 3).join(',')}${rule.values.length > 3 ? '…' : ''}`)
+      } else if (rule.type === 'range') {
+        parts.push(`${col}∈[${rule.min},${rule.max}]`)
+      } else if (rule.type === 'seq') {
+        parts.push(`${col}=序号`)
+      } else if (rule.type === 'ref' || rule.type === 'refSkew') {
+        parts.push(`${col}→${rule.table}`)
+      }
+    }
+    return parts.slice(0, 3).join(' ')
+  } catch {
+    return ''
+  }
+}
+
+/** 加载方案详情；分析为异步，表清单为空时轮询直到产出或超时 */
+async function loadPlan(id: number, poll = false) {
+  stopPlanPoll()
+  try {
+    const r = await dataGenPlanApi.detail(id)
+    plan.value = r.data || null
+    const raw = plan.value?.tablesJson
+    let tables: Array<Record<string, any>> = []
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) tables = parsed
+      } catch { /* 非法 JSON 视作无表 */ }
+    }
+    planTables.value = tables.map((t) => ({
+      table: t.table,
+      rowCount: Number(t.rowCount) || 1000,
+      access: t.access || 'READ',
+      evidence: Array.isArray(t.evidence) ? t.evidence : [],
+      fields: t.fields,
+      predicateSummary: predicateSummaryOf(t.fields)
+    }))
+    // 方案带项目时同步到表单的源码项目（保证后续灌数走同一份源码分析）
+    if (plan.value?.repoId) gen.value.repoId = plan.value.repoId
+    expandedEvidence.value = {}
+
+    if (poll && !planTables.value.length && planWarnings.value.length === 0) {
+      // 分析未完成：每 2s 拉一次，最多 30s，超时后停止（此时会显示告警或空态提示）
+      let waited = 0
+      planPollTimer = setInterval(async () => {
+        waited += 2000
+        if (waited >= 30000) return stopPlanPoll()
+        await loadPlan(id, false)
+        if (planTables.value.length || planWarnings.value.length) stopPlanPoll()
+      }, 2000)
+    }
+  } catch {
+    plan.value = null
+    planTables.value = []
+  }
+}
+
+function stopPlanPoll() {
+  if (planPollTimer) {
+    clearInterval(planPollTimer)
+    planPollTimer = null
+  }
+}
+
+function toggleEvidence(idx: number) {
+  expandedEvidence.value[idx] = !expandedEvidence.value[idx]
+}
+
+function markPlanDirty() {
+  planDirty.value = true
+}
+
+/** 清除方案：退回纯手动模式，并通知父组件清掉 activePlanId */
+function clearPlan() {
+  stopPlanPoll()
+  plan.value = null
+  planTables.value = []
+  planDirty.value = false
+  planDryRunPassed.value = false
+  emit('plan-cleared')
+}
+
+/**
+ * 按方案执行灌数。
+ *
+ * <p>方案若未指定连接（分析阶段允许留空），则先落库回填当前表单选中的连接——
+ * 后端在真正执行时才做强校验，这样用户在数据准备页选定连接即可直接跑。</p>
+ */
+async function executePlan(dryRun: boolean) {
+  if (!plan.value?.id || !planTables.value.length) return
+  if (!gen.value.dbUrl) {
+    alert('请先选择连接配置或填写 JDBC URL，再执行方案')
+    return
+  }
+  planBusy.value = true
+  try {
+    // connId 与 dbUrl 二选一：分析阶段允许留空，执行时按当前表单选定值传入
+    const conn: Record<string, unknown> = {}
+    if (gen.value.connId) {
+      conn.connId = gen.value.connId
+    } else {
+      conn.dbUrl = gen.value.dbUrl
+    }
+    await dataGenPlanApi.execute(plan.value.id, dryRun, conn)
+    if (dryRun) planDryRunPassed.value = true
+    await loadTasks()
+  } finally {
+    planBusy.value = false
+  }
+}
 
 // refSkew 高倾斜警告：hotShare/hotPercent 比值 > 2.5 视为热行承载过大
 const skewWarn = computed(() => {
@@ -451,6 +688,19 @@ watch(conns, () => {
   if (gen.value.connId && !gen.value.dbUrl) applyConn()
 })
 
+// 方案 ID 变化（压测中心分析完成跳入本页）→ 加载方案详情并轮询至分析产出
+watch(() => props.initialPlanId, (id) => {
+  stopPlanPoll()
+  planDirty.value = false
+  planDryRunPassed.value = false
+  if (id && id > 0) {
+    loadPlan(id, true)
+  } else {
+    plan.value = null
+    planTables.value = []
+  }
+}, { immediate: true })
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 function startPolling() {
   stopPolling()
@@ -470,7 +720,10 @@ onMounted(async () => {
   startPolling()
 })
 
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  stopPolling()
+  stopPlanPoll()
+})
 
-defineExpose({ loadTasks, gen })
+defineExpose({ loadTasks, gen, loadPlan })
 </script>

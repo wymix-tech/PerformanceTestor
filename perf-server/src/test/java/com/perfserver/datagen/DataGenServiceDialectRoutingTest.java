@@ -51,6 +51,14 @@ class DataGenServiceDialectRoutingTest {
     private AppInstanceMapper appInstanceMapper;
     @Mock
     private SourceRepoMapper sourceRepoMapper;
+    @Mock
+    private com.perfserver.mapper.DataGenPlanMapper planMapper;
+    @Mock
+    private com.perfserver.mapper.DbConnMapper dbConnMapper;
+    @Mock
+    private com.perfserver.security.CryptoService cryptoService;
+    @Mock
+    private com.perfserver.datagen.plan.EndpointDataPlanService planService;
 
     private DataGenService service;
 
@@ -59,7 +67,8 @@ class DataGenServiceDialectRoutingTest {
         List<DatabaseDialect> dialects = List.of(new MySQLDialect(), new PostgreSQLDialect());
         DefaultDataGenEngine engine = new DefaultDataGenEngine(dialects, new JdbcBatchExecutor(), List.of());
         service = new DataGenService(taskMapper, hintMapper, new ObjectMapper(), specAdapter, engine,
-                sourceFileProvider, endpointScanner, appInstanceMapper, sourceRepoMapper);
+                sourceFileProvider, endpointScanner, appInstanceMapper, sourceRepoMapper,
+                planMapper, dbConnMapper, cryptoService, planService);
     }
 
     @Test

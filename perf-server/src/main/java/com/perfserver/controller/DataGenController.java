@@ -4,11 +4,14 @@ import com.perfserver.common.ApiResponse;
 import com.perfserver.datagen.ColumnInfo;
 import com.perfserver.datagen.DataGenRequest;
 import com.perfserver.datagen.DataGenService;
+import com.perfserver.datagen.plan.EndpointDataPlanService;
+import com.perfserver.entity.DataGenPlan;
 import com.perfserver.entity.DataGenTask;
 import com.perfserver.entity.DbConn;
 import com.perfserver.entity.SemanticHint;
 import com.perfserver.mapper.DbConnMapper;
 import com.perfserver.security.CryptoService;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -31,12 +34,14 @@ public class DataGenController {
     private final DataGenService dataGenService;
     private final DbConnMapper dbConnMapper;
     private final CryptoService cryptoService;
+    private final EndpointDataPlanService planService;
 
     public DataGenController(DataGenService dataGenService, DbConnMapper dbConnMapper,
-                             CryptoService cryptoService) {
+                             CryptoService cryptoService, EndpointDataPlanService planService) {
         this.dataGenService = dataGenService;
         this.dbConnMapper = dbConnMapper;
         this.cryptoService = cryptoService;
+        this.planService = planService;
     }
 
     /** 按 connId 取连接凭据并覆盖手填值（connId 为空、非数字或不存在时原样返回） */
@@ -116,6 +121,60 @@ public class DataGenController {
     public ApiResponse<Void> adopt(@PathVariable long id,
                                    @RequestParam(defaultValue = "true") boolean adopt) {
         dataGenService.adopt(id, adopt);
+        return ApiResponse.ok(null);
+    }
+
+    // ===== 接口驱动数据方案 =====
+
+    /** 按接口分析源码并生成数据方案（异步分析，返回已落库的方案） */
+    @PostMapping("/plans/analyze")
+    public ApiResponse<DataGenPlan> analyzePlan(
+            @RequestBody com.perfserver.datagen.plan.EndpointDataPlanService.AnalyzeRequest request) {
+        return ApiResponse.ok(planService.analyze(request));
+    }
+
+    /** 方案列表（按仓库 + 时间倒序） */
+    @GetMapping("/plans")
+    public ApiResponse<List<DataGenPlan>> plans(
+            @RequestParam(required = false) Long repoId,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "50") int limit) {
+        return ApiResponse.ok(planService.list(repoId, status, limit));
+    }
+
+    /** 方案详情（表清单 / 规则 / 证据 / 告警） */
+    @GetMapping("/plans/{id}")
+    public ApiResponse<DataGenPlan> planDetail(@PathVariable long id) {
+        return ApiResponse.ok(planService.detail(id));
+    }
+
+    /** 方案采纳/放弃 */
+    @PostMapping("/plans/{id}/adopt")
+    public ApiResponse<DataGenPlan> adoptPlan(@PathVariable long id,
+                                              @RequestParam(defaultValue = "true") boolean adopt) {
+        return ApiResponse.ok(planService.adopt(id, adopt));
+    }
+
+    /**
+     * 按方案执行灌数（dryRun=true 时仅试运行）。
+     *
+     * <p>请求体可选带 {@code connId} 或 {@code dbUrl}：方案在分析阶段允许不指定连接
+     * （分析只读源码），执行时必须补上，故支持执行时由前端按当前选定值传入。</p>
+     */
+    @PostMapping("/plans/{id}/execute")
+    public ApiResponse<DataGenTask> executePlan(@PathVariable long id,
+                                                @RequestParam(defaultValue = "true") boolean dryRun,
+                                                @RequestBody(required = false) Map<String, Object> conn) {
+        if (conn != null && !conn.isEmpty() && dataGenService.planNeedsConnection(id)) {
+            dataGenService.applyPlanConnection(id, conn);
+        }
+        return ApiResponse.ok(dataGenService.runFromPlan(id, dryRun));
+    }
+
+    /** 删除方案 */
+    @DeleteMapping("/plans/{id}")
+    public ApiResponse<Void> deletePlan(@PathVariable long id) {
+        planService.delete(id);
         return ApiResponse.ok(null);
     }
 }

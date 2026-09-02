@@ -69,5 +69,47 @@ public class SourceFileProvider {
         }
         return out;
     }
+
+    /**
+     * 按相对路径精确加载源码文件（接口分析按需读取）。
+     *
+     * <p>与 {@link #loadFiles(long)} 的区别：后者是「灌数扫描整个项目」的 200 文件上限来源，
+     * 本次新增是为了「按接口分析调用链」——只读取调用链实际命中的文件，
+     * 不受 200 上限约束，同时保留原方法行为不变，灌数路径零影响。</p>
+     *
+     * @param repoId 仓库 ID
+     * @param paths  相对路径清单
+     * @return 可读的源码文件（路径不存在或读取失败时跳过）
+     */
+    public List<com.perftestor.datagen.model.SourceFile> loadFilesByPaths(long repoId,
+                                                                          java.util.Collection<String> paths) {
+        List<com.perftestor.datagen.model.SourceFile> out = new ArrayList<>();
+        if (paths == null || paths.isEmpty()) {
+            return out;
+        }
+        SourceRepo repo = repoMapper.findById(repoId);
+        if (repo == null || repo.getSourcePath() == null || repo.getSourcePath().isBlank()) {
+            return out;
+        }
+        Path root = Paths.get(repo.getSourcePath());
+        if (!Files.isDirectory(root)) {
+            return out;
+        }
+        java.util.Set<String> wanted = new java.util.HashSet<>(paths);
+        for (SourceFile sf : fileMapper.listByRepo(repoId, null, 2000)) {
+            if (sf.getRelativePath() == null || !wanted.contains(sf.getRelativePath())) {
+                continue;
+            }
+            try {
+                String content = sourceFileService.readContent(root, sf);
+                if (content != null && !content.isBlank() && !content.startsWith("// 文件过大")) {
+                    out.add(new com.perftestor.datagen.model.SourceFile(sf.getRelativePath(), content));
+                }
+            } catch (IOException e) {
+                // 单文件读取失败跳过
+            }
+        }
+        return out;
+    }
 }
 
