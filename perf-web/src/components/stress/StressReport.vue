@@ -41,6 +41,64 @@
       </div>
     </div>
 
+    <!-- 配置告警：场景编排的启动期校验结果（序号越界 / 别名非法重名等），不中断压测 -->
+    <div v-if="warnings.length" class="mb-4 p-3 rounded-lg bg-amber-400/5 border border-amber-400/25">
+      <div class="text-xs font-medium text-amber-400 mb-1.5">配置告警（{{ warnings.length }} 条，压测已照常执行）</div>
+      <ul class="text-[11px] text-fg-sub leading-relaxed space-y-0.5 list-disc pl-4">
+        <li v-for="(w, i) in warnings" :key="i">{{ w }}</li>
+      </ul>
+    </div>
+
+    <!-- 分步骤统计：多接口场景各步骤的独立指标（单接口模式为空列表，整块不渲染） -->
+    <div v-if="stepStats.length" class="mb-4">
+      <div class="text-xs text-fg-sub mb-2">分步骤统计（{{ stepStats.length }} 步）</div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-fg-sub text-[11px]">
+              <th class="text-left py-1 pr-3 font-normal">步骤</th>
+              <th class="text-right py-1 pr-3 font-normal">请求数</th>
+              <th class="text-right py-1 pr-3 font-normal">QPS</th>
+              <th class="text-right py-1 pr-3 font-normal">错误数</th>
+              <th class="text-right py-1 pr-3 font-normal">错误率</th>
+              <th class="text-right py-1 pr-3 font-normal">平均 RT</th>
+              <th class="text-right py-1 pr-3 font-normal">最大 RT</th>
+              <th
+                v-if="hasRenderMiss"
+                class="text-right py-1 font-normal"
+                title="步骤上下文引用（pN.result.x 形式）取不到值的次数，正常应为 0"
+              >
+                引用未命中
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(s, i) in stepStats" :key="i" class="border-t border-white/5">
+              <td class="py-1 pr-3">{{ s.stepName }}</td>
+              <td class="py-1 pr-3 text-right font-mono">{{ s.totalRequests ?? '—' }}</td>
+              <td class="py-1 pr-3 text-right font-mono text-neon-blue">{{ qpsText(s) }}</td>
+              <td class="py-1 pr-3 text-right font-mono">{{ s.errorCount ?? '—' }}</td>
+              <td
+                class="py-1 pr-3 text-right font-mono"
+                :class="(s.errorRate ?? 0) > 5 ? 'text-red-400' : 'text-neon-green'"
+              >
+                {{ s.errorRate ?? 0 }}%
+              </td>
+              <td class="py-1 pr-3 text-right font-mono">{{ msText(s.avgMs) }}</td>
+              <td class="py-1 pr-3 text-right font-mono">{{ msText(s.maxMs) }}</td>
+              <td
+                v-if="hasRenderMiss"
+                class="py-1 text-right font-mono"
+                :class="(s.renderMiss ?? 0) > 0 ? 'text-amber-400' : 'text-fg-sub'"
+              >
+                {{ s.renderMiss ?? 0 }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- 父组件扩展区（版本对比表格等） -->
     <slot name="extra" />
 
@@ -147,6 +205,37 @@ const emit = defineEmits<{
   (e: 'rerun'): void
   (e: 'run-capacity'): void
 }>()
+
+/**
+ * 压测结果中的配置告警（多接口场景；无告警为空数组）。
+ *
+ * <p>由后端 StressTaskResult.warnings 落库并经 /report 接口透出；老任务无该字段，
+ * 故用 ?? [] 兜底，避免历史报告渲染报错。
+ */
+const warnings = computed<Array<string>>(() => props.report?.result?.warnings ?? [])
+
+/**
+ * 分步骤统计（多接口场景；单接口模式为空列表）。
+ *
+ * <p>由后端 StressTaskResult.stepStats 落库并经 /report 接口透出；老任务无该字段，
+ * 故用 ?? [] 兜底，避免历史报告渲染报错。
+ */
+const stepStats = computed<Array<Record<string, any>>>(() => props.report?.result?.stepStats ?? [])
+
+/**
+ * 是否展示「引用未命中」列：仅在存在未命中时展示，避免多数场景（恒为 0）
+ * 与历史报告（无 renderMiss 字段）白占一列宽度。
+ */
+const hasRenderMiss = computed(() => stepStats.value.some((s) => (s.renderMiss ?? 0) > 0))
+
+/** QPS：分档合并场景后端置 0（各档时长不同无法直接相加），显示占位符而非误导性的 0 */
+function qpsText(s: Record<string, any>) {
+  return s.qps > 0 ? String(s.qps) : '—'
+}
+
+function msText(v: any) {
+  return v == null ? '—' : `${v}ms`
+}
 
 /** 报告任务是否已执行完（完成或失败均可"再来一次"） */
 const taskFinished = computed(() => {

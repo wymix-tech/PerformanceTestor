@@ -102,32 +102,13 @@ public final class ResponseVarExtractor {
      * @param template 模板（URL / 请求头值 / body）
      * @param pool     变量池
      * @return 替换后的字符串；模板无占位符时原样返回
+     * @deprecated 逻辑已迁至 {@link TemplateRenderer}，后者额外支持
+     *             {@code {{pN.result.x}}} / {@code {{alias.header.x}}} 步骤上下文引用。
+     *             本方法保留仅为兼容存量调用方与单测，等价于「无上下文池」的双池渲染。
      */
+    @Deprecated
     public static String substitute(String template, Map<String, String> pool) {
-        if (template == null || template.isEmpty() || pool.isEmpty()
-                || template.indexOf("{{") < 0) {
-            return template;
-        }
-        StringBuilder out = new StringBuilder(template.length() + 32);
-        int i = 0;
-        while (i < template.length()) {
-            int start = template.indexOf("{{", i);
-            if (start < 0) {
-                out.append(template, i, template.length());
-                break;
-            }
-            int end = template.indexOf("}}", start + 2);
-            if (end < 0) {
-                out.append(template, i, template.length());
-                break;
-            }
-            out.append(template, i, start);
-            String name = template.substring(start + 2, end).trim();
-            String value = pool.get(name);
-            out.append(value == null ? template.substring(start, end + 2) : value);
-            i = end + 2;
-        }
-        return out.toString();
+        return TemplateRenderer.render(template, pool, null, null);
     }
 
     /** 创建任务级变量池（用请求中的初始变量填充） */

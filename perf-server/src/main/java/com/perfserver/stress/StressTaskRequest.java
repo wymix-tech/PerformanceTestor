@@ -15,6 +15,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>scenario 模式用于混合场景压测：按权重编排多个接口步骤，并支持从响应中
  * 提取登录态等变量在步骤间传递，更贴近真实流量模型。
  * 未配置 scenario 时退化为单接口模式，存量调用与前端旧表单零改动。
+ *
+ * <p>步骤间传值有两条互补路径：
+ * <ul>
+ *   <li><b>扁平变量</b>：本步声明 {@code extract} 提取到变量池，下游用 {@code {{var}}} 引用
+ *       ——变量归该次迭代所属 worker 独占，适合「订单创建→详情」这类<b>请求级强关联</b>数据；</li>
+ *   <li><b>步骤上下文引用</b>（无需 extract）：下游直接写 {@code {{p1.result.data.token}}} /
+ *       {@code {{p1.header.X-Request-Id}}} / {@code {{login.result.user.id}}}，引用的是该步骤
+ *       <b>全局最近一次响应</b>——适合登录态 / traceId 这类<b>会话级共享凭据</b>。</li>
+ * </ul>
  */
 public class StressTaskRequest {
 
@@ -104,6 +113,14 @@ public class StressTaskRequest {
     public static class ScenarioStep {
         /** 步骤名（用于分步骤统计；留空按序号生成） */
         private String name;
+        /**
+         * 引用别名（可选）：配置后可用 {@code {{alias.result.x}}} 引用本步响应，
+         * 等价于 {@code {{pN.result.x}}}（N 为该步序号，从 1 开始）。
+         *
+         * <p>留空时回退用 {@code name} 作别名（若 name 也是合法标识）；两者都不合法时
+         * 只能按序号 {@code pN} 引用。{@code pN} 形式永远保留给序号引用，不可作为别名。
+         */
+        private String alias;
         /** 请求地址，支持 {{var}} 占位 */
         private String url;
         private String method = "GET";
@@ -130,6 +147,14 @@ public class StressTaskRequest {
 
         public void setName(String name) {
             this.name = name;
+        }
+
+        public String getAlias() {
+            return alias;
+        }
+
+        public void setAlias(String alias) {
+            this.alias = alias;
         }
 
         public String getUrl() {

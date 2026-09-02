@@ -17,12 +17,27 @@ public abstract class AbstractAiTool implements AiTool {
 
     /** 构建 OpenAI function.parameters（object + properties + required） */
     protected ObjectNode buildParams(String[] properties, String[] required) {
-        ObjectNode schema = mapper.createObjectNode();
-        schema.put("type", "object");
-        ObjectNode props = schema.putObject("properties");
+        ObjectNode props = mapper.createObjectNode();
         for (String p : properties) {
             props.putObject(p);
         }
+        return buildParams(props, required);
+    }
+
+    /**
+     * 构建带类型描述的 function.parameters。
+     *
+     * <p>与 {@link #buildParams(String[], String[])} 的区别：properties 由调用方自行
+     * 构造（可带 {@code type} / {@code description} / 嵌套 {@code items}），用于描述
+     * 数组、对象这类复杂参数——LLM 只有拿到形状描述才会产出结构正确的 JSON。
+     *
+     * @param properties 已构造好的 properties 节点
+     * @param required   必填参数名（可为 null/空）
+     */
+    protected ObjectNode buildParams(ObjectNode properties, String[] required) {
+        ObjectNode schema = mapper.createObjectNode();
+        schema.put("type", "object");
+        schema.set("properties", properties);
         if (required != null && required.length > 0) {
             var arr = schema.putArray("required");
             for (String r : required) {
@@ -30,6 +45,31 @@ public abstract class AbstractAiTool implements AiTool {
             }
         }
         return schema;
+    }
+
+    /** 构造一个带描述的标量属性（type 取 string / integer / number / boolean） */
+    protected ObjectNode prop(String type, String description) {
+        ObjectNode node = mapper.createObjectNode();
+        node.put("type", type);
+        node.put("description", description);
+        return node;
+    }
+
+    /** 构造数组属性（元素为对象时传 items，否则传 null） */
+    protected ObjectNode arrayProp(String description, ObjectNode items) {
+        ObjectNode node = mapper.createObjectNode();
+        node.put("type", "array");
+        node.put("description", description);
+        if (items != null) {
+            node.set("items", items);
+        }
+        return node;
+    }
+
+    /** 读取数组参数（缺失或非数组返回空数组） */
+    protected JsonNode arr(JsonNode args, String key) {
+        JsonNode v = args.path(key);
+        return v.isArray() ? v : mapper.createArrayNode();
     }
 
     /** 解析模型参数 JSON，解析失败返回空对象（字段缺省兜底） */
