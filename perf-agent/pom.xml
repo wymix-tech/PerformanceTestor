@@ -75,6 +75,10 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <!-- 不生成 dependency-reduced-pom.xml：它是 shade 的构建产物，
+                                 曾被重新写回工作区并误提交（内含 pitest 配置噪声）。
+                                 本模块的 fat jar 不作为其他模块的依赖，无需该裁剪版 pom。 -->
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <manifestEntries>

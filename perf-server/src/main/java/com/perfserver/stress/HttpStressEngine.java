@@ -61,6 +61,8 @@ public class HttpStressEngine implements StressEngine {
 
         List<StressTaskResult.Sample> allSamples = new ArrayList<>();
         List<StressStatistician.StepStats> allStepStats = new ArrayList<>();
+        /** 场景配置告警（跨档汇总后去重；单接口模式恒空） */
+        List<String> allWarnings = new ArrayList<>();
 
         if (stages == null || stages.isEmpty()) {
             // 单档模式
@@ -81,6 +83,7 @@ public class HttpStressEngine implements StressEngine {
             result.setSamples(outcome.samples);
             result.setStagePoints(java.util.List.of(outcome.toStagePoint()));
             allStepStats.addAll(outcome.stepStats);
+            allWarnings.addAll(outcome.warnings);
         } else {
             // 分档模式（容量评估）：仅第一档执行 warmup（后续档 JIT/连接池已热）
             long total = 0;
@@ -95,6 +98,7 @@ public class HttpStressEngine implements StressEngine {
                 errors += o.errors;
                 allSamples.addAll(o.samples);
                 allStepStats.addAll(o.stepStats);
+                allWarnings.addAll(o.warnings);
             }
             result.setConcurrency(request.getConcurrency());
             result.setTotalRequests(total);
@@ -112,6 +116,8 @@ public class HttpStressEngine implements StressEngine {
         }
         // 分步骤统计（多接口场景编排；单接口模式为空列表）
         result.setStepStats(mergeStepStats(allStepStats));
+        // 配置告警：跨档出现的同一条只保留一次（LinkedHashSet 保序去重）
+        result.setWarnings(new ArrayList<>(new java.util.LinkedHashSet<>(allWarnings)));
         return result;
     }
 
@@ -131,11 +137,12 @@ public class HttpStressEngine implements StressEngine {
         for (StressStatistician.StepStats s : inputs) {
             acc.computeIfAbsent(s.getStepName(), k -> new StepAccumulator())
                     .add(s.getTotalRequests(), s.getErrorCount(),
-                            Math.round(s.getAvgMs() * s.getTotalRequests()), (long) s.getMaxMs());
+                            Math.round(s.getAvgMs() * s.getTotalRequests()), (long) s.getMaxMs(),
+                            s.getRenderMiss());
         }
         List<StressStatistician.StepStats> merged = new ArrayList<>(acc.size());
         acc.forEach((name, a) -> merged.add(StressStatistician.StepStats.of(
-                name, a.total, a.errors, a.costMs, a.maxMs)));
+                name, a.total, a.errors, a.costMs, a.maxMs, a.renderMiss)));
         merged.sort(Comparator.comparing(StressStatistician.StepStats::getStepName));
         return merged;
     }
@@ -146,12 +153,15 @@ public class HttpStressEngine implements StressEngine {
         private long errors;
         private long costMs;
         private long maxMs;
+        /** 上下文引用未命中累计数（renderMiss 为纯计数，可跨档直接相加） */
+        private long renderMiss;
 
-        void add(long t, long e, long cost, long max) {
+        void add(long t, long e, long cost, long max, long miss) {
             total += t;
             errors += e;
             costMs += cost;
             maxMs = Math.max(maxMs, max);
+            renderMiss += miss;
         }
     }
 
@@ -267,6 +277,9 @@ public class HttpStressEngine implements StressEngine {
         outcome.samples = samples;
         outcome.concurrency = concurrency;
         outcome.stepStats = stats.stepStats(formalElapsedSec);
+        // 分档模式下每档重建 Scenario（变量池与上下文池按档重置，与现状一致），
+        // 告警内容逐档相同，由 run() 去重后统一写入结果
+        outcome.warnings = scenario == null ? List.of() : scenario.warnings();
         return outcome;
     }
 
@@ -348,6 +361,15 @@ public class HttpStressEngine implements StressEngine {
         private final long activateAt;
         /** 多接口场景（单接口模式为 null） */
         private final Scenario scenario;
+        /**
+         * 上下文引用未命中累加器（每 worker 一个，全程复用以免热路径分配）。
+         *
+         * <p>每次迭代渲染前清零、渲染后取走（见 {@link #runScenario()}）——
+         * 不能让它跨迭代累积，否则 warmup/stop 期的未命中会被正式期首次统计一并提交。
+         */
+        private final long[] renderMiss = new long[1];
+        /** 请求构造失败是否已打过日志（避免非法 URL 场景下每迭代刷屏） */
+        private boolean buildFailureLogged;
 
         Worker(HttpClient client, StressTaskRequest request, AtomicBoolean stop,
                StressStatistician stats, AtomicBoolean warmupDone, QpsLimiter limiter, long activateAt,
@@ -418,8 +440,9 @@ public class HttpStressEngine implements StressEngine {
         }
 
         /**
-         * 多接口场景模式：每次迭代按权重选一个步骤，用当前变量池渲染后发送，
-         * 并按步骤声明的提取规则把响应中的值写回变量池（供后续步骤使用）。
+         * 多接口场景模式：每次迭代按权重选一个步骤，用「扁平变量池 + 步骤上下文池」
+         * 双池渲染后发送；响应先原子写入本步骤的上下文槽位，再按声明的提取规则
+         * 把值写回变量池（供后续步骤使用）。
          */
         private void runScenario() throws InterruptedException {
             while (!stop.get()) {
@@ -432,40 +455,81 @@ public class HttpStressEngine implements StressEngine {
                     return;
                 }
                 StressTaskRequest.ScenarioStep step = scenario.stepAt(stepIdx);
-                HttpRequest requestObj = buildRequest(
-                        ResponseVarExtractor.substitute(step.getUrl(), scenario.pool()),
-                        step.getMethod(),
-                        step.getHeaders(),
-                        ResponseVarExtractor.substitute(step.getBody(), scenario.pool()));
+                // 本迭代的上下文引用未命中数清零起点：渲染（url / headers / body）累计到 renderMiss[0]
+                renderMiss[0] = 0;
+                HttpRequest requestObj;
+                try {
+                    requestObj = buildRequest(
+                            TemplateRenderer.render(step.getUrl(), scenario.pool(), scenario.ctx(), renderMiss),
+                            step.getMethod(),
+                            step.getHeaders(),
+                            TemplateRenderer.render(step.getBody(), scenario.pool(), scenario.ctx(), renderMiss));
+                } catch (RuntimeException e) {
+                    // 未命中时占位符会原样保留，若它出现在 URL 里可能构造出非法 URI
+                    // （{{p9.result.x}} 这类配置错误）。设计约定「未命中保留原文、不中断压测」，
+                    // 故计一次错误并跳过本次迭代，而不是让 worker 线程当场死亡——
+                    // 后者会让压测静默少掉若干并发，比 100% 错误率难排查得多。
+                    if (!buildFailureLogged) {
+                        buildFailureLogged = true;
+                        log.warn("scenario step {} request build failed (check placeholder config): {}",
+                                stepIdx, e.toString());
+                    }
+                    long miss = renderMiss[0];
+                    renderMiss[0] = 0;
+                    if (warmupDone.get() && !stop.get()) {
+                        stats.record(0, true, scenario.stepName(stepIdx), miss);
+                    }
+                    continue;
+                }
                 List<StressTaskRequest.Assertion> rules = step.getAssertions();
                 // 断言是否需要读响应体（body/json 断言）；结果复用于判定与取值
                 boolean assertNeedsBody = ResponseAssertor.needsBody(rules);
-                // 仅在声明了提取规则或 body/json 断言时保留响应体（避免无谓的字符串驻留开销）
-                boolean needBody = hasExtract(step) || assertNeedsBody;
+                // 启动期预编译的捕获标志：被上下文引用 / 有 extract / 断言需要，才驻留响应
+                boolean needBody = scenario.captureBody(stepIdx) || assertNeedsBody;
+                boolean needHeaders = scenario.captureHeaders(stepIdx) || assertNeedsBody;
                 long t0 = System.nanoTime();
                 boolean error = false;
                 String body = null;
                 Map<String, List<String>> respHeaders = null;
                 try {
                     HttpResponse<String> resp = client.send(requestObj, HttpResponse.BodyHandlers.ofString());
+                    // 断言与本步捕获都需要头表时只拷贝一次
+                    boolean needHeaderSnapshot = needHeaders || (rules != null && !rules.isEmpty());
+                    Map<String, List<String>> headerSnapshot = needHeaderSnapshot ? resp.headers().map() : null;
                     if (resp.statusCode() >= 400) {
                         error = true;
                     } else if (rules != null && !rules.isEmpty()) {
                         // 状态码已通过，再按本步骤的结果判断校验业务成败
                         error = !ResponseAssertor.matches(rules, resp.statusCode(),
-                                resp.headers().map(), assertNeedsBody ? resp.body() : null);
+                                headerSnapshot, assertNeedsBody ? resp.body() : null);
+                    }
+                    if (needHeaders) {
+                        respHeaders = headerSnapshot;
                     }
                     if (needBody) {
                         body = resp.body();
-                        respHeaders = resp.headers().map();
+                    }
+                    // 入池必须在 extract 之前（设计 2.5）；两者互不依赖，但保证下游
+                    // 引用本步响应与引用本步提取变量得到的是同一份数据。
+                    // 错误响应（status>=400 / 断言未过）照常入池：下游引用"最新可达数据"，
+                    // 压测要压出真实错误，不静默跳过（设计 2.3.5）。
+                    // 未被任何步骤引用的槽位不入池：省掉一次快照分配（预编译已保证无人读它）。
+                    if (scenario.referenced(stepIdx)) {
+                        scenario.ctx().put(stepIdx, respHeaders, body);
                     }
                 } catch (Exception e) {
+                    // 网络异常：没有响应对象，不入池——用空快照覆盖会丢掉旧的可达数据
                     error = true;
                 }
                 long costMs = (System.nanoTime() - t0) / 1_000_000;
+                // 【评审 P1】未命中数必须"取走并清零"，而不是累加后随统计提交：
+                // stats.record 仅在正式期调用，若把 warmup/stop 期的未命中留在累加器里，
+                // 会被正式期第一次 record 一并提交，导致 renderMiss 虚高。
+                long missCount = renderMiss[0];
+                renderMiss[0] = 0;
                 boolean counted = warmupDone.get() && !stop.get();
                 if (counted) {
-                    stats.record(costMs, error, scenario.stepName(stepIdx));
+                    stats.record(costMs, error, scenario.stepName(stepIdx), missCount);
                 }
                 // 变量提取在计数之后：即便本次不计入统计，也应更新变量池，
                 // 保证后续步骤拿到新鲜登录态（warmup 期同样需要建立有效 token）
@@ -474,10 +538,6 @@ public class HttpStressEngine implements StressEngine {
                             scenario.pool(), MAX_EXTRACT_BODY_CHARS);
                 }
             }
-        }
-
-        private static boolean hasExtract(StressTaskRequest.ScenarioStep step) {
-            return step.getExtract() != null && !step.getExtract().isEmpty();
         }
 
         private HttpRequest buildRequest(String url, String method,
@@ -489,9 +549,12 @@ public class HttpStressEngine implements StressEngine {
             }
             if (headers != null) {
                 if (scenario != null) {
-                    // 场景模式：头值支持 {{var}} 占位（如 Authorization: Bearer {{token}}）
+                    // 场景模式：头值与 url/body 走完全相同的双池渲染——
+                    // 既支持 {{var}}（如 Authorization: Bearer {{token}}），
+                    // 也支持 {{p1.result.data.token}} / {{p1.header.X-Request-Id}} 上下文引用。
+                    // 头名本身不渲染，仅值参与（设计 2.2「渲染作用域」）。
                     headers.forEach((k, v) -> builder.header(k,
-                            ResponseVarExtractor.substitute(v, scenario.pool())));
+                            TemplateRenderer.render(v, scenario.pool(), scenario.ctx(), renderMiss)));
                 } else {
                     headers.forEach(builder::header);
                 }
@@ -509,9 +572,13 @@ public class HttpStressEngine implements StressEngine {
     private static final int MAX_EXTRACT_BODY_CHARS = 64 * 1024;
 
     /**
-     * 多接口场景运行时上下文：步骤选择器 + 任务级变量池。
+     * 多接口场景运行时上下文：步骤选择器 + <b>扁平变量池 + 步骤上下文池</b>双池。
      *
-     * <p>由所有 worker 共享：选择器无状态、变量池为并发容器，均无锁访问。
+     * <p>由所有 worker 共享：选择器无状态、变量池为并发容器、上下文池为原子槽位数组，
+     * 均无锁访问（惰性 JSON 解析的锁粒度是单个槽位，且仅首次付费）。
+     *
+     * <p>构建期（{@link #of}）一次性完成三件事，运行期零解析开销：
+     * 别名表校验、上下文引用预编译（哪些步骤的响应需要驻留）、配置告警收集。
      */
     private static final class Scenario {
         /** 步骤快照（不可变，避免运行期请求对象被改动导致索引错位） */
@@ -520,13 +587,35 @@ public class HttpStressEngine implements StressEngine {
         private final Map<String, String> pool;
         /** 步骤下标 → 展示名（未命名步骤按序号生成） */
         private final String[] stepNames;
+        /** 步骤上下文池：每步最近一次响应的 header / body */
+        private final StepContextStore ctxStore;
+        /** 预编译：该步响应是否需要驻留 body（被 result 引用 / 有 extract / 有 body|json 断言） */
+        private final boolean[] captureBody;
+        /** 预编译：该步响应是否需要驻留 header（被 header 引用 / 有 extract / 有断言） */
+        private final boolean[] captureHeaders;
+        /**
+         * 预编译：该槽位是否被<b>任一</b>步骤模板（url / 请求头值 / body）引用。
+         *
+         * <p>与 capture* 的区别：extract / 断言也会让响应被驻留，但那是给本步自己用的，
+         * 不进上下文池。只有被引用（会有人读）的槽位才需要 {@code ctxStore.put}。
+         */
+        private final boolean[] referenced;
+        /** 启动期配置告警（不 fail-fast：压测配置常由 AI 生成，宽松处理更可用） */
+        private final List<String> warnings;
 
         private Scenario(List<StressTaskRequest.ScenarioStep> steps, StepSelector selector,
-                         Map<String, String> pool, String[] stepNames) {
+                         Map<String, String> pool, String[] stepNames, StepContextStore ctxStore,
+                         boolean[] captureBody, boolean[] captureHeaders, boolean[] referenced,
+                         List<String> warnings) {
             this.steps = steps;
             this.selector = selector;
             this.pool = pool;
             this.stepNames = stepNames;
+            this.ctxStore = ctxStore;
+            this.captureBody = captureBody;
+            this.captureHeaders = captureHeaders;
+            this.referenced = referenced;
+            this.warnings = warnings;
         }
 
         static Scenario of(StressTaskRequest request) {
@@ -536,8 +625,76 @@ public class HttpStressEngine implements StressEngine {
                 String name = steps.get(i).getName();
                 names[i] = (name == null || name.isBlank()) ? "step-" + (i + 1) : name;
             }
+            List<String> warnings = new ArrayList<>();
+            Map<String, Integer> aliasIndex = StepContextStore.buildAliasIndex(steps, warnings);
+            StepContextStore ctxStore =
+                    new StepContextStore(steps.size(), aliasIndex, MAX_EXTRACT_BODY_CHARS);
+
+            // 预编译「哪些步骤的响应需要驻留」：先按 extract / 断言取基线，再叠加上下文引用
+            boolean[] captureBody = new boolean[steps.size()];
+            boolean[] captureHeaders = new boolean[steps.size()];
+            boolean[] referenced = new boolean[steps.size()];
+            for (int i = 0; i < steps.size(); i++) {
+                StressTaskRequest.ScenarioStep s = steps.get(i);
+                // 有 extract（可能取响应头）或 body|json 断言 → 头与体都要驻留（沿用原 needBody 语义）
+                if (s != null && (hasExtract(s) || ResponseAssertor.needsBody(s.getAssertions()))) {
+                    captureBody[i] = true;
+                    captureHeaders[i] = true;
+                }
+            }
+            collectContextRefs(steps, ctxStore, captureBody, captureHeaders, referenced, warnings);
+            for (String w : warnings) {
+                log.warn("scenario config warning: {}", w);
+            }
             return new Scenario(steps, StepSelector.of(steps),
-                    ResponseVarExtractor.createPool(request.getVariables()), names);
+                    ResponseVarExtractor.createPool(request.getVariables()), names,
+                    ctxStore, captureBody, captureHeaders, referenced, warnings);
+        }
+
+        /**
+         * 扫描全部步骤模板（url / 请求头值 / 请求体）中的上下文引用，标记被引用的槽位。
+         *
+         * <p><b>为什么必须预编译</b>：运行期若对所有步骤无条件驻留响应体，场景压测会凭空多出
+         * 「步骤数 × 64KB」的字符串驻留开销，而实际上只有被引用的步骤才需要。
+         *
+         * <p><b>成本澄清</b>：capture 标志只控制「是否驻留」，不控制「是否拷贝」——
+         * 只要该步骤声明了断言，{@code resp.headers().map()} 的拷贝照常发生（断言传参需要）。
+         * 故 {@code captureHeaders=false} 不等于零开销，勿据此误判优化收益。
+         */
+        private static void collectContextRefs(List<StressTaskRequest.ScenarioStep> steps,
+                                               StepContextStore ctxStore,
+                                               boolean[] captureBody, boolean[] captureHeaders,
+                                               boolean[] referenced, List<String> warnings) {
+            // 同一条越界告警可能在多个模板里重复出现，先去重再并入 warnings
+            java.util.Set<String> scanWarnings = new java.util.LinkedHashSet<>();
+            TemplateRenderer.RefSink sink = new TemplateRenderer.RefSink() {
+                @Override
+                public void accept(int slotIdx, boolean header) {
+                    referenced[slotIdx] = true;
+                    if (header) {
+                        captureHeaders[slotIdx] = true;
+                    } else {
+                        captureBody[slotIdx] = true;
+                    }
+                }
+
+                @Override
+                public void outOfRange(String stepRef) {
+                    scanWarnings.add("占位符 {{" + stepRef
+                            + ".…}} 的步骤序号越界（共 " + steps.size() + " 步），渲染时将保留原文");
+                }
+            };
+            for (StressTaskRequest.ScenarioStep step : steps) {
+                if (step == null) {
+                    continue;
+                }
+                TemplateRenderer.scanContextRefs(step.getUrl(), ctxStore, sink);
+                if (step.getHeaders() != null) {
+                    step.getHeaders().values().forEach(v -> TemplateRenderer.scanContextRefs(v, ctxStore, sink));
+                }
+                TemplateRenderer.scanContextRefs(step.getBody(), ctxStore, sink);
+            }
+            warnings.addAll(scanWarnings);
         }
 
         /**
@@ -561,12 +718,44 @@ public class HttpStressEngine implements StressEngine {
         Map<String, String> pool() {
             return pool;
         }
+
+        /** 步骤上下文池（双池渲染的上下文侧） */
+        StepContextStore ctx() {
+            return ctxStore;
+        }
+
+        /** 该步响应是否需要驻留 body（预编译结果） */
+        boolean captureBody(int stepIdx) {
+            return captureBody[stepIdx];
+        }
+
+        /** 该步响应是否需要驻留 header（预编译结果） */
+        boolean captureHeaders(int stepIdx) {
+            return captureHeaders[stepIdx];
+        }
+
+        /** 该槽位是否被任一步骤模板引用（无人引用的槽位不必写上下文池） */
+        boolean referenced(int stepIdx) {
+            return referenced[stepIdx];
+        }
+
+        /** 启动期配置告警 */
+        List<String> warnings() {
+            return warnings;
+        }
+    }
+
+    /** 步骤是否声明了变量提取规则 */
+    private static boolean hasExtract(StressTaskRequest.ScenarioStep step) {
+        return step.getExtract() != null && !step.getExtract().isEmpty();
     }
 
     /** 单档压测结果汇总 */
     private static class StageOutcome {
         /** 分步骤统计（多接口场景；单接口为空列表） */
         private List<StressStatistician.StepStats> stepStats = List.of();
+        /** 场景配置告警（由 run() 跨档去重汇总后写入结果） */
+        private List<String> warnings = List.of();
         private int concurrency;
         private long total;
         private long errors;

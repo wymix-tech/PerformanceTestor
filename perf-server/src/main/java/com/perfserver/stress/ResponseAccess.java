@@ -67,6 +67,14 @@ public final class ResponseAccess {
     /**
      * 按点分路径取值（如 {@code data.token}）。
      *
+     * <p><b>数组下标</b>：当前节点为 {@link ArrayNode} 且段为纯数字时按下标取
+     * （如 {@code list.0.id}）——旧实现对数组调 {@code get("0")} 恒返回 null，
+     * 该能力为纯新增。判断严格限定在 {@code isArray()} 分支内，故
+     * {@code {"0":"a"}} 这类「key 恰为数字串」的 ObjectNode 仍按 key 取值，
+     * 与旧行为一致（断言侧共用本方法，不得改变既有结果）。
+     *
+     * <p>越界、负号、非数字段、对标量节点继续下钻 —— 一律返回 null。
+     *
      * @return 命中节点；未命中返回 null
      */
     public static JsonNode resolvePath(JsonNode root, String path) {
@@ -75,8 +83,36 @@ public final class ResponseAccess {
             if (segment.isEmpty() || current == null) {
                 return null;
             }
-            current = current.get(segment);
+            if (current.isArray()) {
+                Integer idx = parseIndex(segment);
+                if (idx == null) {
+                    return null;
+                }
+                current = current.get(idx);
+            } else {
+                current = current.get(segment);
+            }
         }
         return current;
+    }
+
+    /**
+     * 解析数组下标：仅接受无符号十进制数字（允许前导零，如 {@code 01}）。
+     *
+     * @return 下标；非纯数字或超出 int 范围返回 null
+     */
+    private static Integer parseIndex(String segment) {
+        for (int i = 0; i < segment.length(); i++) {
+            char c = segment.charAt(i);
+            if (c < '0' || c > '9') {
+                return null;
+            }
+        }
+        try {
+            long v = Long.parseLong(segment);
+            return v > Integer.MAX_VALUE ? null : (int) v;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }

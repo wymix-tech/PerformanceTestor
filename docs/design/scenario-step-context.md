@@ -1,7 +1,44 @@
 # 多接口混合场景编排优化设计：步骤上下文引用（{{p1.header.x}} / {{p2.result.x}}）
 
-> 生成日期：2026-09-01　模块：perf-server（压测引擎）　状态：评审中
+> 生成日期：2026-09-01　模块：perf-server（压测引擎）　状态：已实现（P1 + P2 + P3 全量）
 > 需求来源：Issue #7「多接口混合场景编排优化」
+
+---
+
+## 实现记录
+
+### 落地清单
+
+| 位置 | 内容 |
+| ---- | ---- |
+| `StepContextStore.java`（新增） | 步骤响应上下文池：`AtomicReferenceArray` 原子整体替换、槽位级 `synchronized` 双检懒解析 JSON、64KB 截断、错误响应入池；`parseStepRef` 为 pN 解析的唯一实现 |
+| `TemplateRenderer.java`（新增） | 双池渲染器：吸收 `ResponseVarExtractor.substitute` 的手写扫描，前置上下文引用分支；`scanContextRefs` 供启动期预编译复用同一份形状判定 |
+| `HttpStressEngine.java` | `Scenario` 增加别名表 / 上下文池 / `captureBody[]` / `captureHeaders[]` / `referenced[]` 预编译 / `warnings`；三处渲染点统一；`renderMiss` 按迭代取零；`StageOutcome.warnings` → `run()` 去重汇总 |
+| `StressTaskRequest.java` | `ScenarioStep` 新增 `alias` 字段 |
+| `StressStatistician.java` | `StepCounter.renderMiss` + `StepStats.renderMiss` + `of()` 透传 |
+| `StressTaskResult.java` | 新增 `warnings`，随结果 JSON 落库 |
+| `StressTool.java` / `AbstractAiTool.java` | `stress_test` 支持 scenario 步骤数组参数；基类新增带类型描述的 `buildParams` 重载与 `arr()` 读取助手（纯新增） |
+| `StressForm.vue` / `StressReport.vue` | 步骤别名输入项 + 上下文引用语法提示 + 别名校验拦截提交；报告新增配置告警卡片 |
+| `DemoScenarioController.java` / `verify-scenario-context.sh` | perf-demo 登录/下单/详情演示接口；三步场景端到端自验 |
+
+### 对设计的偏差与补充
+
+1. **别名回退的日志降噪**：`alias` 为空回退 `name` 时，若 `name` 不合法（如中文名「登录」）**仅 DEBUG 不 WARN**——用户并未主动声明别名，WARN 会刷屏；只有**显式填写的 alias** 非法 / 重名 / 撞 `pN` 才产出 warning。
+2. **启动校验只报确定性问题**：仅 `pN` 越界与别名非法/重名产出 warning。**不**对「疑似别名拼写错误」报警——它与扁平点分变量在语法上不可区分，报警会误伤存量配置（2.2 防劫持规则的必然推论）。
+3. **`p01` 判为非法**：`parseStepRef` 拒绝前导零，避免同一槽位存在 `p1` / `p01` 多种写法导致别名拦截与运行期解析范围不一致（Issue #7 评审 P2）。
+4. **未命中占位符落在 URL 时的降级**：未命中保留原文是 2.1 的约定，但 `{{...}}` 中的 `{`/`}` 不是合法 URI 字符，`URI.create` 会抛 `IllegalArgumentException`。实现上改为捕获该异常、计一次错误并跳过本次迭代（打一次 WARN），**而不是让 worker 线程当场死亡**——后者会让压测静默少掉若干并发，比 100% 错误率更难排查。这会一并修掉存量配置中同类问题导致的 worker 静默退出。
+5. **capture 标志只控驻留、不控拷贝**：`captureHeaders=false` 时，只要该步骤声明了断言，`resp.headers().map()` 的拷贝照常发生（断言传参需要）。故该标志的收益是「减少驻留」而非「消除拷贝」，勿据此误判优化收益。
+6. **未被任何步骤引用的槽位不写上下文池**：预编译额外产出 `referenced[]`，无人读的槽位跳过 `put`，省掉一次快照分配。
+
+### 评审意见闭环（Issue #7）
+
+| 项 | 处理 |
+| -- | ---- |
+| P1 renderMiss 计数污染 | 改为每次迭代渲染后「取走并清零」，warmup/stop 期未命中被自然丢弃；`StressScenarioTest` 以 `warmupSec>0` 场景断言 `renderMiss == 0` |
+| P2 pN 解析规则漂移 | `StepContextStore.parseStepRef` 为唯一实现，别名拦截与 `indexOf` 共用；测试覆盖 `p0` / `p01` / `p1x` / 溢出四边界 |
+| P3 回落语义易走样 | `TemplateRendererTest` 固化「已注册别名 + 槽位为空 → 回落扁平变量；槽位有值 → 上下文优先」 |
+| P4 warnings 载体缺失 | `StageOutcome.warnings` + `run()` 去重汇总 + `StressTaskResult.warnings`；前端 `StressReport.vue` 补告警卡片 |
+| 小改进 1~5 | `StepAccumulator` 透传 renderMiss；补「错误响应入池」与「ObjectNode 数字串 key 仍按 key 取」用例；`stepAliasErrors` 纳入 `canSubmit` 且 `fillFrom` 复位；`StressTool` 步骤 `url` 必填 + hint 引导新语法；capture 成本澄清写入注释与本文档 |
 
 ---
 
