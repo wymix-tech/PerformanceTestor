@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * LLM 方案增强器：静态分析结论为主，大模型仅做语义补全与兜底。
@@ -99,13 +100,101 @@ public class LlmPlanEnhancer {
             if (parsed == null || parsed.isMissingNode()) {
                 return new Enhancement(false, "大模型返回无法解析，已降级为纯静态分析结论");
             }
-            Enhancement out = new Enhancement(true, "LLM 增强已应用");
+            int merged = mergeEnumSuggestions(facts, parsed);
+            if (merged == 0) {
+                // 解析成功但没采纳任何建议时不能报 applied=true——
+                // 那会让前端展示「增强已应用」的假象，而实际什么都没变
+                return new Enhancement(false, "大模型未给出可采纳的补全建议，已沿用纯静态分析结论");
+            }
+            Enhancement out = new Enhancement(true, "LLM 增强已应用（补充 " + merged + " 列的取值建议）");
             out.warnings.add("本方案含大模型语义补全，请复核表清单后再执行");
             return out;
         } catch (Exception e) {
             log.warn("llm plan enhance failed: {}", e.getMessage());
             return new Enhancement(false, "大模型调用失败，已降级为纯静态分析结论: " + e.getMessage());
         }
+    }
+
+    /**
+     * 把 LLM 建议合入事实，返回实际采纳的列数。
+     *
+     * <p><b>只合入「已有列的枚举取值补充」</b>，不接受新表、新列、新关联。
+     * 理由：本项目对表识别坚持「宁缺勿滥」——对错误的表造数据会污染业务表，
+     * 危害远大于漏表。让模型凭语义猜测表名/关联，等于把这条底线交出去。
+     * 补充取值则不然：列已由静态分析确认存在，取值只影响数据分布，风险可控。</p>
+     *
+     * <p>期望结构：{@code {"tables":[{"table":"t","columns":[{"column":"c","values":[...]}]}]}}</p>
+     */
+    int mergeEnumSuggestions(List<EndpointTableFact> facts, JsonNode parsed) {
+        JsonNode tables = parsed.isArray() ? parsed : parsed.get("tables");
+        if (tables == null || !tables.isArray()) {
+            return 0;
+        }
+        Map<String, EndpointTableFact> byTable = new java.util.HashMap<>();
+        for (EndpointTableFact f : facts) {
+            if (f != null && f.getTable() != null) {
+                byTable.put(f.getTable().toLowerCase(java.util.Locale.ROOT), f);
+            }
+        }
+        int merged = 0;
+        for (JsonNode t : tables) {
+            String tableName = t.path("table").asText("");
+            EndpointTableFact fact = byTable.get(tableName.trim().toLowerCase(java.util.Locale.ROOT));
+            if (fact == null) {
+                log.debug("llm suggested unknown table, ignored: {}", tableName);
+                continue;
+            }
+            JsonNode columns = t.get("columns");
+            if (columns == null || !columns.isArray()) {
+                continue;
+            }
+            for (JsonNode c : columns) {
+                String col = c.path("column").asText("");
+                JsonNode valuesNode = c.get("values");
+                if (col.isBlank() || valuesNode == null || !valuesNode.isArray() || valuesNode.isEmpty()) {
+                    continue;
+                }
+                // 只补充已存在谓词的列（列的存在性由静态分析保证）
+                EndpointTableFact.Predicate target = null;
+                for (EndpointTableFact.Predicate p : fact.getPredicates()) {
+                    if (col.equalsIgnoreCase(p.getColumn())
+                            && (p.getOp() == EndpointTableFact.Op.EQ || p.getOp() == EndpointTableFact.Op.IN)) {
+                        target = p;
+                        break;
+                    }
+                }
+                if (target == null) {
+                    continue;
+                }
+                int before = target.getValues().size();
+                for (JsonNode v : valuesNode) {
+                    if (target.getValues().size() >= MAX_MERGED_VALUES) {
+                        break;
+                    }
+                    if (v.isTextual()) {
+                        addIfAbsent(target.getValues(), v.asText());
+                    } else if (v.isNumber()) {
+                        addIfAbsent(target.getValues(), v.asLong());
+                    }
+                }
+                if (target.getValues().size() > before) {
+                    merged++;
+                }
+            }
+        }
+        return merged;
+    }
+
+    /** 单次合入的取值上限（防止模型返回超长列表撑爆值集） */
+    public static final int MAX_MERGED_VALUES = 32;
+
+    private static void addIfAbsent(List<Object> values, Object v) {
+        for (Object o : values) {
+            if (o != null && String.valueOf(o).equals(String.valueOf(v))) {
+                return;
+            }
+        }
+        values.add(v);
     }
 
     /**

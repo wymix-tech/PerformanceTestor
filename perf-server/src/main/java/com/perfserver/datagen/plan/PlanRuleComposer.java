@@ -226,7 +226,7 @@ public class PlanRuleComposer {
             rule.put("seqPrefix", seqPrefix(col));
         }
 
-        // 4. 统一写出枚举规则与权重（命中值占 HIT_WEIGHT_PERCENT%，补充值均分剩余）
+        // 5. 统一写出枚举规则与权重（命中值占 HIT_WEIGHT_PERCENT%，补充值均分剩余）
         for (Map.Entry<String, List<Object>> e : valuesByColumn.entrySet()) {
             ObjectNode rule = fields.putObject(e.getKey());
             withWeights(rule, e.getValue(), hitCountByColumn.getOrDefault(e.getKey(), 0));

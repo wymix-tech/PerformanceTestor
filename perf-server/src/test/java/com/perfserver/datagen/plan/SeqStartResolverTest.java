@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -12,7 +13,10 @@ import org.mockito.quality.Strictness;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.List;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -142,6 +146,63 @@ class SeqStartResolverTest {
         when(rs.next()).thenReturn(true);
         when(rs.getObject(1)).thenReturn("250");
         assertEquals(251L, resolver.detectStart(conn, "perf_order", "coupon_no", "C"));
+    }
+
+    @Test
+    void mysqlUrlUsesBacktickQuoting() throws Exception {
+        java.sql.DatabaseMetaData md = meta("jdbc:mysql://127.0.0.1:3306/demo");
+        when(conn.getMetaData()).thenReturn(md);
+        assertEquals(SeqStartResolver.Dialect.MYSQL, SeqStartResolver.dialectOf(conn));
+        // 反引号是 MySQL 标识符定界符
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        stubMax(5L);
+        resolver.detectStart(conn, "perf_order", "seq_no", "");
+        verify(conn).prepareStatement(sql.capture());
+        assertTrue(sql.getValue().contains("`"),
+                "MySQL 应使用反引号，实际: " + sql.getValue());
+    }
+
+    @Test
+    void postgresUrlUsesDoubleQuoteAndNativeCast() throws Exception {
+        // 终审问题：反引号 + CAST(... AS DECIMAL) 仅 MySQL 可用，
+        // PG 上会静默回退 seqStart=1 而撞唯一键
+        java.sql.DatabaseMetaData md = meta("jdbc:postgresql://127.0.0.1:5432/demo");
+        when(conn.getMetaData()).thenReturn(md);
+        assertEquals(SeqStartResolver.Dialect.POSTGRESQL, SeqStartResolver.dialectOf(conn));
+
+        stubMax(0L);
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        resolver.detectStart(conn, "perf_order", "coupon_no", "C");
+        verify(conn, org.mockito.Mockito.atLeastOnce()).prepareStatement(sql.capture());
+
+        List<String> sqls = sql.getAllValues();
+        assertTrue(sqls.stream().anyMatch(s -> s.contains("\"perf_order\"")),
+                "PG 应使用双引号定界，实际: " + sqls);
+        assertTrue(sqls.stream().anyMatch(s -> s.contains("::numeric") && s.contains("substring(")),
+                "PG 应使用 substring(... from N)::numeric，实际: " + sqls);
+    }
+
+    @Test
+    void unknownUrlFallsBackToMySqlSyntax() throws Exception {
+        java.sql.DatabaseMetaData md = meta("jdbc:oracle:thin:@x");
+        when(conn.getMetaData()).thenReturn(md);
+        assertEquals(SeqStartResolver.Dialect.MYSQL, SeqStartResolver.dialectOf(conn));
+    }
+
+    @Test
+    void unreadableMetaDataFallsBackToMySql() throws Exception {
+        when(conn.getMetaData()).thenThrow(new java.sql.SQLException("no meta"));
+        assertEquals(SeqStartResolver.Dialect.MYSQL, SeqStartResolver.dialectOf(conn));
+    }
+
+    private static java.sql.DatabaseMetaData meta(String url) {
+        java.sql.DatabaseMetaData md = mock(java.sql.DatabaseMetaData.class);
+        try {
+            when(md.getURL()).thenReturn(url);
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException(e);
+        }
+        return md;
     }
 
     @Test

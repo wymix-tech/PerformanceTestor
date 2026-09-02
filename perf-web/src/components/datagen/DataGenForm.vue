@@ -327,6 +327,8 @@ const planDryRunPassed = ref(false)
 const expandedEvidence = ref<Record<number, boolean>>({})
 /** 分析异步完成前的轮询定时器 */
 let planPollTimer: ReturnType<typeof setInterval> | null = null
+/** 方案加载中标志：防止轮询与用户操作并发导致请求叠加 */
+const planLoading = ref(false)
 
 /** 方案涉及的表（含行数与证据；行数可编辑） */
 const planTables = ref<Array<Record<string, any>>>([])
@@ -389,6 +391,10 @@ function predicateSummaryOf(fields: any): string {
 /** 加载方案详情；分析为异步，表清单为空时轮询直到产出或超时 */
 async function loadPlan(id: number, poll = false) {
   stopPlanPoll()
+  // 防重入：轮询的下一拍在上一次请求未返回时不得再发，
+  // 否则慢响应会让请求叠加、后到的旧响应覆盖新数据
+  if (planLoading.value) return
+  planLoading.value = true
   try {
     const r = await dataGenPlanApi.detail(id)
     plan.value = r.data || null
@@ -425,6 +431,8 @@ async function loadPlan(id: number, poll = false) {
   } catch {
     plan.value = null
     planTables.value = []
+  } finally {
+    planLoading.value = false
   }
 }
 
@@ -473,6 +481,11 @@ async function executePlan(dryRun: boolean) {
       conn.connId = gen.value.connId
     } else {
       conn.dbUrl = gen.value.dbUrl
+    }
+    // 用户在方案卡上改过的行数必须回传，否则执行的是落库的旧行数，
+    // 「已手动调整」角标就成了误导
+    if (planDirty.value) {
+      conn.rowOverrides = planTables.value.map((t) => ({ table: t.table, rowCount: t.rowCount }))
     }
     await dataGenPlanApi.execute(plan.value.id, dryRun, conn)
     if (dryRun) planDryRunPassed.value = true

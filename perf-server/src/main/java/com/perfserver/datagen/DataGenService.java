@@ -147,6 +147,67 @@ public class DataGenService {
         return task;
     }
 
+    /**
+     * 执行引擎，遇环依赖时降级重试一次。
+     *
+     * <p>引擎拓扑排序会抛 {@code IllegalArgumentException}（消息已定位环中表名）。
+     * 直接让任务失败对用户体验很差，故剔除环中置信度最低的一条 ref 边后重试一次：
+     * 重试<b>复用同一 listener 与同一 dryRun 标记</b>，避免重复输出告警与重复落语义提示。
+     * 重试上限 1 次，仍失败则写告警交用户手工调整。</p>
+     */
+    private EngineResult executeWithCycleFallback(DataGenRequest request, DataGenSpec spec,
+                                                  EngineListener listener, List<String> warnings) throws Exception {
+        try {
+            return engine.execute(spec, listener);
+        } catch (IllegalArgumentException e) {
+            String msg = e.getMessage() == null ? "" : e.getMessage();
+            if (!msg.contains("循环依赖")) {
+                throw e;
+            }
+            com.perfserver.datagen.plan.PlanIntegrityChecker checker =
+                    new com.perfserver.datagen.plan.PlanIntegrityChecker(objectMapper);
+            List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> tables =
+                    toPlanTables(request.getTables());
+            boolean broke = checker.breakWeakestCycleEdge(tables, msg, java.util.Map.of());
+            if (!broke) {
+                warnings.add("检测到循环依赖且无法自动降级: " + msg);
+                throw e;
+            }
+            warnings.add("检测到循环依赖，已剔除一条最低置信度的关联边后重试；被剔除列的外键值将为随机值");
+            // 重建 spec（引用规则已变），复用同一 listener 与 dryRun
+            List<com.perftestor.datagen.model.SourceFile> sourceFiles = request.getRepoId() != null
+                    ? sourceFileProvider.loadFiles(request.getRepoId()) : List.of();
+            applyPlanTables(request, tables);
+            return engine.execute(specAdapter.toSpec(request, sourceFiles), listener);
+        }
+    }
+
+    private static List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> toPlanTables(
+            List<DataGenRequest.TableSpecDto> dtos) {
+        List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> out = new ArrayList<>();
+        if (dtos == null) {
+            return out;
+        }
+        for (DataGenRequest.TableSpecDto d : dtos) {
+            out.add(new com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable(
+                    d.getTableName(), d.getRowCount(), d.getFields(), null));
+        }
+        return out;
+    }
+
+    private static void applyPlanTables(DataGenRequest request,
+                                        List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> tables) {
+        List<DataGenRequest.TableSpecDto> dtos = new ArrayList<>();
+        for (com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable t : tables) {
+            DataGenRequest.TableSpecDto dto = new DataGenRequest.TableSpecDto();
+            dto.setTableName(t.getTable());
+            dto.setRowCount(Math.max(1, t.getRowCount()));
+            dto.setFields(t.getFields());
+            dtos.add(dto);
+        }
+        request.setTables(dtos);
+    }
+
     /** 引擎执行 + 进度/语义提示落库 + 详情/自检报告 */
     private EngineResult runEngine(DataGenRequest request, long taskId) throws Exception {
         List<com.perftestor.datagen.model.SourceFile> sourceFiles = request.getRepoId() != null
@@ -176,7 +237,7 @@ public class DataGenService {
             }
         };
 
-        EngineResult result = engine.execute(spec, listener);
+        EngineResult result = executeWithCycleFallback(request, spec, listener, warnings);
         if (sourceFiles.isEmpty() && request.getRepoId() != null) {
             warnings.add("源码不可读，魔法值仅基于数据库元数据（ENUM/CHECK/列注释），精准度下降");
         }
@@ -368,11 +429,13 @@ public class DataGenService {
      *   <li>复用 {@link #createAndRun}（引擎内部拓扑排序保证父表先灌）</li>
      * </ol>
      *
-     * @param planId 方案 ID
-     * @param dryRun 是否仅试运行
+     * @param planId       方案 ID
+     * @param dryRun       是否仅试运行
+     * @param rowOverrides 用户在方案卡上改过的行数（表 → 行数），为空则按落库值执行
      * @return 灌数任务
      */
-    public DataGenTask runFromPlan(long planId, boolean dryRun) {
+    public DataGenTask runFromPlan(long planId, boolean dryRun,
+                                   Map<String, Integer> rowOverrides) {
         com.perfserver.entity.DataGenPlan plan = planMapper.findById(planId);
         if (plan == null) {
             throw new IllegalArgumentException("方案不存在: " + planId);
@@ -410,7 +473,11 @@ public class DataGenService {
         for (com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable t : finalTables) {
             DataGenRequest.TableSpecDto dto = new DataGenRequest.TableSpecDto();
             dto.setTableName(t.getTable());
-            dto.setRowCount(Math.max(1, t.getRowCount()));
+            Integer override = rowOverrides == null ? null : rowOverrides.get(t.getTable());
+            // 用户改过的行数优先（方案卡可编辑），并同样受上下限保护
+            int rows = override != null && override > 0
+                    ? Math.min(override, MAX_ROWS) : Math.max(1, t.getRowCount());
+            dto.setRowCount(rows);
             dto.setFields(t.getFields());
             specs.add(dto);
         }
@@ -426,9 +493,11 @@ public class DataGenService {
             }
         }
         if (!warnings.isEmpty()) {
-            plan.setWarningsJson(toJson(warnings));
+            // 必须用「只更新 warnings」的专用 SQL：此处 plan 是方法开头 findById 取出的旧对象，
+            // 其 taskId/status 仍是旧值，若走全字段 update 会把刚回写的 task_id/status 冲掉，
+            // 导致「方案 → 任务」追溯链路丢失
             try {
-                planMapper.update(plan);
+                planMapper.updateWarnings(planId, toJson(warnings));
             } catch (Exception e) {
                 log.warn("persist plan warnings failed, planId={}: {}", planId, e.getMessage());
             }

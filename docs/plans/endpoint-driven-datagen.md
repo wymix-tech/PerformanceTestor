@@ -138,10 +138,10 @@ perf-demo 实测：`GET /api/user/list`（N+1）产出
 | 模块 | 用例数 | 覆盖重点 |
 | --- | --- | --- |
 | perf-datagen | 160 | 调用链 BFS（字段/构造器注入、多实现、熔断）、接口索引、SQL 表/谓词/JOIN 边/列抽取、双解析器一致性、SEQ 唯一性（H2） |
-| perf-server | 414 | 行数推导（读/写/父表/权重对齐/分页/上限缩减）、RT 三级取值、规则合成（权重/64 上限/seq 只落 prefix/ref-refSkew）、seqStart 刷新、父表补齐与环降级、LLM 脱敏哨兵、perf-demo E2E、外键引用闭环 E2E、三级匹配与权重占位回归 |
+| perf-server | 432 | 行数推导（读/写/父表/权重对齐/分页/上限缩减）、RT 三级取值、规则合成（权重/64 上限/seq 只落 prefix/ref-refSkew）、seqStart 刷新（含方言）、父表补齐与环降级、LLM 脱敏哨兵与合入、perf-demo E2E、外键引用闭环 E2E、三级匹配与权重占位回归、方案执行数据一致性 |
 | perf-agent | 27 | 既有用例，无回归 |
 
-合计 **601 项全通过**，`mvn test` 零回归。
+合计 **619 项全通过**，`mvn test` 零回归。
 
 ### 4.3 验收标准的达成情况
 
@@ -233,6 +233,40 @@ perf-demo 实测：`GET /api/user/list`（N+1）产出
 - `"seq"` 魔法字符串 → `FieldRule.TYPE_SEQ`（含 `DataGenService` 里遗漏的一处）
 - `CallGraphAnalyzer` 的 `implements` 文本扫描 → **文本粗筛 + AST 精判**两级：纯文本会把注释/字符串里的 `implements` 误判且漏判 `implements A, B` 中非首位的类型；纯 AST 要对全仓库建 AST 会触发文件数熔断，故先用文本筛候选再用 `getImplementedTypes()` 确认
 - `StressCenterView` 分档时长 `Math.floor` 丢余数（100s÷3 档 = 33×3 只跑 99s）→ 余数补到最后一档
+
+## 五之四、终审修复（PR #13 第三轮）
+
+终审结论：2 处数据一致性问题 + 2 处功能失配，全部修复；3 处改进建议一并处理。
+
+**① `runFromPlan` 全字段 update 覆盖刚回写的 task_id/status**
+
+`updateTaskId` 已把 `status` 置为 `executed` 并写入 `task_id`，随后用方法开头 `findById` 取出的旧对象走全字段 `update(plan)`——其 `taskId` 为 null、`status` 为旧值，会把刚回写的值冲掉，「方案 → 任务」追溯链路丢失。
+
+改为专用 `updateWarnings(id, warningsJson)` 只更新告警字段。新增 `DataGenPlanExecutionTest`（10 项），核心断言是 `verify(planMapper, never()).update(any())`。
+
+**② 前端编辑的行数不生效**
+
+方案卡行数可编辑并打「已手动调整」角标，但 `execute` 只回传连接，后端按落库的 `tablesJson` 执行——用户改的行数只是前端状态，角标成为误导。
+
+改为：`execute` 请求体带 `rowOverrides`（`[{table,rowCount}]`），后端 `runFromPlan` 应用覆盖值（同样受 `MAX_ROWS` 保护）。
+
+**③ `LlmPlanEnhancer` 的 `applied=true` 实为 no-op**
+
+LLM 返回解析后未合入任何结论却报「增强已应用」。
+
+改为实现**真实合入**，但严格限定范围：**只补充已有列的枚举取值**，不接受新表、新列、新关联。理由——本项目对表识别坚持「宁缺勿滥」，让模型凭语义猜测表名等于把这条底线交出去（猜错会污染业务表）；补充取值则不然，列的存在性已由静态分析保证，取值只影响数据分布。合入数受 `MAX_MERGED_VALUES=32` 保护；**没有任何建议被采纳时返回 `applied=false`**，不再制造假象。
+
+**④ `SeqStartResolver` 的 SQL 仅 MySQL 可用**
+
+反引号定界 + `CAST(SUBSTRING(...) AS DECIMAL(38,0))` 在 PostgreSQL 上会报错，被 `queryMax` 吞掉后静默回退 `seqStart=1`——恰好撞上本类要防的唯一键冲突。
+
+改为按 `DatabaseMetaData.getURL()` 判定方言：MySQL 用反引号 + `CAST(... AS DECIMAL)`，PG 用双引号 + `substring(... from N)::numeric`；元数据不可用时回退 MySQL 写法。
+
+**改进建议（3）**
+
+- `PlanRuleComposer` 注释编号重复（两个「4.」）→ 修正为 1~5
+- `PlanIntegrityChecker` 环依赖降级未接入主流程（有实现无调用）→ 在 `DataGenService.runEngine` 中接入 `executeWithCycleFallback`：捕获含「循环依赖」的 `IllegalArgumentException` → 剔除最低置信度 ref 边 → **复用同一 listener 与 dryRun** 重建 spec 重试一次 → 仍失败写告警后抛出
+- 前端 `loadPlan` 轮询存在叠加请求风险（慢响应时后到的旧响应覆盖新数据）→ 加 `planLoading` 防重入标志，`finally` 释放
 
 ## 六、新增 API
 

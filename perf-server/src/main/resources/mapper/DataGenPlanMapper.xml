@@ -66,6 +66,11 @@
         UPDATE data_gen_plan SET task_id = #{taskId}, status = 'executed' WHERE id = #{id}
     </update>
 
+    <!-- 只更新告警：避免与 updateTaskId 的回写互相覆盖 -->
+    <update id="updateWarnings">
+        UPDATE data_gen_plan SET warnings_json = #{warningsJson} WHERE id = #{id}
+    </update>
+
     <delete id="deleteById">
         DELETE FROM data_gen_plan WHERE id = #{id}
     </delete>

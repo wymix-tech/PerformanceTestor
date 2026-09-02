@@ -1,5 +1,6 @@
 package com.perfserver.datagen.plan;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.perfserver.ai.LlmClient;
 import com.perftestor.datagen.model.EndpointTableFact;
@@ -40,6 +41,14 @@ class LlmPlanEnhancerSanitizeTest {
 
     private LlmPlanEnhancer enhancer() {
         return new LlmPlanEnhancer(llmClient, new ObjectMapper());
+    }
+
+    private static JsonNode parseJson(String json) {
+        try {
+            return new ObjectMapper().readTree(json);
+        } catch (Exception e) {
+            throw new IllegalStateException("bad test json: " + json, e);
+        }
     }
 
     private static EndpointTableFact factWithSecrets() {
@@ -136,11 +145,65 @@ class LlmPlanEnhancerSanitizeTest {
     @Test
     void appliedEnhancementWarnsUserToReview() {
         when(llmClient.available()).thenReturn(true);
-        when(llmClient.chatJson(anyString(), anyString(), any())).thenReturn("{\"tables\":[]}");
+        // 返回对已存在列（order_no）的取值补充 → 应被采纳
+        when(llmClient.chatJson(anyString(), anyString(), any())).thenReturn(
+                "{\"tables\":[{\"table\":\"perf_order\",\"columns\":["
+                        + "{\"column\":\"order_no\",\"values\":[\"NEW\",\"PAID\"]}]}]}");
         var out = enhancer().enhance(List.of(factWithSecrets()), true);
-        assertTrue(out.isApplied());
+        assertTrue(out.isApplied(), "有可采纳建议时应标记已应用: " + out.getReason());
         assertTrue(out.getWarnings().stream().anyMatch(w -> w.contains("复核")),
                 "LLM 增强应用后必须提示复核: " + out.getWarnings());
+    }
+
+    @Test
+    void noAdoptableSuggestionMeansNotApplied() {
+        // 终审问题：解析成功但没合入任何内容时不能报 applied=true（假象）
+        when(llmClient.available()).thenReturn(true);
+        when(llmClient.chatJson(anyString(), anyString(), any())).thenReturn("{\"tables\":[]}");
+        var out = enhancer().enhance(List.of(factWithSecrets()), true);
+        assertFalse(out.isApplied(), "无可采纳建议时不得标记已应用");
+        assertTrue(out.getReason().contains("未给出可采纳"), "实际: " + out.getReason());
+    }
+
+    @Test
+    void unknownTableFromLlmIsIgnoredNotTrusted() {
+        // 「宁缺勿滥」同样适用于 LLM：不得凭模型语义凭空新增表
+        when(llmClient.available()).thenReturn(true);
+        when(llmClient.chatJson(anyString(), anyString(), any())).thenReturn(
+                "{\"tables\":[{\"table\":\"invented_table\",\"columns\":["
+                        + "{\"column\":\"x\",\"values\":[1]}]}]}");
+        var out = enhancer().enhance(List.of(factWithSecrets()), true);
+        assertFalse(out.isApplied(), "模型给出的未知表不得采纳: " + out.getReason());
+    }
+
+    @Test
+    void suggestionsAreActuallyMergedIntoFacts() {
+        var fact = factWithSecrets();
+        int before = fact.getPredicates().get(0).getValues().size();
+        var enhancer = enhancer();
+        JsonNode parsed = parseJson(
+                "{\"tables\":[{\"table\":\"perf_order\",\"columns\":["
+                        + "{\"column\":\"order_no\",\"values\":[\"NEW\",\"PAID\"]}]}]}");
+        int merged = enhancer.mergeEnumSuggestions(java.util.List.of(fact), parsed);
+        assertTrue(merged > 0, "应合入至少一列");
+        int after = fact.getPredicates().get(0).getValues().size();
+        assertEquals(before + 2, after, "建议值应真正追加到谓词值集");
+    }
+
+    @Test
+    void mergedValueCountIsCapped() {
+        var fact = factWithSecrets();
+        StringBuilder values = new StringBuilder("[");
+        for (int i = 0; i < 200; i++) {
+            values.append(i == 0 ? "" : ",").append("\"V").append(i).append("\"");
+        }
+        values.append("]");
+        JsonNode parsed = parseJson(
+                "{\"tables\":[{\"table\":\"perf_order\",\"columns\":["
+                        + "{\"column\":\"order_no\",\"values\":" + values + "}]}]}");
+        enhancer().mergeEnumSuggestions(java.util.List.of(fact), parsed);
+        assertTrue(fact.getPredicates().get(0).getValues().size() <= LlmPlanEnhancer.MAX_MERGED_VALUES,
+                "合入值数必须受上限保护，实际: " + fact.getPredicates().get(0).getValues().size());
     }
 
     @Test

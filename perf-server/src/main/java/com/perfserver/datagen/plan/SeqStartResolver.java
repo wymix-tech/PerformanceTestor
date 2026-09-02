@@ -117,21 +117,56 @@ public class SeqStartResolver {
 
     /**
      * 探测起始值：先按纯数值取 MAX，失败再按「剥离前缀后转数值」取 MAX。
-     * 返回 0 表示探测失败（调用方回退）。
+     * 返回 0 表示探测失败（调用方回退并告警）。
+     *
+     * <p>SQL 按方言构造：MySQL 用反引号、PostgreSQL 用双引号，两者的
+     * 「字符串转数值」语法也不同（{@code CAST(x AS DECIMAL)} vs {@code x::numeric}）。
+     * 若不做区分，PG 上会静默回退 seqStart=1 而撞唯一键——正是本类要防的问题。</p>
      */
     long detectStart(Connection conn, String table, String column, String prefix) {
-        long numeric = queryMax(conn, "SELECT MAX(" + quote(column) + ") FROM " + quote(table));
+        Dialect d = dialectOf(conn);
+        long numeric = queryMax(conn, "SELECT MAX(" + quote(column, d) + ") FROM " + quote(table, d));
         if (numeric > 0) {
             return numeric + 1;
         }
         if (prefix == null || prefix.isBlank()) {
             return 0;
         }
-        // 字符串型业务编码：剥离前缀后取数值最大
-        String sql = "SELECT MAX(CAST(SUBSTRING(" + quote(column) + ", "
-                + (prefix.length() + 1) + ") AS DECIMAL(38,0))) FROM " + quote(table);
+        String colRef = quote(column, d);
+        String from = quote(table, d);
+        int start = prefix.length() + 1;
+        String sql = d == Dialect.POSTGRESQL
+                // PG：substring(col from N) 取子串，::numeric 转数值；非法字符会报错，由 queryMax 兜住
+                ? "SELECT MAX(substring(" + colRef + " from " + start + ")::numeric) FROM " + from
+                : "SELECT MAX(CAST(SUBSTRING(" + colRef + ", " + start + ") AS DECIMAL(38,0))) FROM " + from;
         long stripped = queryMax(conn, sql);
         return stripped > 0 ? stripped + 1 : 0;
+    }
+
+    /** 支持的标识符方言 */
+    enum Dialect {
+        MYSQL, POSTGRESQL
+    }
+
+    /** 按 JDBC URL 判定方言；无法判定时回退 MySQL 写法（与灌数主路径一致） */
+    static Dialect dialectOf(Connection conn) {
+        String url = "";
+        try {
+            java.sql.DatabaseMetaData md = conn.getMetaData();
+            if (md != null) {
+                url = String.valueOf(md.getURL());
+            }
+        } catch (Exception ignore) {
+            // 元数据不可用时按 URL 字符串兜底在下面处理
+        }
+        return url.toLowerCase(java.util.Locale.ROOT).contains("postgresql") ? Dialect.POSTGRESQL : Dialect.MYSQL;
+    }
+
+    private static String quote(String ident, Dialect dialect) {
+        if (dialect == Dialect.POSTGRESQL) {
+            return '"' + ident.replace("\"", "\"\"") + '"';
+        }
+        return "`" + ident.replace("`", "``") + "`";
     }
 
     private long queryMax(Connection conn, String sql) {
@@ -152,9 +187,5 @@ public class SeqStartResolver {
             log.debug("query max failed: {} -> {}", sql, e.getMessage());
         }
         return 0;
-    }
-
-    private static String quote(String ident) {
-        return "`" + ident.replace("`", "``") + "`";
     }
 }

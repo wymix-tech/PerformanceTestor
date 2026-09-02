@@ -141,9 +141,16 @@ export const dataGenPlanApi = {
   // 方案采纳/放弃
   adopt: (id: number, adopt = true) =>
     http.post(`/datagen/plans/${id}/adopt`, null, { params: { adopt } }),
-  // 按方案执行灌数（dryRun=true 仅试运行；conn 用于方案未指定连接时按当前选定值执行）
-  execute: (id: number, dryRun = true, conn?: { connId?: number; dbUrl?: string }) =>
-    http.post(`/datagen/plans/${id}/execute`, conn || null, { params: { dryRun } }),
+  /**
+   * 按方案执行灌数。
+   * @param conn connId/dbUrl 二选一（方案分析阶段允许留空，执行时补上）；
+   *             rowOverrides 为用户在方案卡上改过的行数，需回传才能生效
+   */
+  execute: (id: number, dryRun = true, conn?: {
+    connId?: number
+    dbUrl?: string
+    rowOverrides?: Array<{ table: string; rowCount: number }>
+  }) => http.post(`/datagen/plans/${id}/execute`, conn || null, { params: { dryRun } }),
   // 删除方案
   remove: (id: number) => http.delete(`/datagen/plans/${id}`)
 }

@@ -165,10 +165,43 @@ public class DataGenController {
     public ApiResponse<DataGenTask> executePlan(@PathVariable long id,
                                                 @RequestParam(defaultValue = "true") boolean dryRun,
                                                 @RequestBody(required = false) Map<String, Object> conn) {
+        Map<String, Integer> rowOverrides = parseRowOverrides(conn);
         if (conn != null && !conn.isEmpty() && dataGenService.planNeedsConnection(id)) {
             dataGenService.applyPlanConnection(id, conn);
         }
-        return ApiResponse.ok(dataGenService.runFromPlan(id, dryRun));
+        return ApiResponse.ok(dataGenService.runFromPlan(id, dryRun, rowOverrides));
+    }
+
+    /** 解析用户在方案卡上改过的行数：{rowOverrides:[{table,rowCount}]} */
+    private static Map<String, Integer> parseRowOverrides(Map<String, Object> body) {
+        Map<String, Integer> out = new java.util.LinkedHashMap<>();
+        if (body == null || body.get("rowOverrides") == null) {
+            return out;
+        }
+        Object raw = body.get("rowOverrides");
+        if (!(raw instanceof java.util.List<?> list)) {
+            return out;
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> m)) {
+                continue;
+            }
+            Object table = m.get("table");
+            Object rows = m.get("rowCount");
+            if (table == null || rows == null) {
+                continue;
+            }
+            String name = String.valueOf(table).trim().toLowerCase(java.util.Locale.ROOT);
+            try {
+                int v = rows instanceof Number n ? n.intValue() : Integer.parseInt(String.valueOf(rows).trim());
+                if (!name.isEmpty() && v > 0) {
+                    out.put(name, v);
+                }
+            } catch (NumberFormatException ignore) {
+                // 非法值跳过，按方案落库值执行
+            }
+        }
+        return out;
     }
 
     /** 删除方案 */
