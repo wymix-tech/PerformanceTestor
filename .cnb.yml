@@ -53,3 +53,73 @@ main:
                 # 突变测试门禁（仅对已有单测覆盖的文件，约 12 秒）。
                 # 全量突变（npm run test:mutation:all）需约 40 分钟，不接入 CI。
                 npm run test:mutation
+
+  # =====================================================================
+  # 文档知识化流水线
+  # 目标：main 分支代码更新后，自动维护知识库与 CodeWiki
+  #
+  # 触发说明：PR 合并到 main 时，平台会触发 main 分支的 push 事件
+  #   （「a 分支合并到 b 分支，会触发 b 分支下的 pull_request.merged、push 事件」），
+  #   故本配置同时覆盖「PR 合并后」与「直接 push 到 main」两种场景，无需再配 merged。
+  #
+  # 两条流水线职责不同，拆开并行执行：
+  #   1. knowledge-base —— 收录 docs/ 文档与仓库 Issue（轻量、增量，每次都跑）
+  #   2. codewiki      —— LLM 全量分析代码生成 Wiki（重量、耗时久，加锁防堆积）
+  # =====================================================================
+  push:
+    - name: knowledge-base
+      stages:
+        - name: 构建知识库
+          type: knowledge:update
+          options:
+            # 本项目 19 个 Markdown 全部集中在 docs/ 下（设计 / 交接 / 方案 / 报告），
+            # 根目录无 README，故显式收窄到 docs/ 以免误收模板与脚手架里的说明文件
+            include: "docs/**/*.md"
+            # 必排除：插件默认 include 为 **/**.md，会扫到 node_modules（实测 536 个 md）
+            # 与 Maven/前端构建产物，既拖慢入库也污染召回质量
+            exclude:
+              - "**/node_modules/**"
+              - "**/target/**"
+              - "**/dist/**"
+              - "**/.codebuddy/**"
+            # Issue 一并入库：需求背景与缺陷结论是问答高频来源，默认已开启，显式声明以防后人误关
+            issueSyncEnabled: true
+            # 文档同步是增强能力而非门禁，单篇解析失败不应让整条 push 流水线变红
+            ignoreProcessFailures: true
+
+    - name: codewiki
+      # CodeWiki 由 LLM 通读代码生成，单次耗时可达数十分钟至数小时。
+      # 连续 push 时加锁，且只保留队列中最新一次 —— 中间态代码的 Wiki 没有价值，
+      # 排队逐个生成会白白吃掉大量构建时长（wait=true 等待而非丢弃，cancel-in-wait 丢弃排队中的旧任务）
+      lock:
+        key: codewiki
+        wait: true
+        cancel-in-wait: true
+      stages:
+        - name: 生成 CodeWiki
+          image: cnbcool/codewiki:latest
+          # 插件超时上限 12h；大型仓库全量生成可能超过默认 2h，故放宽到 10h
+          timeout: 10h
+          settings:
+            git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}
+            # 生成的 Wiki 自动入库，与 knowledge-base 收录的原始文档、Issue 互补：
+            # 前者是「人写的意图与结论」，后者是「代码实际长什么样」
+            knowledge_enabled: true
+
+# =====================================================================
+# 兜底分支：手动触发入口
+#
+# CodeWiki 首次生成耗时长，且插件偶发失败时也需要补跑，
+# 故额外提供手动入口，可在页面「手动触发构建」中选择该事件按需执行，
+# 不必为了重跑而往 main 上推一个空提交。
+# =====================================================================
+$:
+  web_trigger_codewiki:
+    - name: codewiki-manual
+      stages:
+        - name: 生成 CodeWiki
+          image: cnbcool/codewiki:latest
+          timeout: 10h
+          settings:
+            git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}
+            knowledge_enabled: true

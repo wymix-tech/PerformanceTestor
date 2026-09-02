@@ -90,9 +90,13 @@
               <button class="text-[11px] text-red-400 hover:underline shrink-0" @click="removeStep(i)">移除</button>
             </div>
             <div class="grid grid-cols-12 gap-2">
-              <div class="col-span-3">
+              <div class="col-span-2">
                 <label class="text-[10px] text-fg-sub">名称</label>
-                <input v-model="s.name" class="input-text w-full text-xs" placeholder="如 login" />
+                <input v-model="s.name" class="input-text w-full text-xs" placeholder="如 登录" />
+              </div>
+              <div class="col-span-2">
+                <label class="text-[10px] text-fg-sub">别名（可选）</label>
+                <input v-model="s.alias" class="input-text w-full text-xs" :placeholder="ALIAS_PH" />
               </div>
               <div class="col-span-2">
                 <label class="text-[10px] text-fg-sub">方法</label>
@@ -104,18 +108,19 @@
                 <label class="text-[10px] text-fg-sub">权重</label>
                 <input v-model.number="s.weight" type="number" min="0" class="input-text w-full text-xs" />
               </div>
-              <div class="col-span-5">
-                <label class="text-[10px] text-fg-sub">URL（支持 {{ VAR_PH }} 占位）</label>
+              <div class="col-span-4">
+                <label class="text-[10px] text-fg-sub">URL（支持 {{ VAR_PH }} / {{ CONTEXT_PH }}）</label>
                 <input v-model="s.url" class="input-text w-full text-xs" placeholder="http://host/api/xxx" />
               </div>
             </div>
+            <div v-if="stepAliasErrors[i]" class="text-[10px] text-red-400 -mt-1">{{ stepAliasErrors[i] }}</div>
             <div>
-              <label class="text-[10px] text-fg-sub">请求头（每行一个 k: v，值支持 {{ VAR_PH }}）</label>
+              <label class="text-[10px] text-fg-sub">请求头（每行一个 k: v，值支持 {{ VAR_PH }} / {{ CONTEXT_PH }}）</label>
               <textarea v-model="s.headersText" rows="2" class="input-text w-full text-xs font-mono"
-                :placeholder="AUTH_PH"></textarea>
+                :placeholder="HEADER_PH"></textarea>
             </div>
             <div v-if="s.method !== 'GET'">
-              <label class="text-[10px] text-fg-sub">请求体（支持 {{ VAR_PH }} 占位）</label>
+              <label class="text-[10px] text-fg-sub">请求体（支持 {{ VAR_PH }} / {{ CONTEXT_PH }}）</label>
               <textarea v-model="s.body" rows="2" class="input-text w-full text-xs font-mono" placeholder='{"id": 1}'></textarea>
             </div>
             <!-- 响应后处理：从响应体或响应头提取变量，供后续步骤引用 -->
@@ -158,6 +163,14 @@
           {{ endpoints.length
             ? '每个步骤都可从步骤行的下拉直接选用源码接口地址，无需手填 URL。'
             : '选择项目后，每个步骤都可从源码接口直接选用地址。' }}场景模式下 JMeter 引擎不支持多步骤，将自动回退 http 引擎执行。
+        </div>
+        <!-- 步骤上下文引用提示：无需 extract 即可引用上游响应 -->
+        <div class="text-[10px] text-fg-sub leading-relaxed border-t border-white/10 pt-2">
+          跨步骤传值：下游步骤可在 URL / 请求头值 / 请求体中直接写
+          <span class="font-mono">{{ CONTEXT_PH }}</span>（第 1 步响应体的 data.token）、
+          <span class="font-mono">{{ HEADER_REF_PH }}</span>（第 1 步响应头）、
+          <span class="font-mono">{{ ALIAS_REF_PH }}</span>（用别名指代步骤），<b>无需填写下方提取变量</b>。
+          <span class="font-mono">p1</span> 指步骤序号（从 1 开始），未命中时保留占位符原文。
         </div>
       </div>
     </template>
@@ -252,6 +265,8 @@ const emit = defineEmits<{
 
 interface ScenarioStep {
   name: string
+  /** 步骤别名（可选）：供 {{alias.result.x}} 引用；留空时后端回退用 name */
+  alias: string
   url: string
   method: string
   headersText: string
@@ -359,6 +374,58 @@ const VAR_PH = '{{变量名}}'
 const AUTH_PH = 'Authorization: Bearer {{token}}'
 
 /**
+ * 步骤上下文引用示例文案。
+ *
+ * <p>与 VAR_PH 同理，均须以字符串常量注入——模板里直写 {@code {{ }}} 会被 Vue
+ * 编译器当作插值表达式解析而报错。
+ */
+const CONTEXT_PH = '{{p1.result.data.token}}'
+const HEADER_REF_PH = '{{p1.header.X-Request-Id}}'
+const ALIAS_REF_PH = '{{login.result.userId}}'
+/** 别名输入框 placeholder */
+const ALIAS_PH = '如 login'
+/** 请求头 textarea placeholder：同时展示扁平变量与上下文引用两种写法 */
+const HEADER_PH = 'Authorization: Bearer {{p1.result.data.token}}\nX-Trace-Id: {{p1.header.X-Request-Id}}'
+
+/** 别名合法字符：字母/下划线开头，后接字母、数字、下划线、连字符（与后端一致） */
+const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+/** 形如 pN 的别名被后端拦截（序号引用优先级更高） */
+const STEP_REF_RE = /^[pP](\d+)$/
+
+/**
+ * 步骤别名校验：步骤下标 → 提示文案。
+ *
+ * <p>与 stepAssertErrors 同模式——前端先拦一层，避免把明显非法的别名发给后端
+ * 后静默降级（用户以为写了别名，实际只能用 pN 引用）。
+ */
+const stepAliasErrors = computed(() => {
+  const out: Record<number, string> = {}
+  const seen = new Map<string, number>()
+  scenario.value.forEach((s, i) => {
+    const alias = s.alias?.trim() || ''
+    if (!alias) return
+    if (!ALIAS_RE.test(alias)) {
+      out[i] = `别名「${alias}」不合法：需以字母或下划线开头，仅含字母/数字/下划线/连字符`
+      return
+    }
+    if (STEP_REF_RE.test(alias)) {
+      const n = Number(STEP_REF_RE.exec(alias)![1])
+      if (n >= 1) {
+        out[i] = `别名「${alias}」形如步骤序号引用（pN），已保留给序号引用，请改用其他名称`
+        return
+      }
+    }
+    const prev = seen.get(alias)
+    if (prev !== undefined) {
+      out[i] = `别名「${alias}」与步骤 ${prev + 1} 重名，仅首个生效`
+      return
+    }
+    seen.set(alias, i)
+  })
+  return out
+})
+
+/**
  * 压测模式：单接口 / 多接口混合。
  *
  * <p>以顶部 Tab 切换，替代原先底部「多接口混合场景」复选框——复选框把两种互斥的
@@ -382,7 +449,7 @@ const stepPick = ref<number[]>([])
 
 function newStep(): ScenarioStep {
   return {
-    name: '', url: '', method: 'GET', headersText: '', body: '', weight: 1,
+    name: '', alias: '', url: '', method: 'GET', headersText: '', body: '', weight: 1,
     extractVar: '', extractSource: 'body', extractPath: '', assertText: ''
   }
 }
@@ -465,6 +532,8 @@ function buildScenario() {
         method: s.method || 'GET',
         weight: Number(s.weight) || 1
       }
+      // 别名：留空时不下发，后端回退用 name（未声明即不产生告警）
+      if (s.alias?.trim()) step.alias = s.alias.trim()
       const headers = parseHeaders(s.headersText)
       if (Object.keys(headers).length) step.headers = headers
       if (s.body.trim()) step.body = s.body.trim()
@@ -598,6 +667,7 @@ const canSubmit = computed(() => {
   if (assertError.value) return false
   if (isScenario.value) {
     if (Object.keys(stepAssertErrors.value).length) return false
+    if (Object.keys(stepAliasErrors.value).length) return false
     return scenario.value.some((s) => String(s.url).trim().startsWith('http'))
       && scenario.value.some((s) => (Number(s.weight) || 0) > 0)
   }
@@ -629,7 +699,8 @@ defineExpose({
       stageConcurrencies.value = stagePoints.map((p) => p.concurrency).join(',')
     }
     endpointIdx.value = -1
-    // 回填的历史任务按单接口恢复（多接口步骤不予还原），模式与步骤同步复位
+    // 回填的历史任务按单接口恢复（多接口步骤不予还原），模式与步骤同步复位。
+    // 清空 scenario 即一并清空每步的 alias（别名与 stepAliasErrors 都挂在步骤上）
     mode.value = 'single'
     scenario.value = []
     stepPick.value = []

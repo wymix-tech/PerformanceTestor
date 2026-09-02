@@ -81,9 +81,22 @@ public class StressStatistician {
      * @param stepName 步骤名（null/空则只计汇总）
      */
     public void record(long costMs, boolean error, String stepName) {
+        record(costMs, error, stepName, 0);
+    }
+
+    /**
+     * 记录一次请求耗时并归入指定步骤，同时累计该次迭代的上下文引用未命中数。
+     *
+     * @param stepName   步骤名（null/空则只计汇总）
+     * @param renderMiss 本次迭代渲染模板时「确定的上下文引用但取不到值」的次数；
+     *                   由调用方按迭代取零后传入（warmup/stop 期的未命中不应计入，
+     *                   故计数在渲染侧清零、随本次 record 一次性提交）
+     */
+    public void record(long costMs, boolean error, String stepName, long renderMiss) {
         record(costMs, error);
         if (stepName != null && !stepName.isEmpty()) {
-            stepCounters.computeIfAbsent(stepName, k -> new StepCounter()).record(costMs, error);
+            stepCounters.computeIfAbsent(stepName, k -> new StepCounter())
+                    .record(costMs, error, renderMiss);
         }
     }
 
@@ -109,6 +122,7 @@ public class StressStatistician {
             s.qps = round2(total / elapsed);
             s.avgMs = total == 0 ? 0 : round2((double) c.costMs.sum() / total);
             s.maxMs = c.max.get();
+            s.renderMiss = c.renderMiss.sum();
             list.add(s);
         });
         list.sort((a, b) -> a.stepName.compareTo(b.stepName));
@@ -129,13 +143,18 @@ public class StressStatistician {
         private final LongAdder total = new LongAdder();
         private final LongAdder errors = new LongAdder();
         private final LongAdder costMs = new LongAdder();
+        /** 上下文引用未命中累计（{{pN.result.x}} 取不到值的次数） */
+        private final LongAdder renderMiss = new LongAdder();
         private final java.util.concurrent.atomic.AtomicLong max = new java.util.concurrent.atomic.AtomicLong();
 
-        void record(long cost, boolean error) {
+        void record(long cost, boolean error, long miss) {
             total.increment();
             costMs.add(cost);
             if (error) {
                 errors.increment();
+            }
+            if (miss > 0) {
+                renderMiss.add(miss);
             }
             max.accumulateAndGet(cost, Math::max);
         }
@@ -150,6 +169,8 @@ public class StressStatistician {
         private double qps;
         private double avgMs;
         private double maxMs;
+        /** 上下文引用未命中次数（{@code {{pN.result.x}}} 等取不到值时累加） */
+        private long renderMiss;
 
         public String getStepName() {
             return stepName;
@@ -179,8 +200,13 @@ public class StressStatistician {
             return maxMs;
         }
 
+        public long getRenderMiss() {
+            return renderMiss;
+        }
+
         /** 由聚合结果构造（分档合并场景） */
-        static StepStats of(String stepName, long total, long errors, long totalCostMs, long maxMs) {
+        static StepStats of(String stepName, long total, long errors,
+                            long totalCostMs, long maxMs, long renderMiss) {
             StepStats s = new StepStats();
             s.stepName = stepName;
             s.totalRequests = total;
@@ -189,6 +215,7 @@ public class StressStatistician {
             s.qps = 0; // 分档合并场景由调用方按总时长换算
             s.avgMs = total == 0 ? 0 : round2((double) totalCostMs / total);
             s.maxMs = maxMs;
+            s.renderMiss = renderMiss;
             return s;
         }
     }

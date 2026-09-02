@@ -108,4 +108,39 @@ class StressStatisticianTest {
         StressStatistician.StageSnapshot snap = stats.stageSnapshot();
         assertEquals(29999, StressStatistician.max(snap.getHistogram()), 0.0);
     }
+
+    /** renderMiss 按步骤累加；未传该参数的三参重载保持 0（存量行为不变） */
+    @Test
+    void renderMissAccumulatesPerStep() {
+        StressStatistician stats = new StressStatistician();
+        stats.record(10, false, "order", 2);
+        stats.record(10, false, "order", 0);
+        stats.record(10, true, "order", 3);
+        stats.record(10, false, "login", 0);
+        stats.record(10, false, "legacy"); // 三参重载：不传 miss，保持存量行为
+
+        StressStatistician.StepStats order = byName(stats.stepStats(1.0), "order");
+        assertEquals(5, order.getRenderMiss());
+        assertEquals(3, order.getTotalRequests());
+        assertEquals(0, byName(stats.stepStats(1.0), "login").getRenderMiss());
+        assertEquals(0, byName(stats.stepStats(1.0), "legacy").getRenderMiss());
+    }
+
+    /** 分档合并口径：StepStats.of 透传 renderMiss 后可跨档直接相加 */
+    @Test
+    void renderMissSurvivesMergeFactory() {
+        StressStatistician.StepStats a =
+                StressStatistician.StepStats.of("order", 10, 1, 100, 20, 4);
+        StressStatistician.StepStats b =
+                StressStatistician.StepStats.of("order", 20, 2, 400, 60, 6);
+        assertEquals(4, a.getRenderMiss());
+        assertEquals(6, b.getRenderMiss());
+        // 引擎侧 mergeStepStats 用 StepAccumulator 累加，此处只校验工厂透传
+        assertEquals(a.getRenderMiss() + b.getRenderMiss(), 10);
+    }
+
+    private static StressStatistician.StepStats byName(java.util.List<StressStatistician.StepStats> stats,
+                                                       String name) {
+        return stats.stream().filter(s -> s.getStepName().equals(name)).findFirst().orElseThrow();
+    }
 }

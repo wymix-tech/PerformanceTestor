@@ -36,6 +36,14 @@ public class StressTaskResult {
     private List<StagePoint> stagePoints = new ArrayList<>();
     /** 分步骤统计（多接口混合场景；单接口模式为空列表） */
     private List<StressStatistician.StepStats> stepStats = new ArrayList<>();
+    /**
+     * 配置告警（多接口场景；无告警为空列表）。
+     *
+     * <p>启动期校验发现的问题（步骤序号越界、别名不合法/重名/撞 pN 等）汇总在此，
+     * <b>不中断压测</b>——压测配置常由 AI 生成，宽松处理比 fail-fast 更可用；
+     * 运行期的引用未命中则保留占位符原文，并计入各步骤的 {@code renderMiss}。
+     */
+    private List<String> warnings = new ArrayList<>();
 
     /** 周期采样点 */
     public static class Sample {
@@ -321,5 +329,13 @@ public class StressTaskResult {
 
     public void setStepStats(List<StressStatistician.StepStats> stepStats) {
         this.stepStats = stepStats == null ? new ArrayList<>() : stepStats;
+    }
+
+    public List<String> getWarnings() {
+        return warnings;
+    }
+
+    public void setWarnings(List<String> warnings) {
+        this.warnings = warnings == null ? new ArrayList<>() : warnings;
     }
 }
