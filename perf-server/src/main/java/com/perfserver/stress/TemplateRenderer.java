@@ -87,11 +87,6 @@ public final class TemplateRenderer {
     }
 
     /**
-     * 解析单个占位符。
-     *
-     * @return 命中值；未命中返回 null（由调用方保留原文）
-     */
-    /**
      * 解析占位符名的上下文引用形状。
      *
      * <p>包级可见：运行期渲染（本类）与启动期预编译（{@code HttpStressEngine.Scenario}）

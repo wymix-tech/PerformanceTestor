@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 多接口场景「步骤上下文引用」端到端自验（前置：perf-server 8080、perf-demo 8081 已启动）
-# 用法：BASE=http://127.0.0.1:8080 DEMO=http://127.0.0.1:8081 ./verify-scenario-context.sh
+# 用法：export PERF_ADMIN_PASSWORD=<管理员密码>   # 必填，脚本不内置默认口令；账号默认 admin
+#       BASE=http://127.0.0.1:8080 DEMO=http://127.0.0.1:8081 ./verify-scenario-context.sh
 #
 # 验证链路（零 extract 声明）：
 #   步骤1 login → 步骤2 order（请求头引用 p1.result.data.token + p1.header.X-Request-Id，
@@ -15,9 +16,19 @@ pass=0; fail=0
 check() { if eval "$2" >/dev/null 2>&1; then echo "  [PASS] $1"; pass=$((pass+1));
   else echo "  [FAIL] $1"; fail=$((fail+1)); fi; }
 # 平台默认开启 JWT 鉴权（/api/** 除 /api/auth/**、/api/agent/** 外均需登录），
-# 故自验前必须先取 token；账号可用 PERF_ADMIN_USER / PERF_ADMIN_PASSWORD 覆盖。
+# 故自验前必须先取 token。
+#
+# 密码必须由环境变量提供，脚本不内置默认值：application.yml 里的兜底弱口令
+# （admin123）只应用于本地起服务时的便利，把它写进脚本等于把弱口令固化进仓库
+# 并诱导人照抄到生产。用户名非机密，默认 admin，可用 PERF_ADMIN_USER 覆盖。
 ADMIN_USER="${PERF_ADMIN_USER:-admin}"
-ADMIN_PASS="${PERF_ADMIN_PASSWORD:-admin123}"
+ADMIN_PASS="${PERF_ADMIN_PASSWORD:-}"
+if [ -z "$ADMIN_PASS" ]; then
+  echo "错误：未设置 PERF_ADMIN_PASSWORD，脚本不内置默认口令。" >&2
+  echo "  export PERF_ADMIN_PASSWORD=<你的管理员密码>   # 账号默认 admin，可用 PERF_ADMIN_USER 覆盖" >&2
+  echo "  BASE=... DEMO=... ./scripts/verify-scenario-context.sh" >&2
+  exit 1
+fi
 
 login() { curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
   -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}"; }

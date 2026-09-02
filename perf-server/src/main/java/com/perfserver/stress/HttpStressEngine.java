@@ -465,10 +465,15 @@ public class HttpStressEngine implements StressEngine {
                             step.getHeaders(),
                             TemplateRenderer.render(step.getBody(), scenario.pool(), scenario.ctx(), renderMiss));
                 } catch (RuntimeException e) {
-                    // 未命中时占位符会原样保留，若它出现在 URL 里可能构造出非法 URI
-                    // （{{p9.result.x}} 这类配置错误）。设计约定「未命中保留原文、不中断压测」，
-                    // 故计一次错误并跳过本次迭代，而不是让 worker 线程当场死亡——
-                    // 后者会让压测静默少掉若干并发，比 100% 错误率难排查得多。
+                    // 渲染后的 URL / 请求头 / 请求体都可能因配置错误而构造失败：URL 里残留
+                    // 未命中的 {{p9.result.x}} 会因 '{' '}' 非法而让 URI.create 抛异常，
+                    // 请求头名或值含非法字符同样会抛 IllegalArgumentException。
+                    // 设计约定「未命中保留原文、不中断压测」，故一律计一次错误并跳过本次迭代，
+                    // 而不是让 worker 线程当场死亡——后者会让压测静默少掉若干并发，
+                    // 比 100% 错误率难排查得多。
+                    // 注意这里捕获 RuntimeException 是刻意的：HttpClient 的构造校验抛的是
+                    // 未受检异常，且配置错误的形态无法穷举，收窄到 IllegalArgumentException
+                    // 会漏掉其他形状，进而重新引入 worker 静默死亡的问题。
                     if (!buildFailureLogged) {
                         buildFailureLogged = true;
                         log.warn("scenario step {} request build failed (check placeholder config): {}",

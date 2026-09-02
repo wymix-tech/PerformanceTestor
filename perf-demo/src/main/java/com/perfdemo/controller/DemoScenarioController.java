@@ -56,7 +56,7 @@ public class DemoScenarioController {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             Map<String, Object> err = new LinkedHashMap<>();
             err.put("code", 401);
-            err.put("message", "missing or invalid Authorization header: " + auth);
+            err.put("message", describeAuth(auth));
             return err;
         }
         response.addHeader("X-Request-Id", "trace-" + UUID.randomUUID().toString().substring(0, 8));
@@ -81,7 +81,7 @@ public class DemoScenarioController {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             Map<String, Object> err = new LinkedHashMap<>();
             err.put("code", 401);
-            err.put("message", "missing or invalid Authorization header: " + auth);
+            err.put("message", describeAuth(auth));
             return err;
         }
         Map<String, Object> data = new LinkedHashMap<>();
@@ -91,5 +91,20 @@ public class DemoScenarioController {
         body.put("code", 0);
         body.put("data", data);
         return body;
+    }
+
+    /**
+     * 401 响应里描述 Authorization 校验失败原因，<b>不回显完整凭证</b>。
+     *
+     * <p>请求头原样回显会把凭证写进响应体，并随之落进压测报告与采样明细。
+     * 这里只保留前缀若干字符——足以判断「是否带上了 {@code Bearer tk-}」这一
+     * 自验真正关心的信息，其余一律打码。
+     */
+    private static String describeAuth(String auth) {
+        if (auth == null) {
+            return "missing Authorization header";
+        }
+        int visible = Math.min(auth.length(), 12);
+        return "invalid Authorization header: " + auth.substring(0, visible) + "****(masked)";
     }
 }
