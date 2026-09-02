@@ -48,6 +48,10 @@ public class PlanRuleComposer {
     public static final int HOT_PERCENT = 20;
     public static final int HOT_SHARE = 80;
 
+    /** ObjectMapper 线程安全且创建开销大，全局复用（本类无状态） */
+    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
     /** 合成结果 */
     public static final class Composed {
         /** 表 → 字段规则 JSON（形如 {"col":{...}} 的字符串） */
@@ -110,11 +114,10 @@ public class PlanRuleComposer {
                 continue;
             }
             TableContext c = ctx.getOrDefault(fact.getTable(), new TableContext());
-            ObjectNode fields = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+            ObjectNode fields = MAPPER.createObjectNode();
             composeTable(fact, c, fields, out.warnings);
             try {
-                out.fieldsByTable.put(fact.getTable(),
-                        new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(fields));
+                out.fieldsByTable.put(fact.getTable(), MAPPER.writeValueAsString(fields));
             } catch (Exception e) {
                 log.warn("serialize fields failed, table={}: {}", fact.getTable(), e.getMessage());
             }
@@ -219,7 +222,7 @@ public class PlanRuleComposer {
                 continue;
             }
             ObjectNode rule = fields.putObject(col);
-            rule.put("type", "seq");
+            rule.put("type", com.perftestor.datagen.model.FieldRule.TYPE_SEQ);
             rule.put("seqPrefix", seqPrefix(col));
         }
 

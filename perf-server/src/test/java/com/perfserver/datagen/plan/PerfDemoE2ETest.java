@@ -104,7 +104,8 @@ class PerfDemoE2ETest {
 
     private void setUpMocks() {
         service = newService();
-        when(sourceFileProvider.loadFiles(anyLong())).thenReturn(demoFiles);
+        when(sourceFileProvider.loadFiles(anyLong(), anyInt())).thenReturn(demoFiles);
+        when(sourceFileProvider.countIndexed(anyLong())).thenReturn(demoFiles.size());
         SourceRepo repo = new SourceRepo();
         repo.setAppName("perf-demo");
         when(repoMapper.findById(anyLong())).thenReturn(repo);

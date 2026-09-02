@@ -275,6 +275,19 @@ const preparingPlan = ref(false)
 const activePlanId = ref(0)
 const dataGenFormRef = ref<InstanceType<typeof DataGenForm> | null>(null)
 
+/**
+ * 把总时长按档数拆分，余数补到最后一档（避免 100s ÷ 3 档 = 33+33+33 只跑 99s
+ * 而与压测实际执行的分档不一致）。
+ */
+function buildStages(concurrencies: number[], totalSec: number) {
+  const n = Math.max(concurrencies.length, 1)
+  const base = Math.floor(totalSec / n)
+  return concurrencies.map((c, i) => ({
+    concurrency: Number(c) || 1,
+    durationSec: i === n - 1 ? totalSec - base * (n - 1) : base
+  }))
+}
+
 /** 从完整 URL 提取 path（含 query 前的部分） */
 function pathOfUrl(url: string): string {
   const s = String(url || '').trim()
@@ -284,7 +297,12 @@ function pathOfUrl(url: string): string {
   return rest.startsWith('/') ? rest : '/' + rest
 }
 
-/** 把压测请求体折算为方案分析所需的接口清单 */
+/**
+ * 把压测请求体折算为方案分析所需的接口清单。
+ *
+ * <p>同时带上 className/methodName：端点扫描结果里就有这两个字段，
+ * 后端在路径匹配不上时可用「类#方法」兜底（多值 path、路径变量差异等场景）。</p>
+ */
 function toEndpointInputs(payload: Record<string, unknown>): Array<Record<string, unknown>> {
   const scenario = payload.scenario as Array<Record<string, any>> | undefined
   if (scenario && scenario.length) {
@@ -293,13 +311,17 @@ function toEndpointInputs(payload: Record<string, unknown>): Array<Record<string
       .map((s) => ({
         httpMethod: String(s.method || 'GET').toUpperCase(),
         path: pathOfUrl(String(s.url || '')),
-        weight: Number(s.weight) > 0 ? Number(s.weight) : 1
+        weight: Number(s.weight) > 0 ? Number(s.weight) : 1,
+        className: String(s.className || '') || undefined,
+        methodName: String(s.methodName || '') || undefined
       }))
   }
   return [{
     httpMethod: String(payload.method || 'GET').toUpperCase(),
     path: pathOfUrl(String(payload.targetUrl || '')),
-    weight: 1
+    weight: 1,
+    className: String(payload.className || '') || undefined,
+    methodName: String(payload.methodName || '') || undefined
   }]
 }
 
@@ -324,13 +346,10 @@ async function prepareData(payload: Record<string, unknown>) {
         durationSec: Number(payload.durationSec) || 60,
         qpsLimit: Number(payload.qpsLimit) || 0,
         // 分档并发仅 >1 档时传递（单档按统一并发处理）
-        stages: Array.isArray(payload.stageConcurrencies)
-          ? payload.stageConcurrencies.map((c) => ({
-              concurrency: Number(c) || 1,
-              durationSec: Math.floor((Number(payload.durationSec) || 60)
-                / Math.max((payload.stageConcurrencies as number[]).length, 1))
-            }))
-          : []
+        stages: Array.isArray(payload.stageConcurrencies) ? buildStages(
+          payload.stageConcurrencies as number[],
+          Number(payload.durationSec) || 60
+        ) : []
       }
       // 连接留空：分析阶段只读源码，目标库连接在数据准备页选定后再回填方案
     })

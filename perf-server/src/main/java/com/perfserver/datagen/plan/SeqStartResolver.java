@@ -3,6 +3,7 @@ package com.perfserver.datagen.plan;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.perftestor.datagen.model.FieldRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -88,7 +89,7 @@ public class SeqStartResolver {
             while (it.hasNext()) {
                 String col = it.next();
                 JsonNode rule = root.get(col);
-                if (rule == null || !"seq".equalsIgnoreCase(rule.path("type").asText(""))) {
+                if (rule == null || !FieldRule.TYPE_SEQ.equalsIgnoreCase(rule.path("type").asText(""))) {
                     continue;
                 }
                 String prefix = rule.path("seqPrefix").asText("");
@@ -99,7 +100,7 @@ public class SeqStartResolver {
                             "列 %s.%s 序号起始值探测失败，已回退为 %d（若库内已有数据可能撞唯一键）",
                             table, col, FALLBACK_START));
                 }
-                ((ObjectNode) root).putObject(col).put("type", "seq")
+                ((ObjectNode) root).putObject(col).put("type", FieldRule.TYPE_SEQ)
                         .put("seqPrefix", prefix).put("seqStart", start);
                 changed = true;
             }

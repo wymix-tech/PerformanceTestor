@@ -168,11 +168,12 @@ class JoinRefE2ETest {
         service = new EndpointDataPlanService(planMapper, repoMapper, sourceFileProvider, mapper,
                 new RtBaselineResolver(taskMapper, sampleMapper, mapper),
                 new PlanRuleComposer(), new LlmPlanEnhancer(null, mapper));
-        when(sourceFileProvider.loadFiles(anyLong())).thenReturn(List.of(
+        when(sourceFileProvider.loadFiles(anyLong(), anyInt())).thenReturn(List.of(
                 new SourceFile(CTRL, CONTROLLER),
                 new SourceFile(SVC, SERVICE),
                 new SourceFile(MAPPER, ORDER_MAPPER),
                 new SourceFile(USER_MAPPER, USER_MAPPER_SRC)));
+        when(sourceFileProvider.countIndexed(anyLong())).thenReturn(4);
         SourceRepo repo = new SourceRepo();
         repo.setAppName("demo");
         when(repoMapper.findById(anyLong())).thenReturn(repo);

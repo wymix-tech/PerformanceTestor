@@ -22,6 +22,16 @@ import java.util.Locale;
 @Component
 public class SourceFileProvider {
 
+    /** 灌数扫描的文件上限（引擎做魔法值/关联扫描，抽样即可） */
+    public static final int GEN_SCAN_LIMIT = 200;
+    /**
+     * 按接口分析的文件上限。
+     *
+     * <p>调用链需跨文件解析类型（Controller → Service → 实现 → Mapper），
+     * 200 的抽样上限在大仓库上会直接漏掉整条链路，故分析场景放宽。</p>
+     */
+    public static final int ANALYSIS_LIMIT = 5000;
+
     private final SourceRepoMapper repoMapper;
     private final SourceFileMapper fileMapper;
     private final SourceFileService sourceFileService;
@@ -38,6 +48,18 @@ public class SourceFileProvider {
      * 仓库不存在或磁盘路径不可读时返回空列表。
      */
     public List<com.perftestor.datagen.model.SourceFile> loadFiles(long repoId) {
+        return loadFiles(repoId, GEN_SCAN_LIMIT);
+    }
+
+    /**
+     * 加载仓库源码文件（仅 .java/.xml，最多 {@code limit} 个）。
+     *
+     * @param repoId 仓库 ID
+     * @param limit  文件数上限；灌数扫描用 {@value #GEN_SCAN_LIMIT}，按接口分析用
+     *               {@value #ANALYSIS_LIMIT}（调用链需跨文件解析类型，截断会漏表）
+     * @return 可读的源码文件；仓库不存在或路径不可读时返回空列表
+     */
+    public List<com.perftestor.datagen.model.SourceFile> loadFiles(long repoId, int limit) {
         List<com.perftestor.datagen.model.SourceFile> out = new ArrayList<>();
         SourceRepo repo = repoMapper.findById(repoId);
         if (repo == null || repo.getSourcePath() == null || repo.getSourcePath().isBlank()) {
@@ -48,7 +70,7 @@ public class SourceFileProvider {
             return out;
         }
         try {
-            List<SourceFile> indexed = fileMapper.listByRepo(repoId, null, 200);
+            List<SourceFile> indexed = fileMapper.listByRepo(repoId, null, limit);
             for (SourceFile sf : indexed) {
                 String name = sf.getFileName() == null ? "" : sf.getFileName().toLowerCase(Locale.ROOT);
                 if (!name.endsWith(".java") && !name.endsWith(".xml")) {
@@ -71,45 +93,17 @@ public class SourceFileProvider {
     }
 
     /**
-     * 按相对路径精确加载源码文件（接口分析按需读取）。
+     * 仓库已索引文件总数（用于判定加载是否被上限截断）。
      *
-     * <p>与 {@link #loadFiles(long)} 的区别：后者是「灌数扫描整个项目」的 200 文件上限来源，
-     * 本次新增是为了「按接口分析调用链」——只读取调用链实际命中的文件，
-     * 不受 200 上限约束，同时保留原方法行为不变，灌数路径零影响。</p>
-     *
-     * @param repoId 仓库 ID
-     * @param paths  相对路径清单
-     * @return 可读的源码文件（路径不存在或读取失败时跳过）
+     * <p>截断必须被显式感知：调用链分析若只看到部分源码，会漏掉 Service/Mapper 而
+     * 表现为「接口分析不出表」，用户无从判断是接口不查库还是源码没读全。</p>
      */
-    public List<com.perftestor.datagen.model.SourceFile> loadFilesByPaths(long repoId,
-                                                                          java.util.Collection<String> paths) {
-        List<com.perftestor.datagen.model.SourceFile> out = new ArrayList<>();
-        if (paths == null || paths.isEmpty()) {
-            return out;
+    public int countIndexed(long repoId) {
+        try {
+            return fileMapper.countByRepo(repoId);
+        } catch (Exception e) {
+            return 0;
         }
-        SourceRepo repo = repoMapper.findById(repoId);
-        if (repo == null || repo.getSourcePath() == null || repo.getSourcePath().isBlank()) {
-            return out;
-        }
-        Path root = Paths.get(repo.getSourcePath());
-        if (!Files.isDirectory(root)) {
-            return out;
-        }
-        java.util.Set<String> wanted = new java.util.HashSet<>(paths);
-        for (SourceFile sf : fileMapper.listByRepo(repoId, null, 2000)) {
-            if (sf.getRelativePath() == null || !wanted.contains(sf.getRelativePath())) {
-                continue;
-            }
-            try {
-                String content = sourceFileService.readContent(root, sf);
-                if (content != null && !content.isBlank() && !content.startsWith("// 文件过大")) {
-                    out.add(new com.perftestor.datagen.model.SourceFile(sf.getRelativePath(), content));
-                }
-            } catch (IOException e) {
-                // 单文件读取失败跳过
-            }
-        }
-        return out;
     }
 }
 

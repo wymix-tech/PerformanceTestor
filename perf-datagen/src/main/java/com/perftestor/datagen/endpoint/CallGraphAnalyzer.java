@@ -352,22 +352,41 @@ public final class CallGraphAnalyzer {
         if (!isInterface) {
             return direct;
         }
+        List<String> impls = findImplementations(targetType);
+        return impls.isEmpty() ? direct : impls;
+    }
+
+    /**
+     * 查找实现了指定接口的文件：文本粗筛 + AST 精判。
+     *
+     * <p>纯文本扫描会把注释/字符串里的 {@code implements} 误判为声明，且
+     * {@code implements A, B} 中目标不在首位时会漏判；纯 AST 扫描则要对全仓库建 AST，
+     * 会直接触发文件数熔断。故先按文本快速筛出候选，再用
+     * {@code getImplementedTypes()} 做权威确认——两级结合既准又可控。</p>
+     */
+    private List<String> findImplementations(String targetType) {
         List<String> impls = new ArrayList<>();
         String marker = "implements";
         for (Map.Entry<String, String> e : contentByPath.entrySet()) {
             String content = e.getValue();
-            int i = content.indexOf(marker);
-            while (i >= 0) {
-                String tail = content.substring(i + marker.length()).trim();
-                if (tail.startsWith(targetType) && !Character.isLetterOrDigit(
-                        tail.length() > targetType.length() ? tail.charAt(targetType.length()) : ' ')) {
+            if (!content.contains(marker) || !content.contains(targetType)) {
+                continue;
+            }
+            Optional<CompilationUnit> cu = ast(e.getKey());
+            if (cu.isEmpty()) {
+                continue;
+            }
+            for (ClassOrInterfaceDeclaration t : cu.get().findAll(ClassOrInterfaceDeclaration.class)) {
+                boolean hit = t.getImplementedTypes().stream()
+                        .map(c -> simpleTypeName(c.toString()))
+                        .anyMatch(targetType::equals);
+                if (hit) {
                     impls.add(e.getKey());
                     break;
                 }
-                i = content.indexOf(marker, i + marker.length());
             }
         }
-        return impls.isEmpty() ? direct : impls;
+        return impls;
     }
 
     /** 可能包含业务逻辑、值得继续展开的类型后缀（用于过滤容器/JDK 类型的噪声告警） */

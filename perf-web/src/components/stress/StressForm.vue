@@ -307,6 +307,9 @@ interface ScenarioStep {
   extractPath: string
   /** 结果判断：每行一条「来源 [键] 比较 期望值」 */
   assertText: string
+  /** 关联端点：来自端点扫描，供「按接口准备数据」按 类#方法 兜底定位 */
+  className?: string
+  methodName?: string
 }
 
 /**
@@ -562,6 +565,9 @@ function buildScenario() {
       }
       // 别名：留空时不下发，后端回退用 name（未声明即不产生告警）
       if (s.alias?.trim()) step.alias = s.alias.trim()
+      // 关联端点：供「按接口准备数据」按 类#方法 兜底定位
+      if (s.className?.trim()) step.className = s.className.trim()
+      if (s.methodName?.trim()) step.methodName = s.methodName.trim()
       const headers = parseHeaders(s.headersText)
       if (Object.keys(headers).length) step.headers = headers
       if (s.body.trim()) step.body = s.body.trim()
@@ -650,6 +656,12 @@ function buildPayload(): Record<string, unknown> {
     durationSec: durationSec.value,
     warmupSec: warmupSec.value,
     qpsLimit: qpsLimit.value
+  }
+  // 关联端点：后端在路径匹配不上时可用「类#方法」兜底定位 Controller 方法
+  const picked = props.endpoints[endpointIdx.value]
+  if (picked) {
+    payload.className = picked.className
+    payload.methodName = picked.methodName
   }
   if (stageList.length > 1) payload.stageConcurrencies = stageList
   if (body.value.trim()) payload.body = body.value.trim()

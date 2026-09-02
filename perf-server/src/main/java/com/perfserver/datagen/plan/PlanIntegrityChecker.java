@@ -229,9 +229,7 @@ public class PlanIntegrityChecker {
     /** 从环消息中解析节点：支持 "a -> b -> a" 与 "a->b->a" */
     List<String> parseCycle(String message) {
         List<String> nodes = new ArrayList<>();
-        int arrow = message.indexOf("->");
-        String body = arrow >= 0 ? message : message;
-        for (String part : body.split("\\s*->\\s*")) {
+        for (String part : message.split("\\s*->\\s*")) {
             String n = part.trim().replaceAll("[^A-Za-z0-9_]", "");
             if (!n.isEmpty()) {
                 nodes.add(n.toLowerCase(Locale.ROOT));

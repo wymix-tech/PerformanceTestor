@@ -51,6 +51,10 @@
         SELECT <include refid="BaseColumns"/> FROM source_file WHERE id = #{id} LIMIT 1
     </select>
 
+    <select id="countByRepo" resultType="int">
+        SELECT COUNT(*) FROM source_file WHERE repo_id = #{repoId}
+    </select>
+
     <select id="listByName" resultMap="BaseResultMap">
         SELECT <include refid="BaseColumns"/>
         FROM source_file

@@ -11,6 +11,7 @@ import com.perfserver.source.SourceFileProvider;
 import com.perftestor.datagen.DefaultDataGenEngine;
 import com.perftestor.datagen.model.DataGenSpec;
 import com.perftestor.datagen.model.EngineListener;
+import com.perftestor.datagen.model.FieldRule;
 import com.perftestor.datagen.model.EngineResult;
 import com.perftestor.datagen.model.MagicHint;
 import com.perftestor.datagen.model.RelationHint;
@@ -527,7 +528,7 @@ public class DataGenService {
                 new com.perfserver.datagen.plan.SeqStartResolver(objectMapper);
         try (Connection conn = connect(url, user, password)) {
             for (com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable t : tables) {
-                if (t.getFields() == null || !t.getFields().contains("\"seq\"")) {
+                if (t.getFields() == null || !t.getFields().contains("\"" + FieldRule.TYPE_SEQ + "\"")) {
                     continue;
                 }
                 var refreshed = resolver.refresh(conn, t.getTable(), t.getFields());

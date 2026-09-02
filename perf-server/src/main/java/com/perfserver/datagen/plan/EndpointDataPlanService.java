@@ -56,6 +56,10 @@ public class EndpointDataPlanService {
         private String httpMethod;
         private String path;
         private int weight = 1;
+        /** 端点扫描产出的 Controller 名（simpleName），用于路径不匹配时的兜底匹配 */
+        private String className;
+        /** 端点扫描产出的方法名，用于路径不匹配时的兜底匹配 */
+        private String methodName;
 
         public String getHttpMethod() {
             return httpMethod;
@@ -79,6 +83,22 @@ public class EndpointDataPlanService {
 
         public void setWeight(int weight) {
             this.weight = weight < 1 ? 1 : weight;
+        }
+
+        public String getClassName() {
+            return className;
+        }
+
+        public void setClassName(String className) {
+            this.className = className;
+        }
+
+        public String getMethodName() {
+            return methodName;
+        }
+
+        public void setMethodName(String methodName) {
+            this.methodName = methodName;
         }
     }
 
@@ -263,6 +283,9 @@ public class EndpointDataPlanService {
             if (matched == null) {
                 warnings.add("接口未定位: " + input.getHttpMethod() + " " + input.getPath()
                         + "（可手工补表后执行）");
+                // 必须同时占位：weights 是「按接口下标的紧凑列表」，
+                // 未定位的接口若只跳过不占位，后续接口的 demand 会取到前一个接口的权重
+                weights.add(input.getWeight());
                 endpointIndex++;
                 continue;
             }
@@ -481,8 +504,15 @@ public class EndpointDataPlanService {
     }
 
     /**
-     * 接口匹配：① (httpMethod, path) 精确 ② 忽略方法 ③ classFile#methodName。
-     * 降级到第②③层时记录命中层级，便于定位归一化问题。
+     * 接口匹配，三级降级：
+     * <ol>
+     *   <li>{@code (httpMethod, path)} 精确</li>
+     *   <li>忽略 HTTP 方法，仅按 {@code path}</li>
+     *   <li>{@code classFile#methodName}——前端可带 {@code className}/{@code methodName}
+     *       （来自端点扫描结果），用于路径无法匹配（路径变量差异、多值 path）时的兜底</li>
+     * </ol>
+     *
+     * <p>降级到第②③层时记录命中层级，便于定位归一化问题。</p>
      */
     EndpointRef match(List<EndpointRef> index, EndpointInput input, List<String> warnings) {
         if (index == null || index.isEmpty() || input == null) {
@@ -501,13 +531,42 @@ public class EndpointDataPlanService {
                 return r;
             }
         }
+        // ③ 兜底：按 类名#方法名 匹配（路径变量差异、多值 path 等场景）
+        if (notBlank(input.getClassName()) && notBlank(input.getMethodName())) {
+            String wantMember = input.getClassName() + "#" + input.getMethodName();
+            for (EndpointRef r : index) {
+                if (wantMember.equals(r.classMemberKey())) {
+                    warnings.add("接口按 类#方法 匹配（路径不一致）: " + wantMember);
+                    return r;
+                }
+            }
+        }
         return null;
     }
 
+    private static boolean notBlank(String s) {
+        return s != null && !s.isBlank();
+    }
+
+    /**
+     * 加载分析用源码。
+     *
+     * <p>按接口分析必须走 {@link SourceFileProvider#ANALYSIS_LIMIT} 而非灌数扫描的 200 上限——
+     * 调用链要跨文件解析类型，抽样上限在大仓库上会直接漏掉整条链路。
+     * 加载被截断时显式告警，避免「分析不出表」被误判为「接口不查库」。</p>
+     */
     private List<SourceFile> loadSources(Long repoId, List<String> warnings) {
-        List<SourceFile> files = new ArrayList<>(sourceFileProvider.loadFiles(repoId));
+        List<SourceFile> files = new ArrayList<>(
+                sourceFileProvider.loadFiles(repoId, SourceFileProvider.ANALYSIS_LIMIT));
         if (files.isEmpty()) {
             warnings.add("源码不可读，无法按接口推导涉及表（请确认仓库已导入且磁盘路径可访问）");
+            return files;
+        }
+        int indexed = sourceFileProvider.countIndexed(repoId);
+        if (indexed > files.size()) {
+            warnings.add(String.format(Locale.ROOT,
+                    "源码文件 %d 个超过分析上限 %d 个，仅分析了其中 %d 个，涉及表可能不完整",
+                    indexed, SourceFileProvider.ANALYSIS_LIMIT, files.size()));
         }
         return files;
     }

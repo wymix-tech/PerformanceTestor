@@ -477,6 +477,10 @@ async function executePlan(dryRun: boolean) {
     await dataGenPlanApi.execute(plan.value.id, dryRun, conn)
     if (dryRun) planDryRunPassed.value = true
     await loadTasks()
+  } catch (e: any) {
+    // 执行失败必须显式反馈：连接校验不过、方案状态异常等场景下
+    // 若吞掉异常，用户点击后毫无反应，会误以为正在执行
+    alert(e?.response?.data?.message || e?.message || (dryRun ? '方案试运行失败' : '方案正式灌数失败'))
   } finally {
     planBusy.value = false
   }

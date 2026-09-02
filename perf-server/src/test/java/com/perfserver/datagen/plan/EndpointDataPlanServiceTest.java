@@ -8,6 +8,7 @@ import com.perfserver.mapper.SourceRepoMapper;
 import com.perfserver.mapper.StressSampleMapper;
 import com.perfserver.mapper.StressTaskMapper;
 import com.perfserver.source.SourceFileProvider;
+import com.perftestor.datagen.model.EndpointRef;
 import com.perftestor.datagen.model.SourceFile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -162,11 +163,12 @@ class EndpointDataPlanServiceTest {
         service = new EndpointDataPlanService(planMapper, repoMapper, sourceFileProvider, mapper,
                 rt, new PlanRuleComposer(), new LlmPlanEnhancer(null, mapper));
 
-        when(sourceFileProvider.loadFiles(anyLong())).thenReturn(List.of(
+        when(sourceFileProvider.loadFiles(anyLong(), anyInt())).thenReturn(List.of(
                 new SourceFile(CTRL, CONTROLLER),
                 new SourceFile(SVC, SERVICE),
                 new SourceFile(MAPPER, ORDER_MAPPER),
                 new SourceFile(USER_MAPPER, USER_MAPPER_SRC)));
+        when(sourceFileProvider.countIndexed(anyLong())).thenReturn(4);
         SourceRepo repo = new SourceRepo();
         repo.setAppName("perf-demo");
         when(repoMapper.findById(anyLong())).thenReturn(repo);
@@ -285,7 +287,7 @@ class EndpointDataPlanServiceTest {
 
     @Test
     void unreachableSourceRecordsWarning() {
-        when(sourceFileProvider.loadFiles(anyLong())).thenReturn(List.of());
+        when(sourceFileProvider.loadFiles(anyLong(), anyInt())).thenReturn(List.of());
         List<String> warnings = new ArrayList<>();
         service.doAnalyze(request("GET", "/api/order/list"), warnings);
         assertTrue(warnings.stream().anyMatch(w -> w.contains("源码不可读")), "实际: " + warnings);
@@ -356,6 +358,99 @@ class EndpointDataPlanServiceTest {
         stubInsertAssignsId();
         DataGenPlan plan = service.analyze(req);
         assertTrue(plan.getPlanName().contains("create"));
+    }
+
+    // ===== 权重/接口下标对齐（复审修复：未定位接口必须占位，否则后续接口取错权重） =====
+
+    private EndpointRef ref(String method, String path, String cls, String m) {
+        return new EndpointRef(method, path, cls, m, CTRL, 1);
+    }
+
+    @Test
+    void unmatchedEndpointStillConsumesItsWeightSlot() {
+        // 第 1 个接口未定位、第 2 个命中：若未定位时不占位，
+        // 第 2 个接口的 demand 会取到 weights[0]（即第 1 个接口的权重）
+        List<SourceFile> files = new java.util.ArrayList<>(List.of(
+                new SourceFile(CTRL, CONTROLLER),
+                new SourceFile(SVC, SERVICE),
+                new SourceFile(MAPPER, ORDER_MAPPER),
+                new SourceFile(USER_MAPPER, USER_MAPPER_SRC)));
+        when(sourceFileProvider.loadFiles(anyLong(), anyInt())).thenReturn(files);
+
+        EndpointDataPlanService.AnalyzeRequest r = new EndpointDataPlanService.AnalyzeRequest();
+        r.setRepoId(1L);
+        r.setDbUrl("jdbc:mysql://127.0.0.1:3306/demo");
+        EndpointDataPlanService.EndpointInput bad = input("GET", "/api/not/exist");
+        bad.setWeight(1);
+        EndpointDataPlanService.EndpointInput good = input("GET", "/api/order/list");
+        good.setWeight(99);
+        r.setEndpoints(new java.util.ArrayList<>(List.of(bad, good)));
+        RowCountEstimator.StressParams s = new RowCountEstimator.StressParams();
+        s.setConcurrency(50);
+        s.setDurationSec(120);
+        r.setStress(s);
+
+        List<String> warnings = new ArrayList<>();
+        var tables = service.doAnalyze(r, warnings);
+        int orderRows = tables.stream().filter(t -> "perf_order".equals(t.getTable()))
+                .map(PlanIntegrityChecker.PlanTable::getRowCount).findFirst().orElse(0);
+
+        // 与「只有 good 一个接口」的结果对比：权重 99/100 应得到接近的行数；
+        // 若错位取到 bad 的权重 1，则会被压低到接近 1/100
+        EndpointDataPlanService.AnalyzeRequest single = new EndpointDataPlanService.AnalyzeRequest();
+        single.setRepoId(1L);
+        single.setDbUrl("jdbc:mysql://127.0.0.1:3306/demo");
+        single.setEndpoints(new java.util.ArrayList<>(List.of(good)));
+        single.setStress(s);
+        var singleTables = service.doAnalyze(single, new ArrayList<>());
+        int singleRows = singleTables.stream().filter(t -> "perf_order".equals(t.getTable()))
+                .map(PlanIntegrityChecker.PlanTable::getRowCount).findFirst().orElse(0);
+
+        assertEquals(singleRows, orderRows,
+                "未定位接口必须占住权重槽位，否则后续接口取到前一个接口的权重");
+    }
+
+    @Test
+    void thirdLevelMatchFallsBackToClassAndMethod() {
+        List<String> warnings = new ArrayList<>();
+        EndpointDataPlanService.EndpointInput in = input("GET", "/api/order/WRONG-PATH");
+        in.setClassName("OrderController");
+        in.setMethodName("list");
+        List<EndpointRef> index = List.of(ref("GET", "/api/order/list", "OrderController", "list"));
+        var matched = service.match(index, in, warnings);
+        assertTrue(matched != null, "路径不一致时应按 类#方法 兜底命中，实际: " + warnings);
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("类#方法")),
+                "兜底命中必须记录层级，实际: " + warnings);
+    }
+
+    @Test
+    void thirdLevelMatchIsSkippedWithoutClassAndMethod() {
+        List<String> warnings = new ArrayList<>();
+        EndpointDataPlanService.EndpointInput in = input("GET", "/api/order/WRONG-PATH");
+        List<EndpointRef> index = List.of(ref("GET", "/api/order/list", "OrderController", "list"));
+        assertTrue(service.match(index, in, warnings) == null, "无类名/方法名时不应兜底命中");
+    }
+
+    @Test
+    void secondLevelMatchIgnoresHttpMethod() {
+        List<String> warnings = new ArrayList<>();
+        EndpointDataPlanService.EndpointInput in = input("POST", "/api/order/list");
+        List<EndpointRef> index = List.of(ref("GET", "/api/order/list", "OrderController", "list"));
+        var matched = service.match(index, in, warnings);
+        assertTrue(matched != null, "HTTP 方法不一致时应按路径降级命中");
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("HTTP 方法不一致")), "实际: " + warnings);
+    }
+
+    @Test
+    void sourceTruncationIsReportedNotSilent() {
+        // 索引文件数 > 实际加载数时，必须告警（否则「分析不出表」会被误判为「接口不查库」）
+        when(sourceFileProvider.loadFiles(anyLong(), anyInt())).thenReturn(List.of(
+                new SourceFile(CTRL, CONTROLLER)));
+        when(sourceFileProvider.countIndexed(anyLong())).thenReturn(9999);
+        List<String> warnings = new ArrayList<>();
+        service.doAnalyze(request("GET", "/api/order/list"), warnings);
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("分析上限")),
+                "源码被上限截断必须告警，实际: " + warnings);
     }
 
     @Test

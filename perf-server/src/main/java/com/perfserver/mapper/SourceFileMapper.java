@@ -24,6 +24,9 @@ public interface SourceFileMapper {
     List<SourceFile> listByRepo(@Param("repoId") long repoId, @Param("prefix") String prefix,
                                 @Param("limit") int limit);
 
+    /** 仓库已索引文件总数（用于判定加载是否被上限截断，避免静默丢文件） */
+    int countByRepo(@Param("repoId") long repoId);
+
     /** 按文件名精确查询（issue 关联定位用） */
     List<SourceFile> listByName(@Param("repoId") long repoId, @Param("fileName") String fileName,
                                 @Param("limit") int limit);

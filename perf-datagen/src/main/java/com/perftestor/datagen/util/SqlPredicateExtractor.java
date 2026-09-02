@@ -20,6 +20,9 @@ import java.util.regex.Pattern;
  * <p>列归属：优先认表限定谓词（{@code o.status = 1}，别名须属于目标表）；
  * 当 SQL 中不存在任何表别名时，才额外接受非限定谓词（{@code status = 1}）。</p>
  *
+ * <p>含 WHERE 但抽不任何谓词（多为 {@code col = #{param}} 占位符形态）时返回空列表——
+ * 占位符无数据构造价值，由调用方按「无信号」处理。</p>
+ *
  * <p>任何异常静默返回，绝不抛出中断分析。</p>
  */
 public final class SqlPredicateExtractor {
@@ -64,7 +67,6 @@ public final class SqlPredicateExtractor {
         try {
             String table = targetTable.toLowerCase(Locale.ROOT);
             Set<String> allowed = aliasesOf(sql, table);
-            String lower = sql.toLowerCase(Locale.ROOT);
 
             // 表限定谓词
             matchEq(out, sql, EQ_STR, allowed, false);
@@ -79,10 +81,6 @@ public final class SqlPredicateExtractor {
                 matchBareEq(out, sql, BARE_EQ_NUM, true);
                 matchBareIn(out, sql, BARE_IN);
                 matchBareRange(out, sql, BARE_RANGE);
-            }
-            if (lower.contains("where")) {
-                // 存在 WHERE 但未抽出任何谓词（多为占位符谓词）时，交由调用方按无信号处理
-                return out;
             }
         } catch (Exception ignore) {
             // 容错：静默

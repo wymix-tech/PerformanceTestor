@@ -91,9 +91,14 @@ public class EndpointRef {
         return path == null ? "" : path;
     }
 
-    /** 最兜底匹配键：文件 + 方法名 */
+    /** 兜底匹配键：文件 + 方法名 */
     public String memberKey() {
         return (declaringFile == null ? "" : declaringFile) + "#" + (methodName == null ? "" : methodName);
+    }
+
+    /** 兜底匹配键：类名（simpleName）+ 方法名（前端端点扫描结果即为此形态） */
+    public String classMemberKey() {
+        return (className == null ? "" : className) + "#" + (methodName == null ? "" : methodName);
     }
 
     @Override

@@ -138,10 +138,10 @@ perf-demo 实测：`GET /api/user/list`（N+1）产出
 | 模块 | 用例数 | 覆盖重点 |
 | --- | --- | --- |
 | perf-datagen | 160 | 调用链 BFS（字段/构造器注入、多实现、熔断）、接口索引、SQL 表/谓词/JOIN 边/列抽取、双解析器一致性、SEQ 唯一性（H2） |
-| perf-server | 409 | 行数推导（读/写/父表/权重对齐/分页/上限缩减）、RT 三级取值、规则合成（权重/64 上限/seq 只落 prefix/ref-refSkew）、seqStart 刷新、父表补齐与环降级、LLM 脱敏哨兵、perf-demo E2E、外键引用闭环 E2E |
+| perf-server | 414 | 行数推导（读/写/父表/权重对齐/分页/上限缩减）、RT 三级取值、规则合成（权重/64 上限/seq 只落 prefix/ref-refSkew）、seqStart 刷新、父表补齐与环降级、LLM 脱敏哨兵、perf-demo E2E、外键引用闭环 E2E、三级匹配与权重占位回归 |
 | perf-agent | 27 | 既有用例，无回归 |
 
-合计 **596 项全通过**，`mvn test` 零回归。
+合计 **601 项全通过**，`mvn test` 零回归。
 
 ### 4.3 验收标准的达成情况
 
@@ -212,6 +212,27 @@ perf-demo 实测：`GET /api/user/list`（N+1）产出
 `parseTables` 用 `n.get("fields").toString()`，对 TextNode 返回的是**带引号与转义的 JSON 字面量**（`"{\"type\":\"ref\"}"`）；下游 `DataGenSpecAdapter.parseFields` 的 `readTree` 会解析成 TextNode 而非 ObjectNode，`root.fields()` 为空 → **所有规则静默丢失**，灌数时退化成按列类型随机生成。改用 `asText()`（非文本节点仍用 `toString()` 兜底）。
 
 三处的共同点都是「**不报错的静默失败**」——功能看起来在跑，实际没有生效。每处都补了针对性单测。
+
+## 五之三、复审修复（PR #13 第二轮，含代码规范维度）
+
+复审结论：4 warning + 6 info，全部修复。
+
+**warning**
+
+1. **权重与接口下标错位**（我上一轮修复引入的新 bug）：接口未定位时 `endpointIndex++` 但未 `weights.add(...)`，导致紧凑的 `weights` 与含空洞的 `endpointIndex` 错位，后续接口会取到**前一个接口**的权重——恰与修复②的意图相悖。改为未定位时也占位。
+   回归用例：`unmatchedEndpointStillConsumesItsWeightSlot`（对比「未定位+高权重」与「仅高权重」两种输入的行数应一致）。
+2. **`loadFilesByPaths` 是死代码，`doAnalyze` 仍走 200 上限**：分析场景改为 `loadFiles(repoId, ANALYSIS_LIMIT=5000)`，并新增 `countIndexed()` 在截断时显式告警——避免「分析不出表」被误判为「接口不查库」。原死代码方法删除。
+3. **`match` javadoc 声称三级、实际只有两级**：补齐第③级「类#方法」兜底（`EndpointRef.classMemberKey()`），前端在 `buildPayload`/`buildScenario` 中上送端点扫描产出的 `className`/`methodName`。
+4. **`DataGenForm.executePlan` 无 catch**：执行失败（连接校验不过、方案状态异常）时异常被吞、用户无感知，补 `catch` 并 `alert` 错误信息。
+
+**info**
+
+- 删除 `PlanIntegrityChecker` 的无效三元 `arrow >= 0 ? message : message`
+- 删除 `SqlPredicateExtractor` 末尾「无论真假都返回」的死条件块，意图上移到 javadoc
+- `PlanRuleComposer` 循环内 `new ObjectMapper()` → 静态复用（该类线程安全、创建开销大）
+- `"seq"` 魔法字符串 → `FieldRule.TYPE_SEQ`（含 `DataGenService` 里遗漏的一处）
+- `CallGraphAnalyzer` 的 `implements` 文本扫描 → **文本粗筛 + AST 精判**两级：纯文本会把注释/字符串里的 `implements` 误判且漏判 `implements A, B` 中非首位的类型；纯 AST 要对全仓库建 AST 会触发文件数熔断，故先用文本筛候选再用 `getImplementedTypes()` 确认
+- `StressCenterView` 分档时长 `Math.floor` 丢余数（100s÷3 档 = 33×3 只跑 99s）→ 余数补到最后一档
 
 ## 六、新增 API
 
