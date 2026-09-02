@@ -63,11 +63,17 @@ public class PlanRuleComposer {
         }
     }
 
-    /** 表上下文：唯一索引列 + 已有枚举建议值 + 是否详情类查询 */
+    /** 表上下文：外键引用边 + 唯一索引列 + 已有枚举建议值 + 是否详情类查询 */
     public static final class TableContext {
+        private final List<com.perftestor.datagen.model.EndpointTableFact.JoinRef> joinRefs = new ArrayList<>();
         private final Set<String> uniqueColumns = new LinkedHashSet<>();
         private final Map<String, List<Object>> enumValues = new LinkedHashMap<>();
         private boolean detailLookup;
+
+        /** 外键引用边（来自 JOIN ON 或外键命名），驱动 ref/refSkew 与父表补齐 */
+        public List<com.perftestor.datagen.model.EndpointTableFact.JoinRef> getJoinRefs() {
+            return joinRefs;
+        }
 
         public Set<String> getUniqueColumns() {
             return uniqueColumns;
@@ -194,9 +200,22 @@ public class PlanRuleComposer {
             }
         }
 
-        // 3. 唯一索引 / 业务编码列 → seq（只落 prefix）；已有谓词规则的列不覆盖
+        // 3. 外键引用边 → ref / refSkew（JOIN 关联与详情类热点倾斜）
+        for (com.perftestor.datagen.model.EndpointTableFact.JoinRef ref : ctx.getJoinRefs()) {
+            if (ref == null || ref.getChildColumn() == null || ref.getParentTable() == null) {
+                continue;
+            }
+            // 该列已有更具体的谓词/范围规则时不覆盖——谓词值保证接口能查到，优先级更高
+            if (valuesByColumn.containsKey(ref.getChildColumn()) || fields.has(ref.getChildColumn())) {
+                continue;
+            }
+            ObjectNode rule = refRule(ref.getParentTable(), ref.getParentColumn(), ctx.isDetailLookup());
+            fields.set(ref.getChildColumn(), rule);
+        }
+
+        // 4. 唯一索引 / 业务编码列 → seq（只落 prefix）；已有规则的列不覆盖
         for (String col : ctx.getUniqueColumns()) {
-            if (col == null || col.isBlank() || valuesByColumn.containsKey(col)) {
+            if (col == null || col.isBlank() || valuesByColumn.containsKey(col) || fields.has(col)) {
                 continue;
             }
             ObjectNode rule = fields.putObject(col);

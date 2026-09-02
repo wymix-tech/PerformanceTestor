@@ -90,12 +90,52 @@ public class EndpointTableFact {
         }
     }
 
+    /** 外键引用：本表外键列 → 父表列 */
+    public static final class JoinRef {
+        private final String childColumn;
+        private final String parentTable;
+        private final String parentColumn;
+        private final double confidence;
+
+        public JoinRef(String childColumn, String parentTable, String parentColumn, double confidence) {
+            this.childColumn = childColumn;
+            this.parentTable = parentTable;
+            this.parentColumn = parentColumn;
+            this.confidence = confidence;
+        }
+
+        public String getChildColumn() {
+            return childColumn;
+        }
+
+        public String getParentTable() {
+            return parentTable;
+        }
+
+        public String getParentColumn() {
+            return parentColumn;
+        }
+
+        public double getConfidence() {
+            return confidence;
+        }
+
+        @Override
+        public String toString() {
+            return childColumn + " → " + parentTable + "." + parentColumn;
+        }
+    }
+
     /** 小写表名 */
     private String table;
     private SqlAccess access = SqlAccess.READ;
     private List<Predicate> predicates = new ArrayList<>();
     /** JOIN 涉及的关联表（小写） */
     private List<String> joinTables = new ArrayList<>();
+    /** 外键引用边：本表列 → 父表列（驱动 ref/refSkew 规则与父表补齐） */
+    private List<JoinRef> joinRefs = new ArrayList<>();
+    /** 跨 SQL 累积的被引用列名（N+1 形态下外键列可能只在单条 SQL 里出现） */
+    private final List<String> columns = new ArrayList<>();
     /** 证据：文件:行号 */
     private List<String> sourceRefs = new ArrayList<>();
     /** 置信度 0~1：多实现/降级记 0.4~0.6 */
@@ -104,6 +144,8 @@ public class EndpointTableFact {
     private String unresolvedReason;
     /** 分页大小（SQL limit 字面量，0 表示未识别） */
     private int pageSize;
+    /** 是否为详情类访问（按 id 查单行，数据应做热点倾斜） */
+    private boolean detailLookup;
 
     public EndpointTableFact() {
     }
@@ -137,6 +179,15 @@ public class EndpointTableFact {
         return joinTables;
     }
 
+    public List<JoinRef> getJoinRefs() {
+        return joinRefs;
+    }
+
+    /** 累积列名（小写，去重由调用方保证） */
+    public List<String> getColumns() {
+        return columns;
+    }
+
     public List<String> getSourceRefs() {
         return sourceRefs;
     }
@@ -163,6 +214,14 @@ public class EndpointTableFact {
 
     public void setPageSize(int pageSize) {
         this.pageSize = pageSize;
+    }
+
+    public boolean isDetailLookup() {
+        return detailLookup;
+    }
+
+    public void setDetailLookup(boolean detailLookup) {
+        this.detailLookup = detailLookup;
     }
 
     @Override

@@ -221,4 +221,62 @@ class PlanRuleComposerTest {
         assertTrue(composer.compose(List.of(), Map.of()).getFieldsByTable().isEmpty());
         assertTrue(composer.compose(null, null).getFieldsByTable().isEmpty());
     }
+
+    // ===== 外键引用 → ref / refSkew（PR 评审修复：此前 refRule 无调用点，能力空转） =====
+
+    private static PlanRuleComposer.TableContext ctxWithJoin(String parent, boolean detail) {
+        PlanRuleComposer.TableContext ctx = new PlanRuleComposer.TableContext();
+        ctx.getJoinRefs().add(new EndpointTableFact.JoinRef("user_id", parent, "id", 0.9));
+        ctx.setDetailLookup(detail);
+        return ctx;
+    }
+
+    @Test
+    void joinRefGeneratesRefRuleOnListQuery() throws Exception {
+        var out = composer.compose(List.of(fact("perf_order", EndpointTableFact.SqlAccess.READ)),
+                Map.of("perf_order", ctxWithJoin("perf_user", false)));
+        JsonNode rule = fieldsOf(out.getFieldsByTable().get("perf_order")).get("user_id");
+        assertEquals("ref", rule.get("type").asText(), "JOIN 外键列必须生成 ref，否则父表补齐无从谈起");
+        assertEquals("perf_user", rule.get("table").asText());
+        assertEquals("id", rule.get("column").asText());
+    }
+
+    @Test
+    void joinRefGeneratesRefSkewOnDetailLookup() throws Exception {
+        var out = composer.compose(List.of(fact("perf_order", EndpointTableFact.SqlAccess.READ)),
+                Map.of("perf_order", ctxWithJoin("perf_user", true)));
+        JsonNode rule = fieldsOf(out.getFieldsByTable().get("perf_order")).get("user_id");
+        assertEquals("refSkew", rule.get("type").asText(), "详情类访问应生成热点倾斜");
+        assertEquals(PlanRuleComposer.HOT_PERCENT, rule.get("hotPercent").asInt());
+        assertEquals(PlanRuleComposer.HOT_SHARE, rule.get("hotShare").asInt());
+    }
+
+    @Test
+    void refRuleIsSerializableInPlanFieldsJson() throws Exception {
+        // 父表补齐靠解析 fields JSON 里的 ref/refSkew，必须能被序列化出来
+        var out = composer.compose(List.of(fact("perf_order", EndpointTableFact.SqlAccess.READ)),
+                Map.of("perf_order", ctxWithJoin("perf_user", false)));
+        String json = out.getFieldsByTable().get("perf_order");
+        assertTrue(json.contains("\"type\":\"ref\""), "实际: " + json);
+        assertTrue(json.contains("\"table\":\"perf_user\""), "实际: " + json);
+    }
+
+    @Test
+    void predicateRuleWinsOverRefRule() throws Exception {
+        // 谓词值保证接口能查到，优先级高于 ref
+        EndpointTableFact f = fact("perf_order", EndpointTableFact.SqlAccess.READ);
+        f.getPredicates().add(eq("user_id", 7L));
+        var out = composer.compose(List.of(f), Map.of("perf_order", ctxWithJoin("perf_user", false)));
+        JsonNode rule = fieldsOf(out.getFieldsByTable().get("perf_order")).get("user_id");
+        assertEquals("enum", rule.get("type").asText(), "已有谓词规则时不覆盖为 ref");
+    }
+
+    @Test
+    void nullJoinRefIsSkipped() {
+        PlanRuleComposer.TableContext ctx = new PlanRuleComposer.TableContext();
+        ctx.getJoinRefs().add(null);
+        var out = composer.compose(List.of(fact("perf_order", EndpointTableFact.SqlAccess.READ)),
+                Map.of("perf_order", ctx));
+        assertTrue(out.getWarnings().isEmpty(), "空的引用边不应抛异常，也不应产生告警");
+    }
 }

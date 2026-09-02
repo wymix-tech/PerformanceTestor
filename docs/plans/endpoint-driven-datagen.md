@@ -72,6 +72,21 @@ WRITE 主表    = clamp(ceil(req × 1.0), 1000, 200000)
 | 唯一索引 / 业务编码列 | `seq`（**只落 `seqPrefix`**） |
 | 值集超 64 | 纯数值转 `range`，混合类型均匀采样保留 64 个，并告警 |
 
+#### 外键引用（ref/refSkew）的两级证据
+
+ref 规则是「父表补齐」与「ref 池热点倾斜」的前提，方向判定分两级：
+
+1. **JOIN ON**（置信度 0.9 / 0.7）：解析 `join t [as] b on x.col = y.col`，方向按
+   ① 外键命名（`o.user_id = u.id` → `perf_order.user_id` 指向 `perf_user`）② 主键侧（`= u.id`）
+   ③ 兜底「FROM 侧为子表」依次判定。
+2. **外键命名兜底**（置信度 0.6）：仅在无 JOIN ON 证据时启用，覆盖 N+1 这类
+   「主表与子表出现在不同 SQL」的写法——先跨 SQL 累积各表被引用到的列名（单表 SQL
+   额外收非限定列），再用 `xxx_id ↔ 表名` 匹配（支持去 `perf_`/`t_` 前缀与复数）。
+   匹配不到对应表时**不凭空造父表**。
+
+perf-demo 实测：`GET /api/user/list`（N+1）产出
+`{"user_id":{"type":"ref","table":"perf_user","column":"id"}}`。
+
 ### 3.6 三个评审要点的落地
 
 **① 灌数顺序 + 父表必须入清单（高）**
@@ -107,7 +122,7 @@ WRITE 主表    = clamp(ceil(req × 1.0), 1000, 200000)
 | `GET /api/order/list` | `perf_order` READ 12000 行 | `OrderService.java:24` |
 | `GET /api/order/stats` | `perf_order` READ 12000 行 | `OrderService.java:29` |
 | `GET /api/order/recent` | `perf_order` READ 12000 行 | `OrderService.java:34` |
-| `GET /api/user/list` | `perf_user` READ 6000 行 + `perf_order` READ 6000 行 | `UserService.java:31`、`UserService.java:35` |
+| `GET /api/user/list` | `perf_user` READ 6000 行 + `perf_order` READ 6000 行（`user_id` → `perf_user.id` 的 ref 规则） | `UserService.java:31`、`UserService.java:35` |
 | `POST /api/scenario/order` | 空清单 + 「未从源码分析出…请手动补表」 | 该 Controller 刻意无 DB 访问 |
 | `GET /api/order/notExist` | 空清单 + 「接口未定位」 | — |
 
@@ -122,10 +137,11 @@ WRITE 主表    = clamp(ceil(req × 1.0), 1000, 200000)
 
 | 模块 | 用例数 | 覆盖重点 |
 | --- | --- | --- |
-| perf-datagen | 152 | 调用链 BFS（字段/构造器注入、多实现、熔断）、接口索引、SQL 表与谓词抽取、双解析器一致性、SEQ 唯一性（H2） |
-| perf-server | 392 | 行数推导（读/写/父表/权重/分页/上限缩减）、RT 三级取值、规则合成（权重/64 上限/seq 只落 prefix）、seqStart 刷新、父表补齐与环降级、LLM 脱敏哨兵、perf-demo E2E |
+| perf-datagen | 160 | 调用链 BFS（字段/构造器注入、多实现、熔断）、接口索引、SQL 表/谓词/JOIN 边/列抽取、双解析器一致性、SEQ 唯一性（H2） |
+| perf-server | 409 | 行数推导（读/写/父表/权重对齐/分页/上限缩减）、RT 三级取值、规则合成（权重/64 上限/seq 只落 prefix/ref-refSkew）、seqStart 刷新、父表补齐与环降级、LLM 脱敏哨兵、perf-demo E2E、外键引用闭环 E2E |
+| perf-agent | 27 | 既有用例，无回归 |
 
-合计 **544 项全通过**，`mvn test` 零回归。
+合计 **596 项全通过**，`mvn test` 零回归。
 
 ### 4.3 验收标准的达成情况
 
@@ -174,6 +190,28 @@ WRITE 主表    = clamp(ceil(req × 1.0), 1000, 200000)
 - `views/StressCenterView.vue` [MODIFY] 分析并跳转 datagen Tab
 - `components/datagen/DataGenForm.vue` [MODIFY] `initialPlanId` + 方案回显卡（行数可编辑、证据折叠、告警条、试运行/正式灌数）
 - `style.css` [MODIFY] `btn-ghost` 描边幽灵按钮
+
+## 五之二、PR 评审修复（PR #13 行级评审）
+
+评审指出两处「实现与 PR 描述不符」，修复过程中又连带发现一处更隐蔽的数据丢失问题。
+
+**① `contexts` 恒空、`refRule()` 无调用点 → ref/refSkew 能力空转**
+
+`doAnalyze` 里 `contexts` 始终是 `new LinkedHashMap<>()`，`PlanRuleComposer.refRule()` 在 main 源码中无调用点。后果是 JOIN/详情类查询**不会**生成 ref/refSkew 规则，连带 `PlanIntegrityChecker` 的补父表逻辑也永远不触发——描述里「评审关键问题①的对策」实际是死代码。
+
+修复：新增外键引用两级证据链（`SqlTableExtractor.extractJoinEdges` 解析 JOIN ON 判定方向 + `resolveFkByNaming` 跨 SQL 用 `xxx_id ↔ 表名` 兜底），`EndpointTableFact` 承载 `joinRefs`/`columns`/`detailLookup`，`doAnalyze` 按事实填充 `TableContext`，`PlanRuleComposer` 据此生成 ref/refSkew。新增 `JoinRefE2ETest`（9 项）守住闭环，并用「任何 ref 目标都必须在最终表清单中」这一不变量做断言。
+
+**② 权重与 demands 维度不匹配 → 多接口权重分摊恒退化为均分**
+
+`splitByWeight(totalRequests, weights, demands.size())` 的第三个参数是**表访问次数**（一张表多次访问产生多条 demand），而 `weights` 长度是**接口数**。`weights.size() == count` 几乎恒为 false（除非恰好 1:1），权重恒走均分分支。
+
+修复：`TableDemand` 增加 `endpointIndex`，`estimate` 先把接口级权重按 `endpointIndex` 展开为表访问级权重，再分摊。新增 `endpointWeightsApplyWhenDemandsOutnumberEndpoints` 等 4 项回归用例。
+
+**③ 方案规则 JSON 回读时被转义 → 执行时规则被静默丢弃**
+
+`parseTables` 用 `n.get("fields").toString()`，对 TextNode 返回的是**带引号与转义的 JSON 字面量**（`"{\"type\":\"ref\"}"`）；下游 `DataGenSpecAdapter.parseFields` 的 `readTree` 会解析成 TextNode 而非 ObjectNode，`root.fields()` 为空 → **所有规则静默丢失**，灌数时退化成按列类型随机生成。改用 `asText()`（非文本节点仍用 `toString()` 兜底）。
+
+三处的共同点都是「**不报错的静默失败**」——功能看起来在跑，实际没有生效。每处都补了针对性单测。
 
 ## 六、新增 API
 

@@ -257,11 +257,13 @@ public class EndpointDataPlanService {
         List<RowCountEstimator.TableDemand> demands = new ArrayList<>();
         List<Integer> weights = new ArrayList<>();
 
+        int endpointIndex = 0;
         for (EndpointInput input : request.getEndpoints()) {
             EndpointRef matched = match(index, input, warnings);
             if (matched == null) {
                 warnings.add("接口未定位: " + input.getHttpMethod() + " " + input.getPath()
                         + "（可手工补表后执行）");
+                endpointIndex++;
                 continue;
             }
             CallGraphAnalyzer.Result graph = analyzer.analyze(javaFiles, matched);
@@ -270,7 +272,9 @@ public class EndpointDataPlanService {
                 warnings.add("调用链分析触发熔断，涉及表可能不完整");
             }
             weights.add(input.getWeight());
-            collectFacts(graph, sqlResolver, factsByTable, demands, warnings, graph.isTripped());
+            collectFacts(graph, sqlResolver, factsByTable, demands, warnings, graph.isTripped(),
+                    endpointIndex, isDetailEndpoint(input.getPath()));
+            endpointIndex++;
         }
 
         // 行数推导
@@ -297,10 +301,19 @@ public class EndpointDataPlanService {
             // 空清单必须有明确出口：否则用户看到空白页无从判断是「接口不查库」还是「分析失败」
             warnings.add("未从源码分析出该接口涉及的数据库表"
                     + "（接口可能不访问数据库，或调用链未覆盖到 Mapper），请手动补表后执行");
+        } else {
+            // 外键命名兜底：需全部事实（列名与表清单）齐备后才能做
+            resolveFkByNaming(factsByTable);
         }
 
         // 规则合成 + 父表补齐（必须在构建 spec 之前，否则补了也不生效）
         Map<String, PlanRuleComposer.TableContext> contexts = new LinkedHashMap<>();
+        for (Map.Entry<String, EndpointTableFact> e : factsByTable.entrySet()) {
+            PlanRuleComposer.TableContext ctx = new PlanRuleComposer.TableContext();
+            ctx.setDetailLookup(e.getValue().isDetailLookup());
+            ctx.getJoinRefs().addAll(e.getValue().getJoinRefs());
+            contexts.put(e.getKey(), ctx);
+        }
         PlanRuleComposer.Composed composed = ruleComposer.compose(new ArrayList<>(factsByTable.values()), contexts);
         warnings.addAll(composed.getWarnings());
 
@@ -322,11 +335,22 @@ public class EndpointDataPlanService {
         return checked.getTables();
     }
 
+    /** 详情类接口判定：路径末段为路径变量（如 /api/order/{id}） */
+    static boolean isDetailEndpoint(String path) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        String[] segs = path.split("/");
+        String last = segs.length == 0 ? "" : segs[segs.length - 1].trim();
+        return last.startsWith("{") && last.endsWith("}");
+    }
+
     /** 调用链 → SQL → 访问事实 */
     private void collectFacts(CallGraphAnalyzer.Result graph, MyBatisSqlResolver sqlResolver,
                               Map<String, EndpointTableFact> factsByTable,
                               List<RowCountEstimator.TableDemand> demands,
-                              List<String> warnings, boolean tripped) {
+                              List<String> warnings, boolean tripped,
+                              int endpointIndex, boolean detail) {
         for (CallGraphAnalyzer.MapperInvocation inv : graph.getInvocations()) {
             String sql = sqlResolver.resolve(inv).orElse(null);
             if (sql == null) {
@@ -343,6 +367,9 @@ public class EndpointDataPlanService {
                 warnings.add("SQL 未识别出表名: " + inv.getMapperType() + "#" + inv.getMethodName());
                 continue;
             }
+            Map<String, java.util.Set<String>> columnsByTable = SqlTableExtractor.extractColumnsByTable(sql);
+            List<SqlTableExtractor.JoinEdge> joinEdges = SqlTableExtractor.extractJoinEdges(sql);
+
             for (SqlTableExtractor.TableAccess ta : extracted.getTables()) {
                 EndpointTableFact fact = factsByTable.computeIfAbsent(ta.getTable(),
                         k -> new EndpointTableFact(k, ta.getAccess()));
@@ -365,9 +392,68 @@ public class EndpointDataPlanService {
                         fact.getJoinTables().add(other);
                     }
                 }
+                // 详情类接口：该表按 id 反复查单行，生成的数据应做热点倾斜
+                if (detail) {
+                    fact.setDetailLookup(true);
+                }
+                // 累积列名：N+1 形态下外键列可能只在单条 SQL 里出现，需跨 SQL 汇总后再判外键
+                java.util.Set<String> cols = columnsByTable.get(ta.getTable());
+                if (cols != null) {
+                    for (String col : cols) {
+                        if (!fact.getColumns().contains(col)) {
+                            fact.getColumns().add(col);
+                        }
+                    }
+                }
+                collectJoinRefs(fact, ta.getTable(), joinEdges);
                 demands.add(new RowCountEstimator.TableDemand(ta.getTable(),
                         ta.getAccess() == EndpointTableFact.SqlAccess.WRITE,
-                        extracted.getPageSize()));
+                        extracted.getPageSize(), endpointIndex));
+            }
+        }
+    }
+
+    /**
+     * 收集外键引用边（驱动 ref/refSkew 规则，并让父表补齐逻辑有据可依）。
+     *
+     * <p>只处理 <b>JOIN ON</b> 这类方向明确的证据（置信度 0.9/0.7）。
+     * 命名猜测（{@code user_id → perf_user}，覆盖 N+1 这类无 JOIN 的写法）需要跨 SQL 的
+     * 列名与全量表清单，放在 {@link #resolveFkByNaming} 里、在所有事实收集完成后统一做。</p>
+     */
+    private void collectJoinRefs(EndpointTableFact fact, String table,
+                                 List<SqlTableExtractor.JoinEdge> joinEdges) {
+        for (SqlTableExtractor.JoinEdge edge : joinEdges) {
+            if (!table.equals(edge.getChildTable())) {
+                continue;
+            }
+            fact.getJoinRefs().add(new EndpointTableFact.JoinRef(
+                    edge.getChildColumn(), edge.getParentTable(), edge.getParentColumn(),
+                    edge.getConfidence()));
+        }
+    }
+
+    /**
+     * 外键命名兜底：本表出现形如 {@code xxx_id} 的列，且 {@code xxx} 对应表也在方案里时，
+     * 生成一条 ref 边（置信度 0.6）。覆盖 N+1 这类「主表与子表在不同 SQL 中」的写法。
+     *
+     * <p>仅在没有任何 JOIN ON 证据时才做，避免低置信结论覆盖高置信结论。</p>
+     */
+    private void resolveFkByNaming(Map<String, EndpointTableFact> factsByTable) {
+        for (Map.Entry<String, EndpointTableFact> e : factsByTable.entrySet()) {
+            EndpointTableFact fact = e.getValue();
+            if (!fact.getJoinRefs().isEmpty() || fact.getColumns().isEmpty()) {
+                continue;
+            }
+            for (Map.Entry<String, EndpointTableFact> other : factsByTable.entrySet()) {
+                if (other.getKey().equals(e.getKey())) {
+                    continue;
+                }
+                for (String col : fact.getColumns()) {
+                    if (SqlTableExtractor.isFkColumn(col, other.getKey())) {
+                        fact.getJoinRefs().add(new EndpointTableFact.JoinRef(col, other.getKey(), "id", 0.6));
+                        break;
+                    }
+                }
             }
         }
     }
@@ -519,7 +605,12 @@ public class EndpointDataPlanService {
                 PlanIntegrityChecker.PlanTable t = new PlanIntegrityChecker.PlanTable();
                 t.setTable(n.path("table").asText(null));
                 t.setRowCount(n.path("rowCount").asInt(RowCountEstimator.MIN_MAIN_ROWS));
-                t.setFields(n.hasNonNull("fields") ? n.get("fields").toString() : null);
+                // 必须用 asText()：TextNode.toString() 会返回带引号转义的 JSON 字面量，
+                // 下游 readTree 会解析成 TextNode 而非 ObjectNode，导致规则被静默丢弃
+                JsonNode fieldsNode = n.get("fields");
+                if (fieldsNode != null && !fieldsNode.isNull()) {
+                    t.setFields(fieldsNode.isTextual() ? fieldsNode.asText() : fieldsNode.toString());
+                }
                 t.setAccess(n.path("access").asText("READ"));
                 JsonNode ev = n.get("evidence");
                 if (ev != null && ev.isArray()) {

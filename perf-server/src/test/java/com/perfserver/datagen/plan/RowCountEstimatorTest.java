@@ -76,7 +76,10 @@ class RowCountEstimatorTest {
     @Test
     void weightsSplitRequestsProportionally() {
         RowCountEstimator.StressParams p = params(1, 60, 1000);
-        var out = RowCountEstimator.estimate(p, List.of(read("a"), read("b")), List.of(3, 1));
+        // a 属于权重 3 的步骤，b 属于权重 1 的步骤（必须显式声明所属接口）
+        var out = RowCountEstimator.estimate(p, List.of(
+                new RowCountEstimator.TableDemand("a", false, 20, 0),
+                new RowCountEstimator.TableDemand("b", false, 20, 1)), List.of(3, 1));
         assertEquals(60000, out.getTotalRequests());
         int a = out.getRowsByTable().get("a");
         int b = out.getRowsByTable().get("b");
@@ -158,5 +161,52 @@ class RowCountEstimatorTest {
     @Test
     void emptyDemandsYieldsEmptyResult() {
         assertTrue(RowCountEstimator.estimate(params(1, 60, 100), List.of()).getRowsByTable().isEmpty());
+    }
+
+    // ===== 权重对齐（PR 评审修复：demands 数 ≠ 接口数，权重曾恒退化为均分） =====
+
+    @Test
+    void endpointWeightsApplyWhenDemandsOutnumberEndpoints() {
+        // 2 个接口（权重 9:1），第一个接口访问了 3 张表、第二个访问 1 张表
+        // 若按 demands.size() 对齐，权重数(2) ≠ 分摊对象数(4)，会恒退化为均分——必须不退化
+        RowCountEstimator.StressParams p = params(1, 60, 100000);
+        List<RowCountEstimator.TableDemand> demands = List.of(
+                new RowCountEstimator.TableDemand("a", false, 20, 0),
+                new RowCountEstimator.TableDemand("b", false, 20, 0),
+                new RowCountEstimator.TableDemand("c", false, 20, 0),
+                new RowCountEstimator.TableDemand("d", false, 20, 1));
+        var out = RowCountEstimator.estimate(p, demands, List.of(9, 1));
+        int heavy = out.getRowsByTable().get("a");
+        int light = out.getRowsByTable().get("d");
+        assertTrue(heavy > light * 2,
+                "权重 9:1 应体现在行数上（均分退化时两者会相等），实际 a=" + heavy + " d=" + light);
+    }
+
+    @Test
+    void weightsAlignPerDemandNotPerEndpoint() {
+        RowCountEstimator.StressParams p = params(1, 60, 100000);
+        List<RowCountEstimator.TableDemand> demands = List.of(
+                new RowCountEstimator.TableDemand("a", false, 20, 0),
+                new RowCountEstimator.TableDemand("b", false, 20, 1));
+        var out = RowCountEstimator.estimate(p, demands, List.of(1, 1));
+        // 权重相等时，同一接口内的多张表也应得到相同行数
+        assertEquals(out.getRowsByTable().get("a"), out.getRowsByTable().get("b"));
+    }
+
+    @Test
+    void outOfRangeEndpointIndexFallsBackToZeroWeight() {
+        // demand 指向不存在的接口下标：不应越界，按 0 权重处理
+        RowCountEstimator.StressParams p = params(1, 60, 100000);
+        List<RowCountEstimator.TableDemand> demands = List.of(
+                new RowCountEstimator.TableDemand("a", false, 20, 0),
+                new RowCountEstimator.TableDemand("b", false, 20, 5));
+        var out = RowCountEstimator.estimate(p, demands, List.of(1));
+        assertTrue(out.getRowsByTable().containsKey("b"), "越界下标不应丢弃该表");
+    }
+
+    @Test
+    void demandDefaultsToEndpointZero() {
+        assertEquals(0, new RowCountEstimator.TableDemand("a", false, 20).getEndpointIndex());
+        assertEquals(0, new RowCountEstimator.TableDemand("a", false, 20, -3).getEndpointIndex());
     }
 }

@@ -3,9 +3,11 @@ package com.perftestor.datagen.util;
 import com.perftestor.datagen.model.EndpointTableFact;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -45,6 +47,21 @@ public final class SqlTableExtractor {
     private static final Pattern SUBQUERY = Pattern.compile("\\b(?:from|join)\\s*\\(", Pattern.CASE_INSENSITIVE);
     private static final Pattern CTE = Pattern.compile("\\bwith\\s+[\\w`]+\\s+as\\s*\\(", Pattern.CASE_INSENSITIVE);
     private static final Pattern LIMIT = Pattern.compile("\\blimit\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
+
+    /** from t [as] a */
+    private static final Pattern FROM_ALIAS = Pattern.compile(
+            "\\bfrom\\s+([`\\w.]+)(?:\\s+(?:as\\s+)?([\\w]+))?", Pattern.CASE_INSENSITIVE);
+    /** join t [as] b */
+    private static final Pattern JOIN_ALIAS = Pattern.compile(
+            "\\bjoin\\s+([`\\w.]+)(?:\\s+(?:as\\s+)?([\\w]+))?", Pattern.CASE_INSENSITIVE);
+    /** join t [as] b on x.col = y.col */
+    private static final Pattern JOIN_ON = Pattern.compile(
+            "\\bjoin\\s+[`\\w.]+(?:\\s+(?:as\\s+)?[\\w]+)?\\s+on\\s+"
+                    + "([\\w]+)\\.([\\w`]+)\\s*=\\s*([\\w]+)\\.([\\w`]+)",
+            Pattern.CASE_INSENSITIVE);
+    /** 限定列引用：alias.column */
+    private static final Pattern QUALIFIED_COLUMN = Pattern.compile(
+            "(?<![\\w.`])([\\w]+)\\.([\\w`]+)", Pattern.CASE_INSENSITIVE);
 
     /** 合法表名（小写后校验），用于剔除误吸的 SQL 关键字与符号片段 */
     private static final Pattern VALID_TABLE = Pattern.compile("[a-z_][a-z0-9_]{0,63}");
@@ -220,5 +237,248 @@ public final class SqlTableExtractor {
             return b;
         }
         return a + "；" + b;
+    }
+
+    // ===== JOIN 关联边与限定列抽取（供外键引用推导使用） =====
+
+    /** 表别名 → 表名（小写） */
+    private static Map<String, String> aliasMap(String sql) {
+        Map<String, String> map = new LinkedHashMap<>();
+        Matcher fm = FROM_ALIAS.matcher(sql);
+        if (fm.find()) {
+            String table = sanitize(fm.group(1));
+            if (table != null) {
+                String alias = fm.group(2) == null || isKeywordCandidate(fm.group(2))
+                        ? table : fm.group(2).toLowerCase(Locale.ROOT);
+                map.put(alias, table);
+            }
+        }
+        Matcher jm = JOIN_ALIAS.matcher(sql);
+        while (jm.find()) {
+            String table = sanitize(jm.group(1));
+            if (table == null) {
+                continue;
+            }
+            String alias = jm.group(2) == null || isKeywordCandidate(jm.group(2))
+                    ? table : jm.group(2).toLowerCase(Locale.ROOT);
+            map.putIfAbsent(alias, table);
+        }
+        return map;
+    }
+
+    /**
+     * 抽取 JOIN ON 关联边（子表外键 → 父表主键）。
+     *
+     * <p>方向判定优先级：外键命名证据（{@code user_id → perf_user}）→ 主键侧证据（{@code = p.id}）
+     * → 兜底「FROM 侧为子表」。前两级置信度 0.9/0.7，兜底仅 0.5，
+     * 由调用方决定是否采纳，避免拿低置信结论去造关联数据。</p>
+     */
+    public static List<JoinEdge> extractJoinEdges(String sql) {
+        List<JoinEdge> out = new ArrayList<>();
+        if (sql == null || sql.isBlank()) {
+            return out;
+        }
+        try {
+            Map<String, String> aliasMap = aliasMap(sql);
+            if (aliasMap.isEmpty()) {
+                return out;
+            }
+            String fromTable = aliasMap.values().iterator().next();
+            Matcher m = JOIN_ON.matcher(sql);
+            while (m.find()) {
+                String la = m.group(1).toLowerCase(Locale.ROOT);
+                String lc = m.group(2).replace("`", "").toLowerCase(Locale.ROOT);
+                String ra = m.group(3).toLowerCase(Locale.ROOT);
+                String rc = m.group(4).replace("`", "").toLowerCase(Locale.ROOT);
+                String lt = aliasMap.get(la);
+                String rt = aliasMap.get(ra);
+                if (lt == null || rt == null || lt.equals(rt)) {
+                    continue;
+                }
+                boolean leftFk = isFkColumn(lc, rt);
+                boolean rightFk = isFkColumn(rc, lt);
+                boolean leftIsChild;
+                double conf;
+                if (leftFk && !rightFk) {
+                    leftIsChild = true;
+                    conf = 0.9;
+                } else if (rightFk && !leftFk) {
+                    leftIsChild = false;
+                    conf = 0.9;
+                } else if (isIdColumn(rc) && !isIdColumn(lc)) {
+                    leftIsChild = true;
+                    conf = 0.7;
+                } else if (isIdColumn(lc) && !isIdColumn(rc)) {
+                    leftIsChild = false;
+                    conf = 0.7;
+                } else {
+                    leftIsChild = lt.equals(fromTable);
+                    conf = 0.5;
+                }
+                String childTable = leftIsChild ? lt : rt;
+                String childColumn = leftIsChild ? lc : rc;
+                String parentTable = leftIsChild ? rt : lt;
+                String parentColumn = leftIsChild ? rc : lc;
+                out.add(new JoinEdge(childTable, childColumn, parentTable, parentColumn, conf));
+            }
+        } catch (Exception ignore) {
+            // 容错：静默
+        }
+        return out;
+    }
+
+    /**
+     * 表名 → 该表在 SQL 中被引用到的列名集合。
+     *
+     * <p>多表时只收限定列（{@code o.status}）；单表时额外收非限定列
+     * （N+1 形态常见 {@code WHERE user_id = #{userId}}，没有别名前缀）。
+     * 单表场景歧义低，接收非限定列是安全且必要的。</p>
+     */
+    public static Map<String, Set<String>> extractColumnsByTable(String sql) {
+        Map<String, Set<String>> out = new LinkedHashMap<>();
+        if (sql == null || sql.isBlank()) {
+            return out;
+        }
+        try {
+            Map<String, String> aliasMap = aliasMap(sql);
+            if (aliasMap.isEmpty()) {
+                return out;
+            }
+            Matcher m = QUALIFIED_COLUMN.matcher(sql);
+            while (m.find()) {
+                String alias = m.group(1).toLowerCase(Locale.ROOT);
+                String table = aliasMap.get(alias);
+                if (table == null) {
+                    continue;
+                }
+                String col = m.group(2).replace("`", "").toLowerCase(Locale.ROOT);
+                if (col.isEmpty() || isKeywordCandidate(col)) {
+                    continue;
+                }
+                out.computeIfAbsent(table, k -> new LinkedHashSet<>()).add(col);
+            }
+            if (aliasMap.size() == 1) {
+                Set<String> cols = out.computeIfAbsent(
+                        aliasMap.values().iterator().next(), k -> new LinkedHashSet<>());
+                cols.addAll(extractBareColumns(sql));
+            }
+        } catch (Exception ignore) {
+            // 容错：静默
+        }
+        return out;
+    }
+
+    /**
+     * 单表 SQL 的非限定列名：比较运算符左侧、IN/BETWEEN/LIKE 左侧、以及 SET 左侧。
+     * 只取标识符形态并剔除关键字、数字、字符串与函数调用，误收风险低。
+     */
+    static Set<String> extractBareColumns(String sql) {
+        Set<String> out = new LinkedHashSet<>();
+        Pattern p = Pattern.compile(
+                "(?<![\\w.`])(\\w+)\\s*(?:=|<|>|>=|<=|!=|(?:\\s+(?:in|like|between)\\s))",
+                Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(sql);
+        while (m.find()) {
+            String col = m.group(1).toLowerCase(Locale.ROOT);
+            if (col.isEmpty() || col.matches("\\d+") || isKeywordCandidate(col)) {
+                continue;
+            }
+            out.add(col);
+        }
+        return out;
+    }
+
+    /**
+     * 列名是否为指向某张表的外键（{@code user_id → perf_user}、{@code order_id → perf_order}）。
+     * 支持去掉表前缀（{@code perf_}）与复数形式。
+     */
+    public static boolean isFkColumn(String column, String parentTable) {
+        if (column == null || parentTable == null) {
+            return false;
+        }
+        String col = column.toLowerCase(Locale.ROOT);
+        if (!col.endsWith("_id") && !col.equals("id")) {
+            return false;
+        }
+        for (String candidate : nameVariants(parentTable)) {
+            if (col.equals(candidate + "_id")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isIdColumn(String column) {
+        return "id".equals(column == null ? null : column.toLowerCase(Locale.ROOT));
+    }
+
+    /** 表名的若干形态：原名、去前缀（perf_/t_/tb_）、去掉结尾复数 s */
+    static List<String> nameVariants(String table) {
+        List<String> out = new ArrayList<>();
+        String t = table.toLowerCase(Locale.ROOT);
+        addVariant(out, t);
+        for (String prefix : new String[]{"perf_", "t_", "tb_", "sys_", "biz_"}) {
+            if (t.startsWith(prefix) && t.length() > prefix.length()) {
+                addVariant(out, t.substring(prefix.length()));
+            }
+        }
+        return out;
+    }
+
+    private static void addVariant(List<String> out, String name) {
+        if (name == null || name.isEmpty() || out.contains(name)) {
+            return;
+        }
+        out.add(name);
+        if (name.endsWith("s") && name.length() > 1) {
+            String singular = name.substring(0, name.length() - 1);
+            if (!out.contains(singular)) {
+                out.add(singular);
+            }
+        }
+    }
+
+    /** JOIN 关联边：子表外键 → 父表列 */
+    public static final class JoinEdge {
+        private final String childTable;
+        private final String childColumn;
+        private final String parentTable;
+        private final String parentColumn;
+        private final double confidence;
+
+        JoinEdge(String childTable, String childColumn, String parentTable, String parentColumn,
+                 double confidence) {
+            this.childTable = childTable;
+            this.childColumn = childColumn;
+            this.parentTable = parentTable;
+            this.parentColumn = parentColumn;
+            this.confidence = confidence;
+        }
+
+        public String getChildTable() {
+            return childTable;
+        }
+
+        public String getChildColumn() {
+            return childColumn;
+        }
+
+        public String getParentTable() {
+            return parentTable;
+        }
+
+        public String getParentColumn() {
+            return parentColumn;
+        }
+
+        public double getConfidence() {
+            return confidence;
+        }
+
+        @Override
+        public String toString() {
+            return childTable + "." + childColumn + " → " + parentTable + "." + parentColumn
+                    + " (conf=" + confidence + ")";
+        }
     }
 }

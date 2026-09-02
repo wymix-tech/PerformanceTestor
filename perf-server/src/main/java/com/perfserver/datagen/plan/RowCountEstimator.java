@@ -121,16 +121,28 @@ public final class RowCountEstimator {
         }
     }
 
-    /** 单表行数请求：表名 + 读写类型 + 分页大小 */
+    /**
+     * 单表行数请求：表名 + 读写类型 + 分页大小 + 所属接口下标。
+     *
+     * <p>{@code endpointIndex} 用于把「接口级权重」折算到「表访问级」——
+     * 一张表可能被多个 Mapper 访问多次（多份 demand），而权重是按接口给的，
+     * 两者长度天然不等，靠 endpointIndex 对齐。</p>
+     */
     public static final class TableDemand {
         private final String table;
         private final boolean write;
         private final int pageSize;
+        private final int endpointIndex;
 
         public TableDemand(String table, boolean write, int pageSize) {
+            this(table, write, pageSize, 0);
+        }
+
+        public TableDemand(String table, boolean write, int pageSize, int endpointIndex) {
             this.table = table == null ? "" : table.toLowerCase(Locale.ROOT);
             this.write = write;
             this.pageSize = pageSize > 0 ? pageSize : DEFAULT_PAGE_SIZE;
+            this.endpointIndex = Math.max(0, endpointIndex);
         }
 
         public String getTable() {
@@ -143,6 +155,11 @@ public final class RowCountEstimator {
 
         public int getPageSize() {
             return pageSize;
+        }
+
+        /** 该次表访问来源于第几个接口/场景步骤（下标从 0 起） */
+        public int getEndpointIndex() {
+            return endpointIndex;
         }
     }
 
@@ -174,8 +191,8 @@ public final class RowCountEstimator {
      * 推导各表行数。
      *
      * @param params  压测参数
-     * @param demands 表需求（按场景步骤权重已折算到 stepRequests）
-     * @param steps   场景步骤权重（空或单元素时按单接口处理）
+     * @param demands 表需求（每个 demand 携带所属接口下标）
+     * @param weights <b>接口级</b>权重（长度等于接口/场景步骤数，与 demands 长度无关）
      * @return 推导结果（含告警）
      */
     public static Estimate estimate(StressParams params, List<TableDemand> demands, List<Integer> weights) {
@@ -186,7 +203,15 @@ public final class RowCountEstimator {
         out.peakQps = peakQps(params);
         out.totalRequests = totalRequests(params, out.peakQps);
 
-        List<Double> stepRequests = splitByWeight(out.totalRequests, weights, demands.size());
+        // 接口级权重 → 表访问级权重：按 demand 的 endpointIndex 取值，
+        // 保证 splitByWeight 的「权重数 == 分摊对象数」前提成立（否则恒退化为均分）
+        List<Integer> perDemandWeights = new ArrayList<>(demands.size());
+        for (TableDemand d : demands) {
+            Integer w = weights != null && d.getEndpointIndex() < weights.size()
+                    ? weights.get(d.getEndpointIndex()) : null;
+            perDemandWeights.add(w == null || w < 0 ? 0 : w);
+        }
+        List<Double> stepRequests = splitByWeight(out.totalRequests, perDemandWeights, demands.size());
         for (int i = 0; i < demands.size(); i++) {
             TableDemand d = demands.get(i);
             double req = stepRequests.get(i);
