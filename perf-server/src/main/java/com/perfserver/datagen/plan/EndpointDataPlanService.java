@@ -257,12 +257,9 @@ public class EndpointDataPlanService {
                 try {
                     List<String> warnings = new ArrayList<>();
                     List<PlanIntegrityChecker.PlanTable> tables = doAnalyze(request, warnings);
-                    DataGenPlan saved = planMapper.findById(planId);
-                    if (saved != null) {
-                        saved.setTablesJson(toJson(tables));
-                        saved.setWarningsJson(toJson(warnings));
-                        planMapper.update(saved);
-                    }
+                    // 走专用 SQL 而非全字段 update：分析期间用户可以采纳/放弃方案，
+                    // 全字段 update 会用分析启动时的旧 status 把用户的操作冲掉
+                    planMapper.updateAnalysis(planId, toJson(tables), toJson(warnings));
                     log.info("plan analyzed: planId={}, repoId={}, endpoints={}, tables={}, elapsedMs={}",
                             planId, request.getRepoId(), request.getEndpoints().size(), tables.size(),
                             System.currentTimeMillis() - start);
@@ -280,17 +277,16 @@ public class EndpointDataPlanService {
         return plan;
     }
 
-    /** 分析失败落库：置 failed 并写原因（与执行期异常共用） */
+    /**
+     * 分析失败落库：置 failed 并写原因（与执行期异常共用）。
+     *
+     * <p>同样走专用 SQL 而非全字段 update，理由见 {@code updateAnalysis}。</p>
+     */
     private void markAnalyzeFailed(long planId, String reason) {
-        DataGenPlan saved = planMapper.findById(planId);
-        if (saved == null) {
-            return;
-        }
-        saved.setWarningsJson(toJson(List.of(ANALYZE_FAILED_PREFIX + reason)));
+        planMapper.updateWarnings(planId, toJson(List.of(ANALYZE_FAILED_PREFIX + reason)));
         // 必须置 failed：只写 warnings 而状态仍为 pending 时，前端无法区分
         // 「排队/分析中」与「分析失败」，只能干等到轮询超时
-        saved.setStatus(DataGenPlan.ST_FAILED);
-        planMapper.update(saved);
+        planMapper.updateStatus(planId, DataGenPlan.ST_FAILED);
     }
 
     /** 核心分析流程（供单测直接调用，同步执行） */

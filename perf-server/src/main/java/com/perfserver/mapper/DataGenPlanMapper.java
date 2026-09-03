@@ -34,5 +34,16 @@ public interface DataGenPlanMapper {
      */
     int updateWarnings(@Param("id") long id, @Param("warningsJson") String warningsJson);
 
+    /**
+     * 只回写分析产出（表清单 + 告警），不动 status/task_id。
+     *
+     * <p>分析跑在独立线程池，「查对象 → 改字段 → 全字段 update」之间存在时间窗：
+     * 期间用户采纳/放弃方案（走 {@link #updateStatus}）或正式灌数回写了
+     * {@code task_id}，全字段 update 会用分析启动时查出的旧值把它们冲掉，
+     * 且无任何报错——用户会看到「刚采纳又变回待采纳」。</p>
+     */
+    int updateAnalysis(@Param("id") long id, @Param("tablesJson") String tablesJson,
+                       @Param("warningsJson") String warningsJson);
+
     int deleteById(@Param("id") long id);
 }

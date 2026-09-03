@@ -166,10 +166,26 @@ public class DataGenController {
                                                 @RequestParam(defaultValue = "true") boolean dryRun,
                                                 @RequestBody(required = false) Map<String, Object> conn) {
         Map<String, Integer> rowOverrides = parseRowOverrides(conn);
-        if (conn != null && !conn.isEmpty() && dataGenService.planNeedsConnection(id)) {
+        // 只在请求体真的带了连接字段时才回填：body 可能仅含 rowOverrides，
+        // 此时若仍走回填，抛的是「connId 与 dbUrl 必须且只能提供其一」——
+        // 与用户实际操作（只改了行数）不符。放行后由 runFromPlan 的
+        // validatePlanConnection 报「方案未指定连接」，才是准确的失败原因。
+        if (carriesConnection(conn) && dataGenService.planNeedsConnection(id)) {
             dataGenService.applyPlanConnection(id, conn);
         }
         return ApiResponse.ok(dataGenService.runFromPlan(id, dryRun, rowOverrides));
+    }
+
+    /** 请求体是否携带了连接字段（connId 或 dbUrl 任一有值；包级可见以便单测） */
+    static boolean carriesConnection(Map<String, Object> body) {
+        if (body == null || body.isEmpty()) {
+            return false;
+        }
+        return isPresent(body.get("connId")) || isPresent(body.get("dbUrl"));
+    }
+
+    private static boolean isPresent(Object v) {
+        return v != null && !String.valueOf(v).trim().isEmpty();
     }
 
     /** 解析用户在方案卡上改过的行数：{rowOverrides:[{table,rowCount}]} */

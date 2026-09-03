@@ -365,20 +365,53 @@ class EndpointDataPlanServiceTest {
         org.mockito.Mockito.doAnswer(inv -> {
             done.countDown();
             return 1;
-        }).when(planMapper).update(org.mockito.ArgumentMatchers.any(DataGenPlan.class));
+        }).when(planMapper).updateStatus(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString());
 
         service.analyze(request("GET", "/api/order/list"));
 
         assertTrue(done.await(10, java.util.concurrent.TimeUnit.SECONDS),
                 "异步分析应在 10s 内把结果落库");
-        ArgumentCaptor<DataGenPlan> cap = ArgumentCaptor.forClass(DataGenPlan.class);
-        org.mockito.Mockito.verify(planMapper, org.mockito.Mockito.atLeastOnce()).update(cap.capture());
-        DataGenPlan saved = cap.getAllValues().get(cap.getAllValues().size() - 1);
-        assertEquals(DataGenPlan.ST_FAILED, saved.getStatus(),
+        ArgumentCaptor<String> statusCap = ArgumentCaptor.forClass(String.class);
+        org.mockito.Mockito.verify(planMapper, org.mockito.Mockito.atLeastOnce())
+                .updateStatus(org.mockito.ArgumentMatchers.anyLong(), statusCap.capture());
+        assertEquals(DataGenPlan.ST_FAILED,
+                statusCap.getAllValues().get(statusCap.getAllValues().size() - 1),
                 "分析异常必须置 failed：停留 pending 时前端无法区分「分析中」与「分析失败」");
-        assertTrue(saved.getWarningsJson() != null
-                        && saved.getWarningsJson().contains(EndpointDataPlanService.ANALYZE_FAILED_PREFIX),
-                "失败原因必须写进告警，实际: " + saved.getWarningsJson());
+
+        ArgumentCaptor<String> warnCap = ArgumentCaptor.forClass(String.class);
+        org.mockito.Mockito.verify(planMapper).updateWarnings(org.mockito.ArgumentMatchers.anyLong(),
+                warnCap.capture());
+        assertTrue(warnCap.getValue().contains(EndpointDataPlanService.ANALYZE_FAILED_PREFIX),
+                "失败原因必须写进告警，实际: " + warnCap.getValue());
+    }
+
+    @Test
+    void analyzeResultIsPersistedWithoutTouchingStatus() throws Exception {
+        // 回归：分析产出必须走专用 SQL，不得用全字段 update——
+        // 分析期间用户采纳/放弃方案会走 updateStatus，全字段 update 会把它冲掉
+        stubInsertAssignsId();
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(inv -> {
+            done.countDown();
+            return 1;
+        }).when(planMapper).updateAnalysis(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+
+        service.analyze(request("GET", "/api/order/list"));
+
+        assertTrue(done.await(10, java.util.concurrent.TimeUnit.SECONDS),
+                "异步分析应在 10s 内把结果落库");
+        ArgumentCaptor<String> tablesCap = ArgumentCaptor.forClass(String.class);
+        org.mockito.Mockito.verify(planMapper).updateAnalysis(org.mockito.ArgumentMatchers.anyLong(),
+                tablesCap.capture(), org.mockito.ArgumentMatchers.any());
+        assertTrue(tablesCap.getValue().contains("perf_order"),
+                "表清单必须落库，实际: " + tablesCap.getValue());
+        // 关键断言：成功路径不得碰 status——采纳/放弃是用户动作，分析无权覆盖
+        org.mockito.Mockito.verify(planMapper, org.mockito.Mockito.never())
+                .updateStatus(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString());
+        org.mockito.Mockito.verify(planMapper, org.mockito.Mockito.never())
+                .update(org.mockito.ArgumentMatchers.any(DataGenPlan.class));
     }
 
     @Test

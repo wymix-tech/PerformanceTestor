@@ -626,8 +626,13 @@ public class DataGenService {
     private void validatePlanConnection(com.perfserver.entity.DataGenPlan plan) {
         boolean hasConn = plan.getConnId() != null;
         boolean hasUrl = plan.getDbUrl() != null && !plan.getDbUrl().isBlank();
-        if (hasConn == hasUrl) {
-            throw new IllegalArgumentException("方案的数据库连接配置 ID 与 JDBC URL 必须且只能提供其一");
+        // 「两者都无」是执行期最常见的情形（分析阶段允许留空，执行时才补），
+        // 必须单独给文案：说成「必须且只能提供其一」用户不知道该去哪里补
+        if (!hasConn && !hasUrl) {
+            throw new IllegalArgumentException("方案尚未指定数据库连接，请先选择连接配置或填写 JDBC URL");
+        }
+        if (hasConn && hasUrl) {
+            throw new IllegalArgumentException("方案的数据库连接配置 ID 与 JDBC URL 只能提供其一");
         }
         if (hasConn && dbConnMapper != null && dbConnMapper.findById(plan.getConnId()) == null) {
             throw new IllegalArgumentException("数据库连接配置不存在: " + plan.getConnId());

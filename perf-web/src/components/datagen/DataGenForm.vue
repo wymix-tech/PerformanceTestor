@@ -513,8 +513,16 @@ function toggleEvidence(idx: number) {
   expandedEvidence.value[idx] = !expandedEvidence.value[idx]
 }
 
+/**
+ * 标记方案被手动调整。
+ *
+ * <p>必须同时作废试运行结果：试运行校验的是<b>当时的</b>参数，改完行数后
+ * 「正式灌数」按钮仍可点，等于用旧参数的校验结论放行新参数——而行数正是
+ * 影响灌数规模与执行时长的核心参数。</p>
+ */
 function markPlanDirty() {
   planDirty.value = true
+  planDryRunPassed.value = false
 }
 
 /** 清除方案：退回纯手动模式，并通知父组件清掉 activePlanId */

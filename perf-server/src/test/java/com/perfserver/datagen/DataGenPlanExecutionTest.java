@@ -32,6 +32,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -242,6 +243,18 @@ class DataGenPlanExecutionTest {
         DataGenService spy = org.mockito.Mockito.spy(service);
         org.mockito.Mockito.doReturn(task).when(spy).createAndRun(any(DataGenRequest.class));
         return spy.runFromPlan(planId, dryRun, null);
+    }
+
+    @Test
+    void planWithoutConnectionReportsMissingConnectionNotBothOrNeither() {
+        // 回归：「两者都无」是执行期最常见的情形（分析允许留空、执行时才补），
+        // 必须给出「尚未指定连接」而不是含混的「必须且只能提供其一」
+        DataGenPlan p = planWith(40L, null);
+        when(planMapper.findById(40L)).thenReturn(p);
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> service.runFromPlan(40L, false, null));
+        assertTrue(ex.getMessage().contains("尚未指定数据库连接"),
+                "文案应指向「去哪里补连接」，实际: " + ex.getMessage());
     }
 
     @Test

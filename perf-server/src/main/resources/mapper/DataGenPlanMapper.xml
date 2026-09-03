@@ -71,6 +71,20 @@
         UPDATE data_gen_plan SET warnings_json = #{warningsJson} WHERE id = #{id}
     </update>
 
+    <!--
+      只回写分析产出：避免全字段 update 覆盖并发写。
+
+      分析是异步的，「查出对象 → 改字段 → 全字段 update」之间存在时间窗：
+      若期间用户采纳/放弃方案（走 updateStatus），或正式灌数回写了 task_id，
+      全字段 update 会用分析开始时查出的旧 status/task_id 把它们冲掉。
+    -->
+    <update id="updateAnalysis">
+        UPDATE data_gen_plan
+        SET tables_json = #{tablesJson},
+            warnings_json = #{warningsJson}
+        WHERE id = #{id}
+    </update>
+
     <delete id="deleteById">
         DELETE FROM data_gen_plan WHERE id = #{id}
     </delete>
