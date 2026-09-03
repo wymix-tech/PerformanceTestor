@@ -324,7 +324,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
             List<Object[]> batch = new ArrayList<>(batchSize);
             for (int row = 0; row < ts.getRowCount(); row++) {
                 batch.add(buildRow(conn, meta, ts, insertColumns, cols, tableEdges, pools, pk, selfRef,
-                        orphanRate, enumValues));
+                        orphanRate, enumValues, row));
                 if (batch.size() >= batchSize) {
                     executor.executeBatch(conn, sql, batch);
                     inserted += batch.size();
@@ -353,7 +353,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
                               List<String> insertColumns, List<SchemaMetadata.ColumnMeta> cols,
                               Map<String, RelationHint> tableEdges, Map<String, Map<String, IdPool>> pools,
                               String pk, boolean selfRef, double orphanRate,
-                              Map<String, List<Object>> enumValues) {
+                              Map<String, List<Object>> enumValues, long rowIndex) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
         Object[] row = new Object[insertColumns.size()];
         boolean orphan = r.nextDouble() < orphanRate;
@@ -375,7 +375,7 @@ public class DefaultDataGenEngine implements DataGenEngine {
                 IdPool pool = pools.get(parentTable) == null ? null : pools.get(parentTable).get(parentColumn);
                 value = sampleRef(pool, fr, orphan, col);
             } else if (fr != null) {
-                value = RuleEngine.applyRule(fr, col);
+                value = RuleEngine.applyRule(fr, col, rowIndex);
             } else {
                 // 未配置规则：优先用 DB 发现的枚举值（PG 原生枚举 / MySQL ENUM / CHECK 约束），
                 // 否则随机生成——否则枚举列会被填入随机长串，直接触发类型/约束错误。

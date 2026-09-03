@@ -107,6 +107,13 @@
   .btn-secondary:hover:not(:disabled) {
     @apply border-neon-blue bg-neon-blue/20;
   }
+  /* 幽灵次按钮：透明底 + 1px 描边（按接口准备数据等次要入口，不与主操作抢焦点） */
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-fg-sub border border-white/15 bg-transparent transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    @apply text-fg-main border-white/30 bg-white/5;
+  }
   /* 调用树背景 */
   .tree-bg {
     background: rgba(0, 0, 0, 0.25);

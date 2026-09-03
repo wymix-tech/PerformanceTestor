@@ -17,6 +17,11 @@ import java.util.Map;
 /**
  * DataGenRequest（宿主 HTTP 模型）→ DataGenSpec（模块引擎模型）适配。
  * 兼容旧单表形态（tables 为空时以 tableName/rowCount 构造单元素表组）。
+ *
+ * <p>关于 {@code connId}：本适配器只认 {@code dbUrl/dbUser/dbPassword}，<b>不解析 connId</b>——
+ * 它是无状态组件，拿不到 {@code DbConnMapper} 与解密服务。connId → 真实凭据的换算
+ * 统一由编排层（{@code DataGenService#runFromPlan}、{@code DataGenController#start}）在
+ * 调用本适配器之前完成，避免同一份解析逻辑散落多处。</p>
  */
 @Component
 public class DataGenSpecAdapter {
@@ -146,6 +151,13 @@ public class DataGenSpecAdapter {
             t.setValue(ot.path("value").asDouble());
             t.setShare(ot.path("share").asDouble(30));
             r.setOverThreshold(t);
+        }
+        if (node.hasNonNull("seqPrefix")) {
+            r.setSeqPrefix(node.path("seqPrefix").asText());
+        }
+        if (node.hasNonNull("seqStart")) {
+            // 由 SeqStartResolver 在执行时刷新；方案 JSON 里不固化起始值
+            r.setSeqStart(node.path("seqStart").asLong());
         }
         return r;
     }

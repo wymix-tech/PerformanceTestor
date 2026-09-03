@@ -63,9 +63,11 @@
             :endpoints="endpoints"
             :auto-base-url="autoBaseUrl"
             :disabled="running"
+            :preparing="preparingPlan"
             submit-label="开始压测"
             @submit="startStress"
             @endpoint-selected="onEndpointSelected"
+            @prepare-data="prepareData"
           />
         </div>
       </div>
@@ -126,7 +128,13 @@
 
     <!-- 数据准备 Tab：与快速开始向导「灌注数据」共用 DataGenForm，能力完全一致 -->
     <div v-else-if="activeTab === 'datagen'">
-      <DataGenForm :poll="true" />
+      <DataGenForm
+        ref="dataGenFormRef"
+        :poll="true"
+        :initial-repo-id="repoId"
+        :initial-plan-id="activePlanId"
+        @plan-cleared="activePlanId = 0"
+      />
     </div>
     <!-- 定时压测 Tab：调度管理 + 版本基线对比（回归门禁） -->
     <SchedulePanel v-else-if="activeTab === 'schedule'" :template="stressFormRef?.snapshot?.() || null" />
@@ -143,7 +151,7 @@ import CapacityAdvicePanel from '../components/stress/CapacityAdvicePanel.vue'
 import SchedulePanel from '../components/stress/SchedulePanel.vue'
 import DataGenForm from '../components/datagen/DataGenForm.vue'
 import { fmtTime } from '../utils/format'
-import { stressApi, sourceApi, appApi, capacityApi } from '../api'
+import { stressApi, sourceApi, appApi, capacityApi, dataGenPlanApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 import { useRoute } from 'vue-router'
 
@@ -253,6 +261,105 @@ async function changeBranch(branch: string) {
 function onEndpointSelected(e: Record<string, any>) {
   if (!taskName.value) {
     taskName.value = `${e.className}#${e.methodName || e.path}`
+  }
+}
+
+/**
+ * 按接口准备数据：把当前接口/场景与压测参数交给后端分析源码调用链，
+ * 生成数据方案后切到数据准备 Tab 由用户确认（先试运行再正式执行）。
+ *
+ * <p>接口标识取 path（去掉服务地址前缀）而非完整 URL——后端按
+ * {@code (httpMethod, path)} 与 Controller 方法匹配，带 host 的 URL 匹配不上。</p>
+ */
+const preparingPlan = ref(false)
+const activePlanId = ref(0)
+const dataGenFormRef = ref<InstanceType<typeof DataGenForm> | null>(null)
+
+/**
+ * 把总时长按档数拆分，余数补到最后一档（避免 100s ÷ 3 档 = 33+33+33 只跑 99s
+ * 而与压测实际执行的分档不一致）。
+ */
+function buildStages(concurrencies: number[], totalSec: number) {
+  const n = Math.max(concurrencies.length, 1)
+  const base = Math.floor(totalSec / n)
+  return concurrencies.map((c, i) => ({
+    concurrency: Number(c) || 1,
+    durationSec: i === n - 1 ? totalSec - base * (n - 1) : base
+  }))
+}
+
+/** 从完整 URL 提取 path（含 query 前的部分） */
+function pathOfUrl(url: string): string {
+  const s = String(url || '').trim()
+  if (!s) return ''
+  if (!/^https?:\/\//i.test(s)) return s
+  const rest = s.replace(/^https?:\/\/[^/]+/i, '')
+  return rest.startsWith('/') ? rest : '/' + rest
+}
+
+/**
+ * 把压测请求体折算为方案分析所需的接口清单。
+ *
+ * <p>同时带上 className/methodName：端点扫描结果里就有这两个字段，
+ * 后端在路径匹配不上时可用「类#方法」兜底（多值 path、路径变量差异等场景）。</p>
+ */
+function toEndpointInputs(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const scenario = payload.scenario as Array<Record<string, any>> | undefined
+  if (scenario && scenario.length) {
+    return scenario
+      .filter((s) => String(s.url || '').trim())
+      .map((s) => ({
+        httpMethod: String(s.method || 'GET').toUpperCase(),
+        path: pathOfUrl(String(s.url || '')),
+        weight: Number(s.weight) > 0 ? Number(s.weight) : 1,
+        className: String(s.className || '') || undefined,
+        methodName: String(s.methodName || '') || undefined
+      }))
+  }
+  return [{
+    httpMethod: String(payload.method || 'GET').toUpperCase(),
+    path: pathOfUrl(String(payload.targetUrl || '')),
+    weight: 1,
+    className: String(payload.className || '') || undefined,
+    methodName: String(payload.methodName || '') || undefined
+  }]
+}
+
+async function prepareData(payload: Record<string, unknown>) {
+  if (!repoId.value) {
+    stressFormRef.value?.setPrepareError('请先在上方选择源码项目，再按接口准备数据')
+    return
+  }
+  const endpointInputs = toEndpointInputs(payload)
+  if (!endpointInputs.length || !endpointInputs.some((e) => e.path)) {
+    stressFormRef.value?.setPrepareError('未能从当前配置解析出接口路径，请检查目标 URL')
+    return
+  }
+  preparingPlan.value = true
+  try {
+    const r = await dataGenPlanApi.analyze({
+      repoId: repoId.value,
+      planName: taskName.value || undefined,
+      endpoints: endpointInputs,
+      stress: {
+        concurrency: Number(payload.concurrency) || 1,
+        durationSec: Number(payload.durationSec) || 60,
+        qpsLimit: Number(payload.qpsLimit) || 0,
+        // 分档并发仅 >1 档时传递（单档按统一并发处理）
+        stages: Array.isArray(payload.stageConcurrencies) ? buildStages(
+          payload.stageConcurrencies as number[],
+          Number(payload.durationSec) || 60
+        ) : []
+      }
+      // 连接留空：分析阶段只读源码，目标库连接在数据准备页选定后再回填方案
+    })
+    activePlanId.value = r.data?.id || 0
+    activeTab.value = 'datagen'
+  } catch (e: any) {
+    // 失败内联展示在压测表单内，不弹窗、不跳转，避免用户丢失已填参数
+    stressFormRef.value?.setPrepareError(e?.response?.data?.message || e?.message || '方案分析失败')
+  } finally {
+    preparingPlan.value = false
   }
 }
 
