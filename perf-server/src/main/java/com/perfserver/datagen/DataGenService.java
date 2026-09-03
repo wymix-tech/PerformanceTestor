@@ -168,7 +168,9 @@ public class DataGenService {
                     new com.perfserver.datagen.plan.PlanIntegrityChecker(objectMapper);
             List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> tables =
                     toPlanTables(request.getTables());
-            boolean broke = checker.breakWeakestCycleEdge(tables, msg, java.util.Map.of());
+            // 置信度必须来自规则 JSON：早前这里传 Map.of()，所有边都按默认 1.0 对待，
+            // 「剔除最低置信度边」实际退化为「剔除环中第一条边」
+            boolean broke = checker.breakWeakestCycleEdge(tables, msg, checker.edgeConfidence(tables));
             if (!broke) {
                 warnings.add("检测到循环依赖且无法自动降级: " + msg);
                 throw e;
@@ -425,7 +427,7 @@ public class DataGenService {
      *   <li>{@code PlanIntegrityChecker} 补父表——<b>必须在构建 DataGenSpec 之前</b>，
      *       否则 explicit 边被引擎的 metaMap 过滤掉，ref 池为空且无任何报错</li>
      *   <li>{@code SeqStartResolver} 连库探测并刷新 seqStart（保证方案可重复执行）</li>
-     *   <li>组装 DataGenRequest</li>
+     *   <li>解析连接并组装 DataGenRequest</li>
      *   <li>复用 {@link #createAndRun}（引擎内部拓扑排序保证父表先灌）</li>
      * </ol>
      *
@@ -462,11 +464,15 @@ public class DataGenService {
             refreshSeqStarts(plan, finalTables, warnings);
         }
 
-        // ④ 组装请求
+        // ④ 组装请求：connId 必须在编排层换成真实连接三元组，
+        //    否则 connId-only 方案会以 dbUrl=null 撞上 validate() 的方言校验
+        ResolvedConn resolved = resolvePlanConn(plan);
         DataGenRequest request = new DataGenRequest();
         request.setTaskName(plan.getPlanName());
         request.setConnId(plan.getConnId());
-        request.setDbUrl(plan.getDbUrl());
+        request.setDbUrl(resolved.getUrl());
+        request.setDbUser(resolved.getUser());
+        request.setDbPassword(resolved.getPassword());
         request.setRepoId(plan.getRepoId());
         request.setDryRun(dryRun);
         List<DataGenRequest.TableSpecDto> specs = new ArrayList<>();
@@ -561,6 +567,58 @@ public class DataGenService {
         }
     }
 
+    /** 解析后的可直连三元组（connId 或 dbUrl 二选一解析而来） */
+    private static final class ResolvedConn {
+        private final String url;
+        private final String user;
+        private final String password;
+
+        ResolvedConn(String url, String user, String password) {
+            this.url = url;
+            this.user = user;
+            this.password = password;
+        }
+
+        String getUrl() {
+            return url;
+        }
+
+        String getUser() {
+            return user;
+        }
+
+        String getPassword() {
+            return password;
+        }
+    }
+
+    /**
+     * 把方案上的「connId 或 dbUrl」解析成可直连的 JDBC 三元组。
+     *
+     * <p>为什么必须在编排层做：connId 只是连接配置的引用，引擎与
+     * {@link DataGenSpecAdapter} 都只认 {@code jdbcUrl / dbUser / dbPassword}，
+     * 而适配器是无状态组件、拿不到 {@code DbConnMapper} 与解密服务。
+     * 此前 {@code runFromPlan} 直接把 {@code plan.getDbUrl()}（connId-only 方案下为 null）
+     * 塞进 request，最终撞在 {@link #validate} 的 {@code validateDbUrl(null)} 上抛异常——
+     * connId 是本功能明确支持的连接方式，这条路径必现失败。</p>
+     *
+     * @throws IllegalArgumentException 连接配置不存在或不可用时
+     */
+    private ResolvedConn resolvePlanConn(com.perfserver.entity.DataGenPlan plan) {
+        if (plan.getConnId() != null) {
+            if (dbConnMapper == null) {
+                throw new IllegalArgumentException("数据库连接配置不可用: " + plan.getConnId());
+            }
+            com.perfserver.entity.DbConn conn = dbConnMapper.findById(plan.getConnId());
+            if (conn == null) {
+                throw new IllegalArgumentException("数据库连接配置不存在: " + plan.getConnId());
+            }
+            return new ResolvedConn(conn.getDbUrl(), conn.getUsername(),
+                    cryptoService.decrypt(conn.getPassword()));
+        }
+        return new ResolvedConn(plan.getDbUrl(), null, null);
+    }
+
     /** 连接参数强校验：connId 与 dbUrl 必须且只能其一（DDL 不加 CHECK，统一在服务层校验） */
     private void validatePlanConnection(com.perfserver.entity.DataGenPlan plan) {
         boolean hasConn = plan.getConnId() != null;
@@ -573,31 +631,47 @@ public class DataGenService {
         }
     }
 
-    /** 刷新方案中所有 seq 规则的起始值（探测失败回退 1 并写告警） */
+    /**
+     * 刷新方案中所有 seq 规则的起始值（探测失败回退 1 并写告警）。
+     *
+     * <p>连接前先做方言校验，与 {@link #listTables} 等既有入口保持一致：非法 URL 若直接交给
+     * JDBC 驱动，报错信息是驱动内部的堆栈文本，用户看不出是 URL 填错。</p>
+     */
     private void refreshSeqStarts(com.perfserver.entity.DataGenPlan plan,
                                   List<com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable> tables,
                                   List<String> warnings) {
-        String url = plan.getDbUrl();
-        String user = null;
-        String password = null;
-        if (plan.getConnId() != null && dbConnMapper != null) {
-            com.perfserver.entity.DbConn conn = dbConnMapper.findById(plan.getConnId());
-            if (conn == null) {
-                warnings.add("数据库连接配置不存在，序号起始值未刷新");
-                return;
-            }
-            url = conn.getDbUrl();
-            user = conn.getUsername();
-            password = cryptoService.decrypt(conn.getPassword());
+        ResolvedConn resolved;
+        try {
+            resolved = resolvePlanConn(plan);
+        } catch (IllegalArgumentException e) {
+            warnings.add("序号起始值未刷新: " + e.getMessage());
+            return;
         }
+        String url = resolved.getUrl();
         if (url == null || url.isBlank()) {
             return;
         }
+        try {
+            validateDbUrl(url);
+        } catch (IllegalArgumentException e) {
+            warnings.add("序号起始值未刷新: " + e.getMessage());
+            return;
+        }
+        // 没有任何 seq 规则时不建连：多数方案不含唯一编码列，白跑一次连库只会在
+        // 目标库不可达时白白耗掉超时时间
+        if (tables.stream().noneMatch(this::hasSeqRule)) {
+            return;
+        }
+        if (resolved.getUser() == null || resolved.getUser().isBlank()) {
+            // 方案不保存账号密码，dbUrl 形态下只能依赖 URL 内嵌凭据——把这条隐式依赖讲明白
+            warnings.add("方案未保存数据库账号，序号起始值探测依赖 JDBC URL 内嵌凭据"
+                    + "（URL 未带凭据时探测会失败并回退起始值 1）");
+        }
         com.perfserver.datagen.plan.SeqStartResolver resolver =
                 new com.perfserver.datagen.plan.SeqStartResolver(objectMapper);
-        try (Connection conn = connect(url, user, password)) {
+        try (Connection conn = connect(url, resolved.getUser(), resolved.getPassword())) {
             for (com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable t : tables) {
-                if (t.getFields() == null || !t.getFields().contains("\"" + FieldRule.TYPE_SEQ + "\"")) {
+                if (!hasSeqRule(t)) {
                     continue;
                 }
                 var refreshed = resolver.refresh(conn, t.getTable(), t.getFields());
@@ -608,6 +682,10 @@ public class DataGenService {
             warnings.add("序号起始值刷新失败（若库内已有数据可能撞唯一键）: " + e.getMessage());
             log.warn("refresh seqStart failed, planId={}: {}", plan.getId(), e.getMessage());
         }
+    }
+
+    private boolean hasSeqRule(com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable t) {
+        return t.getFields() != null && t.getFields().contains("\"" + FieldRule.TYPE_SEQ + "\"");
     }
 
     /** 任务列表（时间倒序） */

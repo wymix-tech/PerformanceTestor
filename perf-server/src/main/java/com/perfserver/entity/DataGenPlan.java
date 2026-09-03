@@ -11,10 +11,18 @@ import java.time.LocalDateTime;
  */
 public class DataGenPlan {
 
+    /** 分析中 / 分析完成待采纳（分析为异步，二者共用 pending） */
     public static final String ST_PENDING = "pending";
     public static final String ST_ADOPTED = "adopted";
     public static final String ST_EXECUTED = "executed";
     public static final String ST_DISCARDED = "discarded";
+    /**
+     * 分析失败。
+     *
+     * <p>必须显式区分：异步分析抛异常时若仍停留 {@link #ST_PENDING}，前端只能靠
+     * 「表清单为空且无告警」猜测状态，与「分析正在进行中」无法区分——用户会一直等到轮询超时。</p>
+     */
+    public static final String ST_FAILED = "failed";
 
     private Long id;
     private Long repoId;

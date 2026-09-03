@@ -268,6 +268,66 @@ LLM 返回解析后未合入任何结论却报「增强已应用」。
 - `PlanIntegrityChecker` 环依赖降级未接入主流程（有实现无调用）→ 在 `DataGenService.runEngine` 中接入 `executeWithCycleFallback`：捕获含「循环依赖」的 `IllegalArgumentException` → 剔除最低置信度 ref 边 → **复用同一 listener 与 dryRun** 重建 spec 重试一次 → 仍失败写告警后抛出
 - 前端 `loadPlan` 轮询存在叠加请求风险（慢响应时后到的旧响应覆盖新数据）→ 加 `planLoading` 防重入标志，`finally` 释放
 
+## 五之五、二次复审修复（PR #13 第四轮）
+
+二次复审结论：上轮 2 个问题已确认修复，但发现 **1 处关键 Bug + 3 处建议级问题**，全部修复。
+
+### ❌ 关键 Bug：`runFromPlan` 走 connId-only 方案必然失败
+
+`runFromPlan` 直接把 `plan.getDbUrl()` 塞进 request——connId-only 方案下它是 `null`，`createAndRun → validate → validateDbUrl(null)` 立即抛异常，**任务根本创建不出来**；而 `DataGenSpecAdapter.toSpec` 也只认 `jdbcUrl` 三元组、不解析 `connId`。connId 是本功能明确支持的二选一连接方式，属主流程阻断。
+
+修复：`DataGenService` 新增 `resolvePlanConn(plan)`，在编排层把 connId 换成真实三元组（`cryptoService.decrypt` 后的明文密码），`runFromPlan` 与 `refreshSeqStarts` 共用。
+
+为什么放在编排层而不是适配器：`DataGenSpecAdapter` 是无状态组件，拿不到 `DbConnMapper` 与解密服务；放在适配器里就得把 Mapper 注入进去，把「纯协议转换」变成「带依赖的解析」。已在 `DataGenSpecAdapter` 的类注释里写明这一边界，避免后来者重复踩坑。
+
+回归用例（`DataGenPlanExecutionTest` +3）：
+
+- `connIdOnlyPlanResolvesRealCredentials` —— 断言 dbUrl/dbUser/dbPassword 都被正确解析且密码是**解密后明文**（不是 `ENC:` 密文）
+- `dbUrlOnlyPlanKeepsUrlAndLeavesCredentialsEmpty` —— 方案不保存账号密码，dbUrl 形态下不得凭空塞默认值
+- `connIdIsNotBlindlyPassedDownToTheEngine` —— 用 PG URL 复验「connId 原样下发」这条路走不通
+
+捕获方式：用 spy 在 `createAndRun` 处截断。这比「吞掉异常后查 insert 日志」更严格——若 dbUrl 仍为 null，`validateDbUrl` 会在到达捕获点之前就抛异常。
+
+### ⚠️ 建议①：`refreshSeqStarts` 的 dbUrl 直传未走方言校验
+
+连接前补 `validateDbUrl`，与 `listTables`、`listColumns` 等既有入口一致：非法 URL 直接交给 JDBC 驱动，报错是驱动内部堆栈文本，用户看不出是 URL 填错。校验失败降级为告警（不阻断执行），因为序号刷新是辅助能力。
+
+顺带两处收敛：
+
+- 方案不保存账号密码，dbUrl 形态下序号探测只能依赖 URL 内嵌凭据——这条隐式依赖原先完全没提示，现在显式写入告警
+- 没有任何 seq 规则时不建连（多数方案不含唯一编码列，白跑一次连库只会在目标库不可达时白白耗掉超时时间）
+
+### ⚠️ 建议②：`breakWeakestCycleEdge` 传 `Map.of()`，「最低置信度」退化为任选一条边
+
+调用方传空 Map 后，所有边都落到默认置信度 1.0，`conf < lowest` 只在第一条边成立一次——被剔除的实际是**环消息里排在最前面**的那条边，很可能正是 JOIN ON 这种高置信边，而低置信的外键命名猜测边被保留了。行为与告警文案「已剔除一条最低置信度的关联边」不符。
+
+修复分两步：
+
+1. `PlanRuleComposer.refRule()` 把 `confidence` 写进规则 JSON（JOIN ON 0.9/0.7、命名猜测 0.6）
+2. `PlanIntegrityChecker.edgeConfidence(tables)` 从规则 JSON 反读，键统一小写；同一对表有多条 ref 列时取**最高**置信度（`removeRefEdge` 会一次性移除该方向所有 ref 列，按最强的那条衡量这条边是否可信）
+
+回归用例（`PlanIntegrityCheckerTest` +5）。核心是 `weakestEdgeIsChosenByRealConfidenceNotByOrder`：故意让 `a->b`（0.9）排在环消息前面、`b->a`（0.5）在后，断言被剔除的是**后者**——若退化为「任选第一条边」，该断言必然失败。
+
+### ⚠️ 建议③：分析异常后状态停留 `pending`，前端无法区分排队中/失败
+
+异步分析抛异常时只写 warnings、状态仍是 `pending`，前端只能靠「表清单为空且无告警」猜测，与「分析正在进行中」完全无法区分，用户会一直干等到轮询超时（30s）。
+
+修复：新增 `DataGenPlan.ST_FAILED`，分析异常时置为 `failed`；告警带固定前缀 `分析失败: `（常量 `ANALYZE_FAILED_PREFIX`）。DDL 的 `status` 是 `VARCHAR(16)`，**无需改表**。
+
+前端同步：`planFailed` 按状态判定（不再靠空态推断），`failed` 时停止轮询（分析失败不会自行恢复，继续轮询纯属空转），告警分三级着色——分析失败红（阻断）/ RT 基线来源弱化（纯说明）/ 其余降级告警黄。
+
+回归用例：`analyzeFailureIsPersistedAsFailedStatus` 用 `CountDownLatch` 等异步落库（不用 sleep 猜时间），断言 `status == failed` 且告警带前缀。
+
+### 本轮测试增量
+
+| 模块 | 上轮 | 本轮 | 新增用例 |
+| --- | --- | --- | --- |
+| perf-datagen | 160 | 160 | — |
+| perf-agent | 27 | 27 | — |
+| perf-server | 432 | 443 | +11（connId 回填 3、置信度 5、failed 状态 1、refRule 置信度 2） |
+
+合计 **630 项全通过**，`vue-tsc --noEmit` 与 `vite build` 均通过。
+
 ## 六、新增 API
 
 ```

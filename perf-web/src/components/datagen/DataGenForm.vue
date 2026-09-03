@@ -19,9 +19,8 @@
 
         <!-- 未覆盖提示：静态分析无法解析的调用链/子查询，引导手工补表 -->
         <div v-if="planWarnings.length" class="px-3 py-2 border-b border-white/10 space-y-1">
-          <div v-for="(w, wi) in planWarnings" :key="wi"
-               :class="w.startsWith('响应时间基线') ? 'text-[11px] text-fg-sub' : 'text-[11px] text-amber-400'">
-            {{ w.startsWith('响应时间基线') ? 'ⓘ ' : '⚠ ' }}{{ w }}
+          <div v-for="(w, wi) in planWarnings" :key="wi" class="text-[11px]" :class="warningClass(w)">
+            {{ warningIcon(w) }}{{ w }}
           </div>
         </div>
 
@@ -54,9 +53,14 @@
             </div>
           </div>
         </div>
-        <div v-else class="px-3 py-4 text-[11px] text-fg-sub text-center">
-          <span v-if="planAnalyzing">正在分析源码调用链…</span>
-          <span v-else>该接口未分析出涉及的表，可在下方手动选表，或检查告警提示</span>
+        <div v-else class="px-3 py-4 text-[11px] text-center">
+          <span v-if="planAnalyzing" class="text-fg-sub">正在分析源码调用链…</span>
+          <span v-else-if="planFailed" class="text-red-400">
+            分析失败，请查看上方告警后重试，或在下方手动选表造数
+          </span>
+          <span v-else class="text-fg-sub">
+            该接口未分析出涉及的表，可在下方手动选表，或检查告警提示
+          </span>
         </div>
 
         <div class="px-3 py-2 border-t border-white/10 flex items-center justify-between gap-2">
@@ -360,9 +364,35 @@ const planRtSource = computed(() => {
   return m ? m[1].trim() : ''
 })
 
-/** 方案仍在分析中（表清单为空且无失败告警时视为进行中） */
+/**
+ * 方案仍在分析中：以服务端状态为准（pending = 分析中/待采纳）。
+ *
+ * <p>此前只靠「表清单为空且无告警」推断，与「分析失败」无法区分——分析抛异常时
+ * 后端现已置 failed，这里按状态判定即可立即给出结论，不必干等到轮询超时。</p>
+ */
 const planAnalyzing = computed(() =>
-  !!plan.value && !planTables.value.length && planWarnings.value.length === 0)
+  !!plan.value && plan.value.status === 'pending'
+  && !planTables.value.length && planWarnings.value.length === 0)
+
+/** 分析失败（后端异步分析抛异常后置 failed） */
+const planFailed = computed(() => !!plan.value && plan.value.status === 'failed')
+
+/**
+ * 告警分级着色：分析失败（红色，阻断）/ RT 基线来源（弱化，纯说明）/ 其余降级告警（黄色）。
+ *
+ * <p>不加区分时，「分析失败」混在一堆黄色降级提示里，用户会当成可忽略的告警。</p>
+ */
+function warningClass(w: string): string {
+  if (w.startsWith('分析失败')) return 'text-red-400'
+  if (w.includes('响应时间基线')) return 'text-fg-sub'
+  return 'text-amber-400'
+}
+
+function warningIcon(w: string): string {
+  if (w.startsWith('分析失败')) return '✖ '
+  if (w.includes('响应时间基线')) return 'ⓘ '
+  return '⚠ '
+}
 
 /** 谓词摘要：把字段规则里的枚举/范围/seq 规则压缩成一行可读文本 */
 function predicateSummaryOf(fields: any): string {
@@ -418,14 +448,17 @@ async function loadPlan(id: number, poll = false) {
     if (plan.value?.repoId) gen.value.repoId = plan.value.repoId
     expandedEvidence.value = {}
 
-    if (poll && !planTables.value.length && planWarnings.value.length === 0) {
+    // 已终结（failed）就不再轮询：分析失败不会自行恢复，继续轮询纯属空转
+    if (poll && plan.value?.status === 'pending'
+        && !planTables.value.length && planWarnings.value.length === 0) {
       // 分析未完成：每 2s 拉一次，最多 30s，超时后停止（此时会显示告警或空态提示）
       let waited = 0
       planPollTimer = setInterval(async () => {
         waited += 2000
         if (waited >= 30000) return stopPlanPoll()
         await loadPlan(id, false)
-        if (planTables.value.length || planWarnings.value.length) stopPlanPoll()
+        if (plan.value?.status !== 'pending'
+            || planTables.value.length || planWarnings.value.length) stopPlanPoll()
       }, 2000)
     }
   } catch {

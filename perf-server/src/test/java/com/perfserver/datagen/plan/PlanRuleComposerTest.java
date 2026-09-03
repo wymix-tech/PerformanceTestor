@@ -199,12 +199,27 @@ class PlanRuleComposerTest {
 
     @Test
     void refRuleUsesRefSkewForDetailLookup() {
-        JsonNode plain = composer.refRule("user", "id", false);
+        JsonNode plain = composer.refRule("user", "id", false, 0.9);
         assertEquals("ref", plain.get("type").asText());
-        JsonNode detail = composer.refRule("user", "id", true);
+        JsonNode detail = composer.refRule("user", "id", true, 0.9);
         assertEquals("refSkew", detail.get("type").asText());
         assertEquals(PlanRuleComposer.HOT_PERCENT, detail.get("hotPercent").asInt());
         assertEquals(PlanRuleComposer.HOT_SHARE, detail.get("hotShare").asInt());
+    }
+
+    @Test
+    void refRuleCarriesConfidenceForCycleFallback() {
+        // 环依赖降级要剔除「置信度最低」的边，置信度只能从规则 JSON 里读回
+        assertEquals(0.6, composer.refRule("user", "id", false, 0.6).get("confidence").asDouble());
+        assertEquals(0.9, composer.refRule("user", "id", true, 0.9).get("confidence").asDouble());
+    }
+
+    @Test
+    void joinRefConfidenceIsWrittenIntoRuleJson() throws Exception {
+        var out = composer.compose(List.of(fact("perf_order", EndpointTableFact.SqlAccess.READ)),
+                Map.of("perf_order", ctxWithJoin("perf_user", false)));
+        JsonNode rule = fieldsOf(out.getFieldsByTable().get("perf_order")).get("user_id");
+        assertEquals(0.9, rule.get("confidence").asDouble());
     }
 
     @Test

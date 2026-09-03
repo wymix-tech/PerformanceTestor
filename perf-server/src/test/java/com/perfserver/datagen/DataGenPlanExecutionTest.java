@@ -196,6 +196,83 @@ class DataGenPlanExecutionTest {
         assertEquals(false, service.planNeedsConnection(11L));
     }
 
+    // ===== connId-only 方案必须能执行（PR 复审发现的主流程阻断 Bug） =====
+
+    private static com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable planTable(
+            String table, int rows) {
+        return new com.perfserver.datagen.plan.PlanIntegrityChecker.PlanTable(table, rows, null, "READ");
+    }
+
+    /**
+     * 捕获 {@code runFromPlan} 真正提交给 {@code createAndRun} 的请求体。
+     *
+     * <p>无真实 JDBC 环境，执行阶段必然失败，故用 spy 在 {@code createAndRun} 处截断：
+     * 既能拿到组装结果，又能保证「校验没过就到不了这一步」——若 dbUrl 仍为 null，
+     * {@code validateDbUrl} 会先抛异常，捕获器拿不到任何东西。</p>
+     */
+    private DataGenRequest captureRequest(long planId, DataGenPlan plan) {
+        when(planMapper.findById(planId)).thenReturn(plan);
+        when(planService.parseTables(TABLES_JSON)).thenReturn(List.of(planTable("perf_order", 1000)));
+        DataGenService spy = org.mockito.Mockito.spy(service);
+        org.mockito.Mockito.doThrow(new IllegalStateException("截断：不连真实库"))
+                .when(spy).createAndRun(any(DataGenRequest.class));
+        try {
+            spy.runFromPlan(planId, false, null);
+        } catch (Exception ignore) {
+            // 预期：createAndRun 被截断
+        }
+        ArgumentCaptor<DataGenRequest> cap = ArgumentCaptor.forClass(DataGenRequest.class);
+        verify(spy).createAndRun(cap.capture());
+        return cap.getValue();
+    }
+
+    private static DbConn dbConn(long id, String url, String user, String encryptedPwd) {
+        DbConn c = new DbConn();
+        c.setId(id);
+        c.setDbUrl(url);
+        c.setUsername(user);
+        c.setPassword(encryptedPwd);
+        return c;
+    }
+
+    @Test
+    void connIdOnlyPlanResolvesRealCredentials() {
+        // 关键回归：connId-only 方案此前以 dbUrl=null 撞上 validateDbUrl 直接抛异常，
+        // 任务根本创建不出来。connId 是本功能明确支持的二选一连接方式，属主流程阻断。
+        DataGenPlan p = planWith(20L, null);
+        p.setConnId(5L);
+        when(dbConnMapper.findById(5L)).thenReturn(
+                dbConn(5L, "jdbc:mysql://127.0.0.1:3306/demo", "app", "ENC:secret"));
+        when(cryptoService.decrypt("ENC:secret")).thenReturn("plain-pwd");
+
+        DataGenRequest req = captureRequest(20L, p);
+        assertEquals("jdbc:mysql://127.0.0.1:3306/demo", req.getDbUrl());
+        assertEquals("app", req.getDbUser());
+        assertEquals("plain-pwd", req.getDbPassword(), "库内加密凭据必须解密后下发，不能透传密文");
+        assertEquals(5L, req.getConnId(), "connId 保留用于追溯");
+    }
+
+    @Test
+    void dbUrlOnlyPlanKeepsUrlAndLeavesCredentialsEmpty() {
+        // 方案不保存账号密码，dbUrl 形态下凭据只能来自 URL 内嵌——不得凭空塞入默认值
+        DataGenPlan p = planWith(21L, "jdbc:mysql://127.0.0.1:3306/demo");
+        DataGenRequest req = captureRequest(21L, p);
+        assertEquals("jdbc:mysql://127.0.0.1:3306/demo", req.getDbUrl());
+        assertEquals(null, req.getDbUser());
+        assertEquals(null, req.getDbPassword());
+    }
+
+    @Test
+    void connIdIsNotBlindlyPassedDownToTheEngine() {
+        // 引擎与适配器只认 jdbcUrl 三元组：connId 若原样下发，spec 的 jdbcUrl 仍是 null
+        DataGenPlan p = planWith(22L, null);
+        p.setConnId(6L);
+        when(dbConnMapper.findById(6L)).thenReturn(
+                dbConn(6L, "jdbc:postgresql://127.0.0.1:5432/demo", "pg", "ENC:p"));
+        when(cryptoService.decrypt("ENC:p")).thenReturn("pg-pwd");
+        assertEquals("jdbc:postgresql://127.0.0.1:5432/demo", captureRequest(22L, p).getDbUrl());
+    }
+
     @Test
     void rowOverridesAreAppliedToTableSpecs() {
         // 用户在方案卡上改过行数时，执行必须按新行数而不是落库的旧值

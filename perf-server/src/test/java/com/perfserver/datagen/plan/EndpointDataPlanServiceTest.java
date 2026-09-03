@@ -11,6 +11,7 @@ import com.perfserver.source.SourceFileProvider;
 import com.perftestor.datagen.model.EndpointRef;
 import com.perftestor.datagen.model.SourceFile;
 import org.junit.jupiter.api.BeforeEach;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -349,6 +350,35 @@ class EndpointDataPlanServiceTest {
         assertEquals(tables.size(), parsed.size());
         assertEquals(tables.get(0).getTable(), parsed.get(0).getTable());
         assertEquals(tables.get(0).getRowCount(), parsed.get(0).getRowCount());
+    }
+
+    // ===== 分析失败必须落 failed 状态（PR 复审：此前异常后仍停留 pending，前端无法区分） =====
+
+    @Test
+    void analyzeFailureIsPersistedAsFailedStatus() throws Exception {
+        stubInsertAssignsId();
+        when(sourceFileProvider.loadFiles(anyLong(), anyInt()))
+                .thenThrow(new IllegalStateException("源码目录不可读"));
+
+        // 分析跑在独立线程池，用闩等待落库，避免 sleep 猜时间
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(inv -> {
+            done.countDown();
+            return 1;
+        }).when(planMapper).update(org.mockito.ArgumentMatchers.any(DataGenPlan.class));
+
+        service.analyze(request("GET", "/api/order/list"));
+
+        assertTrue(done.await(10, java.util.concurrent.TimeUnit.SECONDS),
+                "异步分析应在 10s 内把结果落库");
+        ArgumentCaptor<DataGenPlan> cap = ArgumentCaptor.forClass(DataGenPlan.class);
+        org.mockito.Mockito.verify(planMapper, org.mockito.Mockito.atLeastOnce()).update(cap.capture());
+        DataGenPlan saved = cap.getAllValues().get(cap.getAllValues().size() - 1);
+        assertEquals(DataGenPlan.ST_FAILED, saved.getStatus(),
+                "分析异常必须置 failed：停留 pending 时前端无法区分「分析中」与「分析失败」");
+        assertTrue(saved.getWarningsJson() != null
+                        && saved.getWarningsJson().contains(EndpointDataPlanService.ANALYZE_FAILED_PREFIX),
+                "失败原因必须写进告警，实际: " + saved.getWarningsJson());
     }
 
     @Test

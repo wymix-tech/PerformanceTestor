@@ -212,7 +212,8 @@ public class PlanRuleComposer {
             if (valuesByColumn.containsKey(ref.getChildColumn()) || fields.has(ref.getChildColumn())) {
                 continue;
             }
-            ObjectNode rule = refRule(ref.getParentTable(), ref.getParentColumn(), ctx.isDetailLookup());
+            ObjectNode rule = refRule(ref.getParentTable(), ref.getParentColumn(),
+                    ctx.isDetailLookup(), ref.getConfidence());
             fields.set(ref.getChildColumn(), rule);
         }
 
@@ -332,12 +333,20 @@ public class PlanRuleComposer {
         }
     }
 
-    /** 关联引用规则：JOIN 父表 / 详情类按 id 查询 */
-    public ObjectNode refRule(String parentTable, String parentColumn, boolean detail) {
+    /**
+     * 关联引用规则：JOIN 父表 / 详情类按 id 查询。
+     *
+     * <p>{@code confidence} 必须落进规则 JSON：环依赖降级要在运行期从规则里读回置信度，
+     * 才能剔除「最低置信度」的那条边（见
+     * {@code PlanIntegrityChecker#edgeConfidence}）。</p>
+     */
+    public ObjectNode refRule(String parentTable, String parentColumn, boolean detail,
+                              double confidence) {
         ObjectNode rule = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
         rule.put("type", detail ? "refSkew" : "ref");
         rule.put("table", parentTable);
         rule.put("column", parentColumn);
+        rule.put("confidence", confidence);
         if (detail) {
             rule.put("hotPercent", HOT_PERCENT);
             rule.put("hotShare", HOT_SHARE);

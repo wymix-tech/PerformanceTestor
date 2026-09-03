@@ -12,6 +12,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -33,6 +34,9 @@ public class PlanIntegrityChecker {
 
     /** 环依赖降级重试上限（硬编码 1 次，避免无限重试） */
     public static final int MAX_CYCLE_RETRY = 1;
+
+    /** 规则 JSON 未带 confidence 时的边置信度（等同「无证据的默认关联」） */
+    public static final double DEFAULT_EDGE_CONFIDENCE = 1.0;
 
     private final ObjectMapper objectMapper;
 
@@ -213,7 +217,8 @@ public class PlanIntegrityChecker {
             String child = cycleNodes.get(i);
             String parent = cycleNodes.get((i + 1) % cycleNodes.size());
             String key = child + "->" + parent;
-            double conf = edgeConfidence == null ? 1.0 : edgeConfidence.getOrDefault(key, 1.0);
+            double conf = edgeConfidence == null ? DEFAULT_EDGE_CONFIDENCE
+                    : edgeConfidence.getOrDefault(key, DEFAULT_EDGE_CONFIDENCE);
             if (conf < lowest) {
                 lowest = conf;
                 victim = key;
@@ -224,6 +229,60 @@ public class PlanIntegrityChecker {
         }
         int sep = victim.indexOf("->");
         return removeRefEdge(tables, victim.substring(0, sep), victim.substring(sep + 2));
+    }
+
+    /**
+     * 从表清单的 ref/refSkew 规则中提取「子表 -&gt; 父表」边置信度。
+     *
+     * <p>存在的理由：环依赖降级要剔除<b>置信度最低</b>的那条边，而置信度只可能来自规则 JSON
+     * （它由 {@link PlanRuleComposer} 按外键证据强度写入）。此前调用方直接传 {@code Map.of()}，
+     * 所有边都落到默认值，「最低置信度」退化成「环中第一条边」——行为与告警文案不符，
+     * 且被剔除的很可能是 JOIN ON 这种高置信边，而低置信的命名猜测边被保留了。</p>
+     *
+     * @param tables 表清单
+     * @return 边 key（{@code 子表->父表}，全小写）→ 置信度
+     */
+    public Map<String, Double> edgeConfidence(List<PlanTable> tables) {
+        Map<String, Double> out = new java.util.HashMap<>();
+        if (tables == null) {
+            return out;
+        }
+        for (PlanTable t : tables) {
+            String child = t.getTable() == null ? null : t.getTable().toLowerCase(Locale.ROOT);
+            if (child == null || child.isBlank() || t.getFields() == null || t.getFields().isBlank()) {
+                continue;
+            }
+            try {
+                JsonNode root = objectMapper.readTree(t.getFields());
+                if (root == null || !root.isObject()) {
+                    continue;
+                }
+                Iterator<String> it = root.fieldNames();
+                while (it.hasNext()) {
+                    JsonNode rule = root.get(it.next());
+                    if (rule == null || !rule.isObject()) {
+                        continue;
+                    }
+                    String type = rule.path("type").asText("");
+                    if (!"ref".equalsIgnoreCase(type) && !"refSkew".equalsIgnoreCase(type)) {
+                        continue;
+                    }
+                    String parent = rule.path("table").asText("").toLowerCase(Locale.ROOT);
+                    if (parent.isBlank()) {
+                        continue;
+                    }
+                    double conf = rule.hasNonNull("confidence")
+                            ? rule.path("confidence").asDouble(DEFAULT_EDGE_CONFIDENCE)
+                            : DEFAULT_EDGE_CONFIDENCE;
+                    // 同一对表存在多条 ref 列时取最高置信度：removeRefEdge 会一次性移除该
+                    // 方向上的所有 ref 列，按最强的那条衡量这条边是否可信
+                    out.merge(child + "->" + parent, conf, Double::max);
+                }
+            } catch (Exception e) {
+                log.debug("extract edge confidence failed, table={}: {}", child, e.getMessage());
+            }
+        }
+        return out;
     }
 
     /** 从环消息中解析节点：支持 "a -> b -> a" 与 "a->b->a" */

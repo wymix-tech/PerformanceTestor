@@ -297,7 +297,7 @@ CREATE TABLE IF NOT EXISTS data_gen_plan (
     db_url        VARCHAR(512)   NULL     COMMENT '目标库 JDBC URL',
     tables_json   MEDIUMTEXT     NULL     COMMENT '表清单 JSON（表名/行数/规则/读写类型/证据）',
     warnings_json MEDIUMTEXT     NULL     COMMENT '降级与告警 JSON 数组',
-    status        VARCHAR(16)    NOT NULL DEFAULT 'pending' COMMENT '状态：pending/adopted/executed/discarded',
+    status        VARCHAR(16)    NOT NULL DEFAULT 'pending' COMMENT '状态：pending/adopted/executed/discarded/failed',
     task_id       BIGINT UNSIGNED NULL    COMMENT '关联灌数据任务 ID',
     create_time   DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time   DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',

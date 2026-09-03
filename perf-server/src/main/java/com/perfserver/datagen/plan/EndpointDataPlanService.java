@@ -51,6 +51,9 @@ public class EndpointDataPlanService {
     /** 方案列表默认条数 */
     public static final int DEFAULT_LIST_LIMIT = 50;
 
+    /** 分析失败告警的固定前缀（前端据此高亮，与「降级告警」区分开） */
+    public static final String ANALYZE_FAILED_PREFIX = "分析失败: ";
+
     /** 接口选择项（前端传入） */
     public static final class EndpointInput {
         private String httpMethod;
@@ -249,7 +252,10 @@ public class EndpointDataPlanService {
                 log.error("plan analyze failed, planId={}", planId, e);
                 DataGenPlan saved = planMapper.findById(planId);
                 if (saved != null) {
-                    saved.setWarningsJson(toJson(List.of("分析失败: " + e.getMessage())));
+                    saved.setWarningsJson(toJson(List.of(ANALYZE_FAILED_PREFIX + e.getMessage())));
+                    // 必须置 failed：只写 warnings 而状态仍为 pending 时，前端无法区分
+                    // 「排队/分析中」与「分析失败」，只能干等到轮询超时
+                    saved.setStatus(DataGenPlan.ST_FAILED);
                     planMapper.update(saved);
                 }
             }
