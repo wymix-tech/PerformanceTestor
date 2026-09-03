@@ -86,6 +86,15 @@ public final class RuleEngine {
      * @return 转换后的 JDBC 友好类型（Integer/Long/BigDecimal/LocalDateTime/Boolean/String）
      */
     public static Object applyRule(FieldRule rule, SchemaMetadata.ColumnMeta col) {
+        return applyRule(rule, col, 0L);
+    }
+
+    /**
+     * 按规则生成一行该列的值。
+     *
+     * @param rowIndex 表内行序号（从 0 起），仅供 seq 规则生成单调递增序号使用
+     */
+    public static Object applyRule(FieldRule rule, SchemaMetadata.ColumnMeta col, long rowIndex) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
         String type = rule.getType() == null ? "" : rule.getType();
         switch (type) {
@@ -129,9 +138,21 @@ public final class RuleEngine {
                 }
                 return normalizeScalar(values.get(idx), col);
             }
+            case FieldRule.TYPE_SEQ:
+                return normalizeScalar(seqValue(rule, rowIndex), col);
             default:
                 return generateDefault(col);
         }
+    }
+
+    /**
+     * seq 值：{@code seqPrefix + (seqStart + rowIndex)}。
+     * 单调递增且带执行时刷新的起始值，保证同一方案重复执行也不撞唯一键。
+     */
+    static String seqValue(FieldRule rule, long rowIndex) {
+        long start = rule.getSeqStart() == null ? 1L : rule.getSeqStart();
+        String prefix = rule.getSeqPrefix() == null ? "" : rule.getSeqPrefix();
+        return prefix + (start + rowIndex);
     }
 
     /** 权重采样：累计分布 + 线性扫描（候选值通常 ≤ 32 个，无需二分） */

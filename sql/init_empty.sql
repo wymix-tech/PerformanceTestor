@@ -283,6 +283,27 @@ CREATE TABLE IF NOT EXISTS semantic_hint (
     KEY idx_table_status (table_name, status)
 ) ENGINE = InnoDB COMMENT = '语义提示库（魔法值/关联建议）';
 
+-- 7.6 data_gen_plan：接口驱动数据方案（按压测接口分析源码推导，可回看/可复用）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS data_gen_plan (
+    id            BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    repo_id       BIGINT UNSIGNED NULL     COMMENT '源码仓库 ID',
+    plan_name     VARCHAR(128)   NOT NULL COMMENT '方案名（默认取接口名）',
+    endpoint_json MEDIUMTEXT     NULL     COMMENT '接口/场景步骤快照 JSON [{httpMethod,path,weight}]',
+    stress_json   MEDIUMTEXT     NULL     COMMENT '压测参数快照 JSON（并发/时长/QPS/分档/场景权重）',
+    conn_id       BIGINT UNSIGNED NULL    COMMENT '数据库连接配置 ID（与 db_url 二选一，服务层强校验；DDL 不加 CHECK）',
+    db_url        VARCHAR(512)   NULL     COMMENT '目标库 JDBC URL',
+    tables_json   MEDIUMTEXT     NULL     COMMENT '表清单 JSON（表名/行数/规则/读写类型/证据）',
+    warnings_json MEDIUMTEXT     NULL     COMMENT '降级与告警 JSON 数组',
+    status        VARCHAR(16)    NOT NULL DEFAULT 'pending' COMMENT '状态：pending/adopted/executed/discarded/failed',
+    task_id       BIGINT UNSIGNED NULL    COMMENT '关联灌数据任务 ID',
+    create_time   DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time   DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    KEY idx_repo_time (repo_id, create_time),
+    KEY idx_status (status)
+) ENGINE = InnoDB COMMENT = '接口驱动数据方案（按接口分析源码推导，可回看/可复用）';
+
 -- ---------------------------------------------------------------------
 -- 8. source_repo：源码仓库（zip / git / 本地路径导入记录）
 -- ---------------------------------------------------------------------

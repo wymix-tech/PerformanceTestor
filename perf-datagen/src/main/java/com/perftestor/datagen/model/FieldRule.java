@@ -10,8 +10,13 @@ import java.util.List;
  * {"order.user_id": {"type": "refSkew", "table": "user", "column": "id", "hotPercent": 20, "hotShare": 80},
  *  "order.status":  {"type": "enum", "values": ["NEW","PAID"], "weights": [10, 80]},
  *  "order.amount":  {"type": "range", "min": 100, "max": 5000,
- *                    "overThreshold": {"op": "&gt;", "value": 1000, "share": 30}}}
+ *                    "overThreshold": {"op": "&gt;", "value": 1000, "share": 30}},
+ *   "order.order_no": {"type": "seq", "seqPrefix": "ORD_", "seqStart": 1}}
  * </pre>
+ *
+ * <p>seq（单调递增序号）用于唯一索引/业务编码列，保证批量生成不撞唯一键：
+ * 值为 {@code seqPrefix + (seqStart + rowIndex)}。{@code seqStart} 由宿主在<b>执行时</b>
+ * 探测目标列 {@code MAX(col)+1} 刷新——数据方案要支持重复执行，起始值不能固化在方案里。</p>
  */
 public class FieldRule {
 
@@ -20,6 +25,8 @@ public class FieldRule {
     public static final String TYPE_ENUM = "enum";
     public static final String TYPE_REF = "ref";
     public static final String TYPE_REF_SKEW = "refSkew";
+    /** 单调递增序号：唯一索引/业务编码列防冲突 */
+    public static final String TYPE_SEQ = "seq";
 
     /** 规则类型：fixed/range/enum/ref/refSkew（未知类型回落默认生成器） */
     private String type;
@@ -47,6 +54,11 @@ public class FieldRule {
 
     /** range：阈值越界分布（保证一定比例行越过代码谓词阈值） */
     private OverThreshold overThreshold;
+
+    /** seq：序号前缀（可空，空则纯数字递增） */
+    private String seqPrefix;
+    /** seq：序号起始值（由宿主执行时刷新；缺省 1） */
+    private Long seqStart;
 
     public static FieldRule fixed(Object value) {
         FieldRule r = new FieldRule();
@@ -141,6 +153,22 @@ public class FieldRule {
 
     public void setOverThreshold(OverThreshold overThreshold) {
         this.overThreshold = overThreshold;
+    }
+
+    public String getSeqPrefix() {
+        return seqPrefix;
+    }
+
+    public void setSeqPrefix(String seqPrefix) {
+        this.seqPrefix = seqPrefix;
+    }
+
+    public Long getSeqStart() {
+        return seqStart;
+    }
+
+    public void setSeqStart(Long seqStart) {
+        this.seqStart = seqStart;
     }
 
     /** 范围类阈值规则：保证 share% 的行取 (value, max] 区间（命中代码中 amount > value 类谓词） */

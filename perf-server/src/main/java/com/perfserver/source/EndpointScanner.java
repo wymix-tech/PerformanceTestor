@@ -3,6 +3,7 @@ package com.perfserver.source;
 import com.perfserver.entity.SourceFile;
 import com.perfserver.entity.SourceRepo;
 import com.perfserver.mapper.SourceFileMapper;
+import com.perftestor.datagen.util.EndpointPath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -79,14 +80,19 @@ public class EndpointScanner {
         return endpoints;
     }
 
-    /** 单文件解析：类前缀 + 方法级注解逐个匹配 */
-    private void scanFile(SourceFile sf, String content, List<Map<String, Object>> out) {
+    /**
+     * 单文件解析：类前缀 + 方法级注解逐个匹配。
+     *
+     * <p>包内可见静态：供 {@code EndpointPathConsistencyTest} 与 AST 实现
+     * {@code EndpointIndexParser} 逐字段比对，守卫双实现不漂移。</p>
+     */
+    static void scanFile(SourceFile sf, String content, List<Map<String, Object>> out) {
         String className = sf.getFileName().replace(".java", "");
         String classPrefix = "";
         int classAnnoEndLine = -1;
         Matcher classM = CLASS_MAPPING.matcher(content);
         if (classM.find()) {
-            classPrefix = normalize(extractPath(classM.group(1)));
+            classPrefix = EndpointPath.normalize(extractPath(classM.group(1)));
             // 类级注解匹配段的行范围（含中间注解），方法级扫描时跳过，避免类级 @RequestMapping 被重复解析
             classAnnoEndLine = (int) (content.substring(0, classM.start()).chars().filter(c -> c == '\n').count()) + 1;
         }
@@ -136,7 +142,7 @@ public class EndpointScanner {
                 }
             }
 
-            String fullPath = classPrefix + normalize(path);
+            String fullPath = EndpointPath.join(classPrefix, path);
             Map<String, Object> ep = new java.util.LinkedHashMap<>();
             ep.put("httpMethod", httpMethod);
             ep.put("path", fullPath);
@@ -149,7 +155,7 @@ public class EndpointScanner {
     }
 
     /** 从注解参数串提取路径：@GetMapping("/a")、@RequestMapping(value="/a", ...)、无参为空 */
-    private String extractPath(String annoArgs) {
+    static String extractPath(String annoArgs) {
         if (annoArgs == null || annoArgs.isBlank()) {
             return "";
         }
@@ -160,21 +166,6 @@ public class EndpointScanner {
         // 形如 ("/a") 已被第二分支覆盖；纯字符串参数
         m = Pattern.compile("\"([^\"]*)\"").matcher(annoArgs);
         return m.find() ? m.group(1) : "";
-    }
-
-    /** 路径归一化：确保以 / 开头、不以 / 结尾 */
-    private String normalize(String p) {
-        if (p == null || p.isBlank()) {
-            return "";
-        }
-        String s = p.trim();
-        if (!s.startsWith("/")) {
-            s = "/" + s;
-        }
-        while (s.endsWith("/") && s.length() > 1) {
-            s = s.substring(0, s.length() - 1);
-        }
-        return s;
     }
 
     private String readSafely(SourceRepo repo, SourceFile sf) {
