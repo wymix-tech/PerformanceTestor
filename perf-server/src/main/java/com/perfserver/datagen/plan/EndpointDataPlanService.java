@@ -24,8 +24,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 接口驱动数据方案服务：接口定位 → 调用链 → SQL → 访问事实 → 规则 → 行数 → 落库。
@@ -41,12 +44,26 @@ public class EndpointDataPlanService {
 
     private static final Logger log = LoggerFactory.getLogger(EndpointDataPlanService.class);
 
-    /** 分析线程池（单线程：分析为 CPU 密集，串行避免抢占） */
-    private static final ExecutorService ANALYZER = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "datagen-plan-analyzer");
-        t.setDaemon(true);
-        return t;
-    });
+    /** 分析排队上限（超出即拒绝，避免请求无限堆积在内存里） */
+    public static final int ANALYZE_QUEUE_CAPACITY = 16;
+
+    /**
+     * 分析线程池（单线程：分析为 CPU 密集，串行避免抢占）。
+     *
+     * <p>必须用有界队列 + 显式拒绝策略，不能用 {@code Executors.newSingleThreadExecutor()}——
+     * 后者默认配 {@code LinkedBlockingQueue} 无界队列，任务积压时没有拒绝出口，
+     * 请求会一直堆在内存里；有界队列下超额任务立即被 {@code AbortPolicy} 拒绝，
+     * 由 {@link #analyze} 落告警并置 failed，用户能马上得到「排队已满」的反馈。</p>
+     */
+    private static final ExecutorService ANALYZER = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(ANALYZE_QUEUE_CAPACITY),
+            r -> {
+                Thread t = new Thread(r, "datagen-plan-analyzer");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
 
     /** 方案列表默认条数 */
     public static final int DEFAULT_LIST_LIMIT = 50;
@@ -234,33 +251,46 @@ public class EndpointDataPlanService {
         }
 
         final long planId = plan.getId();
-        ANALYZER.submit(() -> {
-            long start = System.currentTimeMillis();
-            try {
-                List<String> warnings = new ArrayList<>();
-                List<PlanIntegrityChecker.PlanTable> tables = doAnalyze(request, warnings);
-                DataGenPlan saved = planMapper.findById(planId);
-                if (saved != null) {
-                    saved.setTablesJson(toJson(tables));
-                    saved.setWarningsJson(toJson(warnings));
-                    planMapper.update(saved);
+        try {
+            ANALYZER.submit(() -> {
+                long start = System.currentTimeMillis();
+                try {
+                    List<String> warnings = new ArrayList<>();
+                    List<PlanIntegrityChecker.PlanTable> tables = doAnalyze(request, warnings);
+                    DataGenPlan saved = planMapper.findById(planId);
+                    if (saved != null) {
+                        saved.setTablesJson(toJson(tables));
+                        saved.setWarningsJson(toJson(warnings));
+                        planMapper.update(saved);
+                    }
+                    log.info("plan analyzed: planId={}, repoId={}, endpoints={}, tables={}, elapsedMs={}",
+                            planId, request.getRepoId(), request.getEndpoints().size(), tables.size(),
+                            System.currentTimeMillis() - start);
+                } catch (Exception e) {
+                    log.error("plan analyze failed, planId={}", planId, e);
+                    markAnalyzeFailed(planId, e.getMessage());
                 }
-                log.info("plan analyzed: planId={}, repoId={}, endpoints={}, tables={}, elapsedMs={}",
-                        planId, request.getRepoId(), request.getEndpoints().size(), tables.size(),
-                        System.currentTimeMillis() - start);
-            } catch (Exception e) {
-                log.error("plan analyze failed, planId={}", planId, e);
-                DataGenPlan saved = planMapper.findById(planId);
-                if (saved != null) {
-                    saved.setWarningsJson(toJson(List.of(ANALYZE_FAILED_PREFIX + e.getMessage())));
-                    // 必须置 failed：只写 warnings 而状态仍为 pending 时，前端无法区分
-                    // 「排队/分析中」与「分析失败」，只能干等到轮询超时
-                    saved.setStatus(DataGenPlan.ST_FAILED);
-                    planMapper.update(saved);
-                }
-            }
-        });
+            });
+        } catch (RejectedExecutionException e) {
+            // 排队已满：方案已落库但没有分析线程会再碰它，必须把结论写清楚，
+            // 否则它会永远停在 pending，前端只能干等到轮询超时
+            log.warn("plan analyze rejected, queue full, planId={}", planId);
+            markAnalyzeFailed(planId, "分析排队已满（上限 " + ANALYZE_QUEUE_CAPACITY + "），请稍后重试");
+        }
         return plan;
+    }
+
+    /** 分析失败落库：置 failed 并写原因（与执行期异常共用） */
+    private void markAnalyzeFailed(long planId, String reason) {
+        DataGenPlan saved = planMapper.findById(planId);
+        if (saved == null) {
+            return;
+        }
+        saved.setWarningsJson(toJson(List.of(ANALYZE_FAILED_PREFIX + reason)));
+        // 必须置 failed：只写 warnings 而状态仍为 pending 时，前端无法区分
+        // 「排队/分析中」与「分析失败」，只能干等到轮询超时
+        saved.setStatus(DataGenPlan.ST_FAILED);
+        planMapper.update(saved);
     }
 
     /** 核心分析流程（供单测直接调用，同步执行） */

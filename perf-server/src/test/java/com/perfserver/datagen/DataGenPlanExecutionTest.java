@@ -211,19 +211,56 @@ class DataGenPlanExecutionTest {
      * {@code validateDbUrl} 会先抛异常，捕获器拿不到任何东西。</p>
      */
     private DataGenRequest captureRequest(long planId, DataGenPlan plan) {
+        return captureRequest(planId, plan, false);
+    }
+
+    private DataGenRequest captureRequest(long planId, DataGenPlan plan, boolean dryRun) {
         when(planMapper.findById(planId)).thenReturn(plan);
         when(planService.parseTables(TABLES_JSON)).thenReturn(List.of(planTable("perf_order", 1000)));
         DataGenService spy = org.mockito.Mockito.spy(service);
         org.mockito.Mockito.doThrow(new IllegalStateException("截断：不连真实库"))
                 .when(spy).createAndRun(any(DataGenRequest.class));
         try {
-            spy.runFromPlan(planId, false, null);
+            spy.runFromPlan(planId, dryRun, null);
         } catch (Exception ignore) {
             // 预期：createAndRun 被截断
         }
         ArgumentCaptor<DataGenRequest> cap = ArgumentCaptor.forClass(DataGenRequest.class);
         verify(spy).createAndRun(cap.capture());
         return cap.getValue();
+    }
+
+    /**
+     * 执行到任务落库为止：让 {@code createAndRun} 返回一个带 id 的任务，
+     * 从而能断言 {@code runFromPlan} 之后的方案状态回写行为。
+     */
+    private DataGenTask runPlanReturningTask(long planId, DataGenPlan plan, boolean dryRun) {
+        when(planMapper.findById(planId)).thenReturn(plan);
+        when(planService.parseTables(TABLES_JSON)).thenReturn(List.of(planTable("perf_order", 1000)));
+        DataGenTask task = new DataGenTask();
+        task.setId(777L);
+        DataGenService spy = org.mockito.Mockito.spy(service);
+        org.mockito.Mockito.doReturn(task).when(spy).createAndRun(any(DataGenRequest.class));
+        return spy.runFromPlan(planId, dryRun, null);
+    }
+
+    @Test
+    void dryRunDoesNotMarkPlanAsExecuted() {
+        // 回归：updateTaskId 的 SQL 固定置 status='executed'，dryRun 并没有真正灌数，
+        // 回写会把方案永久标成已执行，前端状态失真
+        DataGenPlan p = planWith(30L, "jdbc:mysql://127.0.0.1:3306/demo");
+        runPlanReturningTask(30L, p, true);
+        verify(planMapper, never()).updateTaskId(anyLong(), any());
+    }
+
+    @Test
+    void formalRunWritesBackTaskId() {
+        // 正式灌数才回写：dryRun 若也回写，最后一次试运行会覆盖正式灌数的 taskId，
+        // 「方案 → 任务」追溯链路指向一次空跑
+        DataGenPlan p = planWith(31L, "jdbc:mysql://127.0.0.1:3306/demo");
+        DataGenTask task = runPlanReturningTask(31L, p, false);
+        assertEquals(777L, task.getId());
+        verify(planMapper).updateTaskId(31L, 777L);
     }
 
     private static DbConn dbConn(long id, String url, String user, String encryptedPwd) {

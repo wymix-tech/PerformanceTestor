@@ -491,7 +491,10 @@ public class DataGenService {
 
         // ⑤ 执行（引擎内部拓扑排序保证父先子后）
         DataGenTask task = createAndRun(request);
-        if (task != null && task.getId() != null) {
+        // 试运行不回写：updateTaskId 的 SQL 固定置 status='executed'，而 dryRun 并没有真正
+        // 灌数——回写会把方案永久标成已执行（前端状态失真），且后续正式灌数时 taskId
+        // 被最后一次试运行覆盖，「方案 → 任务」追溯链路指向一次空跑
+        if (!dryRun && task != null && task.getId() != null) {
             try {
                 planMapper.updateTaskId(planId, task.getId());
             } catch (Exception e) {

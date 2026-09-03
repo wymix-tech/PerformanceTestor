@@ -17,6 +17,13 @@
           <button class="text-[11px] text-fg-sub hover:text-fg-main hover:underline cursor-pointer shrink-0" @click="clearPlan">清除方案</button>
         </div>
 
+        <!-- 加载失败：保留已加载的方案数据，仅提示重试 -->
+        <div v-if="planLoadError" class="px-3 py-2 border-b border-white/10 flex items-center gap-2">
+          <span class="text-[11px] text-red-400">✖ {{ planLoadError }}</span>
+          <button class="text-[11px] text-fg-sub hover:text-fg-main hover:underline cursor-pointer"
+                  @click="retryLoadPlan">重试</button>
+        </div>
+
         <!-- 未覆盖提示：静态分析无法解析的调用链/子查询，引导手工补表 -->
         <div v-if="planWarnings.length" class="px-3 py-2 border-b border-white/10 space-y-1">
           <div v-for="(w, wi) in planWarnings" :key="wi" class="text-[11px]" :class="warningClass(w)">
@@ -333,6 +340,8 @@ const expandedEvidence = ref<Record<number, boolean>>({})
 let planPollTimer: ReturnType<typeof setInterval> | null = null
 /** 方案加载中标志：防止轮询与用户操作并发导致请求叠加 */
 const planLoading = ref(false)
+/** 方案详情加载失败提示（轮询抖动时保留已加载数据，仅提示重试） */
+const planLoadError = ref('')
 
 /** 方案涉及的表（含行数与证据；行数可编辑） */
 const planTables = ref<Array<Record<string, any>>>([])
@@ -418,9 +427,15 @@ function predicateSummaryOf(fields: any): string {
   }
 }
 
-/** 加载方案详情；分析为异步，表清单为空时轮询直到产出或超时 */
-async function loadPlan(id: number, poll = false) {
-  stopPlanPoll()
+/**
+ * 拉取并应用方案详情。
+ *
+ * <p><b>不触碰轮询定时器</b>——轮询回调必须走这里而不是 {@code loadPlan}：
+ * 后者入口会先 {@code stopPlanPoll()}，把正在执行回调的定时器自身清掉，
+ * 而回调内 poll=false 又不会重建，结果是只额外拉一次（2s 处）后轮询静默停止，
+ * 分析耗时 10s+ 时用户一直卡在空态。</p>
+ */
+async function fetchPlan(id: number) {
   // 防重入：轮询的下一拍在上一次请求未返回时不得再发，
   // 否则慢响应会让请求叠加、后到的旧响应覆盖新数据
   if (planLoading.value) return
@@ -447,25 +462,37 @@ async function loadPlan(id: number, poll = false) {
     // 方案带项目时同步到表单的源码项目（保证后续灌数走同一份源码分析）
     if (plan.value?.repoId) gen.value.repoId = plan.value.repoId
     expandedEvidence.value = {}
-
-    // 已终结（failed）就不再轮询：分析失败不会自行恢复，继续轮询纯属空转
-    if (poll && plan.value?.status === 'pending'
-        && !planTables.value.length && planWarnings.value.length === 0) {
-      // 分析未完成：每 2s 拉一次，最多 30s，超时后停止（此时会显示告警或空态提示）
-      let waited = 0
-      planPollTimer = setInterval(async () => {
-        waited += 2000
-        if (waited >= 30000) return stopPlanPoll()
-        await loadPlan(id, false)
-        if (plan.value?.status !== 'pending'
-            || planTables.value.length || planWarnings.value.length) stopPlanPoll()
-      }, 2000)
-    }
+    planLoadError.value = ''
   } catch {
-    plan.value = null
-    planTables.value = []
+    // 已加载成功过就保留现有数据：轮询期间的瞬时网络抖动/超时若把整个方案卡清空，
+    // 用户会被迫回压测中心重新进入——损失的远比一次拉取失败大
+    if (!plan.value) {
+      plan.value = null
+      planTables.value = []
+    }
+    planLoadError.value = '方案加载失败，请重试'
   } finally {
     planLoading.value = false
+  }
+}
+
+/** 加载方案详情；分析为异步，表清单为空时轮询直到产出或超时 */
+async function loadPlan(id: number, poll = false) {
+  stopPlanPoll()
+  await fetchPlan(id)
+
+  // 已终结（failed）就不再轮询：分析失败不会自行恢复，继续轮询纯属空转
+  if (poll && plan.value?.status === 'pending'
+      && !planTables.value.length && planWarnings.value.length === 0) {
+    // 分析未完成：每 2s 拉一次，最多 30s，超时后停止（此时会显示告警或空态提示）
+    let waited = 0
+    planPollTimer = setInterval(async () => {
+      waited += 2000
+      if (waited >= 30000) return stopPlanPoll()
+      await fetchPlan(id)
+      if (plan.value?.status !== 'pending'
+          || planTables.value.length || planWarnings.value.length) stopPlanPoll()
+    }, 2000)
   }
 }
 
@@ -474,6 +501,12 @@ function stopPlanPoll() {
     clearInterval(planPollTimer)
     planPollTimer = null
   }
+}
+
+/** 手动重试加载（失败后保留着方案卡，用户可就地重试） */
+function retryLoadPlan() {
+  if (!plan.value?.id) return
+  loadPlan(Number(plan.value.id), plan.value.status === 'pending')
 }
 
 function toggleEvidence(idx: number) {
@@ -491,6 +524,7 @@ function clearPlan() {
   planTables.value = []
   planDirty.value = false
   planDryRunPassed.value = false
+  planLoadError.value = ''
   emit('plan-cleared')
 }
 
