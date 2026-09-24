@@ -22,6 +22,20 @@
             start_time  = VALUES(start_time)
     </insert>
 
+    <!-- 批量写入：语义与单条 insert 一致（trace_id 唯一键冲突时更新，保证重放幂等） -->
+    <insert id="batchInsert">
+        INSERT INTO trace_chain (trace_id, app_name, root_method, trace_json, total_ms, start_time)
+        VALUES
+        <foreach collection="list" item="t" separator=",">
+            (#{t.traceId}, #{t.appName}, #{t.rootMethod}, #{t.traceJson}, #{t.totalMs}, #{t.startTime})
+        </foreach>
+        ON DUPLICATE KEY UPDATE
+            root_method = VALUES(root_method),
+            trace_json  = VALUES(trace_json),
+            total_ms    = VALUES(total_ms),
+            start_time  = VALUES(start_time)
+    </insert>
+
     <sql id="BaseColumns">
         id, trace_id, app_name, root_method, trace_json, total_ms, start_time
     </sql>

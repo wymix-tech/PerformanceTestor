@@ -56,4 +56,14 @@
         DELETE FROM db_conn WHERE app_name = #{appName}
     </delete>
 
+    <!-- AI 知识库：只删本应用结论，显式排除 app_name = '' 的全局结论（决策见方案文档 §二·5） -->
+    <delete id="deleteAiKnowledgeByApp">
+        DELETE FROM ai_knowledge WHERE app_name = #{appName} AND app_name &lt;&gt; ''
+    </delete>
+
+    <!-- AI 知识库全局结论：默认不执行，仅在 includeGlobalKnowledge=true 时由 Service 调用 -->
+    <delete id="deleteGlobalAiKnowledge">
+        DELETE FROM ai_knowledge WHERE app_name = ''
+    </delete>
+
 </mapper>

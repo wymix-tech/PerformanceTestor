@@ -190,8 +190,13 @@ export const sourceApi = {
   endpoints: (repoId: number) => http.get(`/source/repos/${repoId}/endpoints`),
   // 重新同步仓库：重新拉取源码并重建索引（源码更新后调用）
   resync: (repoId: number) => http.post(`/source/repos/${repoId}/resync`),
-  // 清理项目历史数据：删除该应用关联的压测/慢SQL/监控/问题等全部数据（源码与项目本身保留）
-  cleanupData: (repoId: number) => http.post(`/source/repos/${repoId}/cleanup-data`),
+  // 清理项目历史数据：删除该应用关联的压测/慢SQL/监控/问题/AI结论等全部数据（源码与项目本身保留）
+  // includeGlobalKnowledge=true 时额外删除全局 AI 结论（跨项目共性经验），需同时传 confirmAppName 二次确认
+  cleanupData: (repoId: number, options?: { includeGlobalKnowledge?: boolean; confirmAppName?: string }) =>
+    http.post(`/source/repos/${repoId}/cleanup-data`, {
+      includeGlobalKnowledge: options?.includeGlobalKnowledge ?? false,
+      confirmAppName: options?.confirmAppName ?? ''
+    }),
   // 分支列表（git 仓库）
   branches: (repoId: number) => http.get(`/source/repos/${repoId}/branches`),
   // 切换分支（git 仓库，切换后自动重新同步）
