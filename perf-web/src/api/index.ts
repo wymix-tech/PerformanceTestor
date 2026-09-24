@@ -104,6 +104,19 @@ export const stressApi = {
     http.post('/stress/gate', data, { params })
 }
 
+/** 压测模板（P2-3）：沉淀常用场景参数，支持「保存为模板 / 从模板填充」 */
+export const stressTemplateApi = {
+  // 模板列表（appName 为空查全部；指定应用时含通用模板 appName=''）
+  list: (params?: { appName?: string; limit?: number }) => http.get('/stress/templates', { params }),
+  detail: (id: number) => http.get(`/stress/templates/${id}`),
+  // 保存为模板：data = { templateName, appName?, description?, taskJson }
+  create: (data: { templateName: string; appName?: string; description?: string; taskJson: string }) =>
+    http.post('/stress/templates', data),
+  update: (id: number, data: { templateName: string; appName?: string; description?: string; taskJson: string }) =>
+    http.put(`/stress/templates/${id}`, data),
+  remove: (id: number) => http.delete(`/stress/templates/${id}`)
+}
+
 export const jvmAlertApi = {
   // JVM 阈值告警规则列表（appName 为空查全部）
   list: (appName?: string, limit = 100) =>
@@ -230,6 +243,12 @@ export const sourceApi = {
   endpoints: (repoId: number) => http.get(`/source/repos/${repoId}/endpoints`),
   // 重新同步仓库：重新拉取源码并重建索引（源码更新后调用）
   resync: (repoId: number) => http.post(`/source/repos/${repoId}/resync`),
+  // 删除项目（P2-1）：删源码仓库+文件索引+磁盘目录，并可连带清理该项目应用的历史数据
+  // repoName 为二次确认（必须与项目名完全一致）；cleanData 默认 true
+  deleteRepo: (repoId: number, repoName: string, cleanData = true) =>
+    http.delete(`/source/repos/${repoId}`, { data: { repoName, cleanData } }),
+  // 删除前预览：项目名/绑定应用/文件数/进行中压测数
+  deletePreview: (repoId: number) => http.get(`/source/repos/${repoId}/delete-preview`),
   // 清理项目历史数据：删除该应用关联的压测/慢SQL/监控/问题/AI结论等全部数据（源码与项目本身保留）
   // includeGlobalKnowledge=true 时额外删除全局 AI 结论（跨项目共性经验），需同时传 confirmAppName 二次确认
   cleanupData: (repoId: number, options?: { includeGlobalKnowledge?: boolean; confirmAppName?: string }) =>
@@ -288,6 +307,9 @@ export const sourceApi = {
   verifyIssue: (issueId: number) => http.post(`/source/issues/${issueId}/verify`),
   // 查询最近一次验证结论（含进行中状态，前端据此轮询取最终结果）
   verifyStatus: (issueId: number) => http.get(`/source/issues/${issueId}/verify`),
+  // 修复回写（P2-2）：记录修复来源（branch/pr/patch）并自动触发闭环验证；幂等
+  applyFix: (issueId: number, data: { applyType: string; applyRef: string; suggestionId?: number }) =>
+    http.post(`/source/issues/${issueId}/apply-fix`, data),
   // 补绑压测场景快照（非压测来源问题建立验证基线）
   bindIssueStress: (issueId: number, stressTaskId: number) =>
     http.post(`/source/issues/${issueId}/bind-stress`, null, { params: { stressTaskId } }),
@@ -321,4 +343,4 @@ export const dbConnApi = {
     http.post('/dbconns/test', data)
 }
 
-export default { appApi, jvmApi, jvmAlertApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, dataGenPlanApi, capacityApi, sourceApi, aiApi, dbConnApi }
+export default { appApi, jvmApi, jvmAlertApi, traceApi, slowSqlApi, slowCommandApi, stressApi, stressTemplateApi, reportApi, scheduleApi, dataGenApi, dataGenPlanApi, capacityApi, sourceApi, aiApi, dbConnApi }

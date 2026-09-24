@@ -68,6 +68,13 @@
                 :title="detail.issue.stressTaskId ? '重放场景快照压测并对比基线' : '该问题未关联压测场景快照，请先补绑'"
                 @click="runVerify"
               >{{ verifying ? '验证中…' : '验证修复' }}</button>
+              <button
+                v-if="detail.suggestions?.length"
+                class="text-xs !px-3 !py-1.5 rounded-lg border border-neon-blue/40 text-neon-blue hover:bg-neon-blue/10 transition-all"
+                :disabled="applying"
+                title="记录修复来源（分支/PR/补丁）并自动触发闭环验证"
+                @click="openApplyFix"
+              >{{ applying ? '回写中…' : '回写修复' }}</button>
               <span v-if="detail.issue.issueType === 'slow_sql'" class="text-[11px] text-fg-sub">
                 EXPLAIN{{ issueConn ? `连接：${issueConn.conn.connName}（${issueConn.reason}）` : '：未配置连接，仅基于证据分析' }}
               </span>
@@ -179,6 +186,47 @@
               <button class="btn-primary text-xs !px-3 !py-1.5" :disabled="!bindStressId || bindingStress" @click="doBindStress">
                 {{ bindingStress ? '绑定中…' : '补绑场景快照' }}
               </button>
+            </div>
+          </div>
+
+          <!-- 修复回写（P2-2）：记录修复来源 + 自动触发闭环验证 -->
+          <div v-if="applyPanelOpen" class="p-3 rounded-lg bg-neon-blue/5 border border-neon-blue/30 mb-4">
+            <div class="text-xs font-medium text-neon-blue mb-2">回写修复来源（自动触发闭环验证）</div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2">
+              <select v-model="applyType" class="input-select text-xs">
+                <option value="branch">分支名</option>
+                <option value="pr">PR 链接</option>
+                <option value="patch">补丁摘要</option>
+              </select>
+              <input
+                v-model="applyRef"
+                class="input-text text-xs md:col-span-2"
+                :placeholder="applyRefPlaceholder"
+              />
+              <select v-model="applySuggestionId" class="input-select text-xs">
+                <option :value="0">— 默认方案（已选定/首条）—</option>
+                <option v-for="s in detail.suggestions" :key="s.id" :value="s.id">{{ s.title }}</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="btn-primary text-xs !px-3 !py-1.5" :disabled="applying || !applyRef.trim()" @click="submitApplyFix">
+                {{ applying ? '回写中…' : '确认回写并验证' }}
+              </button>
+              <button class="text-xs text-fg-sub hover:text-fg-main" @click="applyPanelOpen = false">取消</button>
+              <span class="text-[11px] text-fg-sub">同一来源重复提交不会重复发起重放压测（幂等）</span>
+            </div>
+            <div v-if="applyMsg" class="text-[11px] mt-2" :class="applyMsg.ok ? 'text-neon-green' : 'text-red-400'">{{ applyMsg.text }}</div>
+          </div>
+
+          <!-- 修复回写记录 -->
+          <div v-if="appliedRecord" class="p-3 rounded-lg bg-white/5 border border-white/10 mb-4">
+            <div class="text-xs font-medium mb-1 flex items-center justify-between">
+              <span>已回写修复</span>
+              <span class="text-[11px] text-fg-sub font-normal">{{ fmtTime(appliedRecord.appliedAt) }}</span>
+            </div>
+            <div class="text-[11px] text-fg-sub leading-relaxed">
+              来源类型 {{ appliedRecord.applyType }} · {{ appliedRecord.applyRef }}
+              <template v-if="appliedRecord.verifyTaskId"> · 验证任务 #{{ appliedRecord.verifyTaskId }}</template>
             </div>
           </div>
 
@@ -406,6 +454,69 @@ async function pollVerifyResult(issueId: number): Promise<Record<string, any>> {
     }
   }
   return { ...(verifyResult.value || {}), replayFailed: true, message: '验证等待超时，请在压测任务中确认重放结果后重试' }
+}
+
+// ===== 修复回写（P2-2）=====
+const applyPanelOpen = ref(false)
+const applying = ref(false)
+const applyType = ref('branch')
+const applyRef = ref('')
+const applySuggestionId = ref(0)
+const applyMsg = ref<{ ok: boolean; text: string } | null>(null)
+/** 当前已回写记录（来自选定方案上的 appliedAt/applyRef） */
+const appliedRecord = computed<Record<string, any> | null>(() => {
+  const list = detail.value?.suggestions || []
+  const hit = list.find((s: Record<string, any>) => s.appliedAt)
+  if (!hit) return null
+  return { appliedAt: hit.appliedAt, applyType: hit.applyType, applyRef: hit.applyRef, verifyTaskId: hit.verifyTaskId }
+})
+const applyRefPlaceholder = computed(() => {
+  if (applyType.value === 'pr') return '如 https://git.example.com/group/repo/-/pulls/12'
+  if (applyType.value === 'patch') return '如 补丁摘要：UserMapper 加复合索引 (status, create_time)'
+  return '如 fix/user-list-n-plus-one'
+})
+
+function openApplyFix() {
+  applyPanelOpen.value = true
+  applyMsg.value = null
+  applyRef.value = ''
+  applySuggestionId.value = 0
+}
+
+async function submitApplyFix() {
+  if (!detail.value || applying.value) return
+  const ref = applyRef.value.trim()
+  if (!ref) {
+    applyMsg.value = { ok: false, text: '请填写修复来源标识' }
+    return
+  }
+  applying.value = true
+  applyMsg.value = null
+  const issueId = detail.value.issue.id
+  try {
+    const r = (await sourceApi.applyFix(issueId, {
+      applyType: applyType.value,
+      applyRef: ref,
+      suggestionId: applySuggestionId.value || undefined
+    })) as unknown as { data: Record<string, any> }
+    const d = r.data || {}
+    applyMsg.value = { ok: true, text: d.idempotent ? d.message : (d.message || '修复已回写') }
+    applyPanelOpen.value = false
+    // 回写后自动验证为异步：轮询结论（与「验证修复」同一条链路）
+    if (d.verify?.running) {
+      verifyResult.value = d.verify
+      await pollVerifyResult(issueId)
+    } else if (d.verify) {
+      verifyResult.value = { ...(verifyResult.value || {}), ...d.verify }
+    }
+    await showIssueDetail(issueId)
+    // showIssueDetail 会清空结论，验证/回写结果需在其后回填
+    if (d.verify) verifyResult.value = d.verify
+  } catch (e: any) {
+    applyMsg.value = { ok: false, text: '回写失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
+  } finally {
+    applying.value = false
+  }
 }
 
 // 补绑压测场景快照（无快照问题的验证前置）

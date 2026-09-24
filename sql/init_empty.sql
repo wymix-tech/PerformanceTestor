@@ -401,10 +401,39 @@ CREATE TABLE IF NOT EXISTS fix_suggestion (
     risk             TEXT          NULL COMMENT '风险',
     prompt_md        MEDIUMTEXT    NULL COMMENT '修复提示词 Markdown（选定后生成）',
     selected         TINYINT       NOT NULL DEFAULT 0 COMMENT '是否被用户选定：1 是 0 否',
+    -- 修复回写（P2-2）：记录"方案已落到代码"的事实与来源，供闭环验证追溯
+    applied_at       DATETIME      NULL COMMENT '修复回写时间（NULL = 未回写）',
+    apply_ref        VARCHAR(512)  NOT NULL DEFAULT '' COMMENT '修复来源标识（分支名 / PR 链接 / 补丁摘要）',
+    apply_type       VARCHAR(16)   NOT NULL DEFAULT '' COMMENT '修复来源类型：branch / pr / patch',
+    verify_task_id   BIGINT        NOT NULL DEFAULT 0 COMMENT '回写后自动触发的重放验证任务 ID（0=无）',
     create_time      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),
     KEY idx_issue (issue_id)
 ) ENGINE = InnoDB COMMENT = '修复方案';
+
+-- ---------------------------------------------------------------------
+-- 11.1 历史库补列：fix_suggestion 的修复回写字段（P2-2，幂等）
+-- ---------------------------------------------------------------------
+CALL add_column_if_missing('fix_suggestion', 'applied_at', 'DATETIME NULL COMMENT ''修复回写时间''');
+CALL add_column_if_missing('fix_suggestion', 'apply_ref', 'VARCHAR(512) NOT NULL DEFAULT '''' COMMENT ''修复来源标识''');
+CALL add_column_if_missing('fix_suggestion', 'apply_type', 'VARCHAR(16) NOT NULL DEFAULT '''' COMMENT ''修复来源类型''');
+CALL add_column_if_missing('fix_suggestion', 'verify_task_id', 'BIGINT NOT NULL DEFAULT 0 COMMENT ''回写后触发的验证任务''');
+
+-- ---------------------------------------------------------------------
+-- 11.2 stress_template：压测模板（P2-3，常用场景参数沉淀复用）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stress_template (
+    id             BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    template_name  VARCHAR(128)  NOT NULL COMMENT '模板名称',
+    app_name       VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '归属应用（空 = 通用模板，任何项目可见）',
+    task_json      MEDIUMTEXT    NOT NULL COMMENT '压测请求参数 JSON（StressTaskRequest 子集）',
+    description    VARCHAR(512)  NOT NULL DEFAULT '' COMMENT '模板说明',
+    creator        VARCHAR(128)  NOT NULL DEFAULT '' COMMENT '创建人（JWT subject / ci / unknown）',
+    create_time    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    KEY idx_app_time (app_name, create_time)
+) ENGINE = InnoDB COMMENT = '压测模板（参数沉淀复用）';
 
 -- ---------------------------------------------------------------------
 -- 12. chat_message：AI 对话消息记录

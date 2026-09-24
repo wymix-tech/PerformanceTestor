@@ -41,6 +41,10 @@
         WHERE id = #{id}
     </update>
 
+    <delete id="deleteById">
+        DELETE FROM source_repo WHERE id = #{id}
+    </delete>
+
     <update id="updateBranch">
         UPDATE source_repo SET branch = #{branch} WHERE id = #{id}
     </update>

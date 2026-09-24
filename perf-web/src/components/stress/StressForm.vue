@@ -553,6 +553,29 @@ function parseHeaders(text: string): Record<string, string> {
   return out
 }
 
+/** 请求头对象 → 表单文本（每行 k: v；与 parseHeaders 互为逆操作） */
+function headersToText(headers: unknown): string {
+  if (!headers || typeof headers !== 'object') return ''
+  return Object.entries(headers as Record<string, unknown>)
+    .map(([k, v]) => `${k}: ${v == null ? '' : String(v)}`)
+    .join('\n')
+}
+
+/** 断言规则数组 → 表单文本（每行「来源 [键] 比较 期望值」；与 parseAssertions 互为逆操作） */
+function assertionsToText(assertions: unknown): string {
+  if (!Array.isArray(assertions)) return ''
+  return assertions
+    .map((a: any) => {
+      if (!a) return ''
+      const source = a.source ? String(a.source) : 'status'
+      const op = a.op ? String(a.op) : 'eq'
+      const expected = a.expected == null ? '' : String(a.expected)
+      return a.key ? `${source} ${a.key} ${op} ${expected}` : `${source} ${op} ${expected}`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
 /** 组装场景步骤（提交用） */
 function buildScenario() {
   return scenario.value
@@ -774,6 +797,67 @@ defineExpose({
     stepPick.value = []
     headersText.value = ''
     assertText.value = ''
+  },
+  /**
+   * 「从模板填充」：把模板保存的请求体（buildPayload 产物）回填到表单。
+   *
+   * <p>与 fillFrom 的分工：fillFrom 是把**已完成任务**的落库字段回填（字段名与
+   * stress_task 列对齐）；这里回填的是**请求体**（字段名与 buildPayload 对齐，
+   * 含 scenario / assertions / headers 等任务表里不存的参数）。
+   */
+  fillFromPayload(payload: Record<string, any> | null | undefined) {
+    if (!payload || typeof payload !== 'object') return
+    const p = payload as Record<string, any>
+    if (p.targetUrl) targetUrl.value = String(p.targetUrl)
+    if (p.method) method.value = String(p.method)
+    if (p.engineType) engineType.value = String(p.engineType)
+    if (p.concurrency != null) concurrency.value = Number(p.concurrency)
+    if (p.durationSec != null) durationSec.value = Number(p.durationSec)
+    if (p.warmupSec != null) warmupSec.value = Number(p.warmupSec)
+    if (p.qpsLimit != null) qpsLimit.value = Number(p.qpsLimit)
+    if (Array.isArray(p.stageConcurrencies) && p.stageConcurrencies.length) {
+      stageConcurrencies.value = p.stageConcurrencies.join(',')
+    }
+    // 请求头 / 断言 / body：按表单的文本格式还原（与 parseHeaders/parseAssertions 互为逆操作）
+    headersText.value = headersToText(p.headers)
+    body.value = p.body ? String(p.body) : ''
+    assertText.value = assertionsToText(p.assertions)
+    // 场景步骤：模板带 scenario 时切到多接口模式并还原步骤
+    if (Array.isArray(p.scenario) && p.scenario.length) {
+      mode.value = 'scenario'
+      scenario.value = p.scenario.map((raw: any) => {
+        const step = newStep()
+        step.name = raw?.name ? String(raw.name) : ''
+        step.alias = raw?.alias ? String(raw.alias) : ''
+        step.url = raw?.url ? String(raw.url) : ''
+        step.method = raw?.method ? String(raw.method) : 'GET'
+        step.weight = raw?.weight != null ? Number(raw.weight) : 1
+        step.headersText = headersToText(raw?.headers)
+        step.body = raw?.body ? String(raw.body) : ''
+        const ext = Array.isArray(raw?.extract) ? raw.extract[0] : null
+        if (ext) {
+          step.extractVar = ext.var ? String(ext.var) : ''
+          step.extractSource = ext.source === 'header' ? 'header' : 'body'
+          step.extractPath = ext.path ? String(ext.path) : ''
+        }
+        step.assertText = assertionsToText(raw?.assertions)
+        step.className = raw?.className ? String(raw.className) : undefined
+        step.methodName = raw?.methodName ? String(raw.methodName) : undefined
+        return step
+      })
+      stepPick.value = scenario.value.map(() => -1)
+    } else {
+      mode.value = 'single'
+      scenario.value = []
+      stepPick.value = []
+    }
+    // 服务地址取 URL origin，便于后续选接口重新拼接
+    try {
+      baseUrl.value = new URL(targetUrl.value).origin
+    } catch {
+      /* 非标准 URL 保持原样 */
+    }
+    endpointIdx.value = -1
   },
   /** 自动选中首个接口（QuickStart 项目选定后调用） */
   selectFirstEndpoint() {

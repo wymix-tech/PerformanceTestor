@@ -59,7 +59,9 @@ flowchart LR
 - **JVM 采集**：JDK JMX（Memory / Thread / GC / OS MXBean），5s 轮询；
 - **压测引擎**：StressEngine SPI，默认 HttpStressEngine（有界线程池 + 周期采样，累加器 + 固定桶直方图，内存 O(1)），预留 JMeter 适配器骨架；
 - **容量评估**：QPS-RT 曲线分段线性插值，求目标 RT 阈值下最大可承受并发与 QPS，随压测报告 JSON 落库；
-- **源码管理**：zip 解压（防路径穿越）、git clone、本地目录导入；单文件 ≤1MB、总量 ≤200MB、文件数 ≤5000；
+- **源码管理**：zip 解压（防路径穿越）、git clone、本地目录导入；单文件 ≤1MB、总量 ≤200MB、文件数 ≤5000；项目删除（`DELETE /api/source/repos/{id}`）需 `repoName` 二次确认 + 无进行中压测，磁盘目录删除做路径穿越防护；
+- **压测模板**：常用场景参数沉淀（`stress_template`），`app_name=''` 为通用模板对所有项目可见；模板只存参数快照，发起压测时仍走原有校验；
+- **修复闭环**：`apply-fix` 记录修复来源（分支/PR/补丁）并自动触发重放验证，与一键验证/基线对比共用一条判定链路；
 - **AI 编排**：OpenAI 兼容 API Function Calling 多轮循环，无 Key 时降级规则模板模式。
 
 ## 6. 数据流

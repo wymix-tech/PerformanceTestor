@@ -13,6 +13,10 @@
         <result column="risk" property="risk"/>
         <result column="prompt_md" property="promptMd"/>
         <result column="selected" property="selected"/>
+        <result column="applied_at" property="appliedAt"/>
+        <result column="apply_ref" property="applyRef"/>
+        <result column="apply_type" property="applyType"/>
+        <result column="verify_task_id" property="verifyTaskId"/>
         <result column="create_time" property="createTime"/>
     </resultMap>
 
@@ -27,7 +31,8 @@
     </insert>
 
     <sql id="BaseColumns">
-        id, issue_id, title, files_json, changes_json, code_changes_json, benefit, risk, prompt_md, selected, create_time
+        id, issue_id, title, files_json, changes_json, code_changes_json, benefit, risk, prompt_md, selected,
+        applied_at, apply_ref, apply_type, verify_task_id, create_time
     </sql>
 
     <select id="findByIssue" resultMap="BaseResultMap">
@@ -51,6 +56,14 @@
 
     <update id="updatePromptMd">
         UPDATE fix_suggestion SET prompt_md = #{promptMd} WHERE id = #{id}
+    </update>
+
+    <!-- 修复回写（P2-2）：记录来源与时间；幂等由 Service 保证（已回写且来源一致时直接返回） -->
+    <update id="updateApplied">
+        UPDATE fix_suggestion
+        SET applied_at = #{appliedAt}, apply_ref = #{applyRef}, apply_type = #{applyType},
+            verify_task_id = #{verifyTaskId}
+        WHERE id = #{id}
     </update>
 
 </mapper>

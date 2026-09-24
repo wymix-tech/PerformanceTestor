@@ -1,17 +1,23 @@
 package com.perfserver.controller;
 
 import com.perfserver.common.ApiResponse;
+import com.perfserver.auth.JwtAuthInterceptor;
 import com.perfserver.entity.StressSample;
 import com.perfserver.entity.StressTask;
+import com.perfserver.entity.StressTemplate;
 import com.perfserver.service.StressGateService;
 import com.perfserver.service.StressTaskService;
+import com.perfserver.service.StressTemplateService;
+import jakarta.servlet.http.HttpServletRequest;
 import com.perfserver.stress.StressTaskRequest;
 import com.perfserver.stress.StressTaskResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -28,10 +34,15 @@ public class StressController {
 
     private final StressTaskService stressTaskService;
     private final StressGateService stressGateService;
+    private final StressTemplateService stressTemplateService;
+    private final HttpServletRequest request;
 
-    public StressController(StressTaskService stressTaskService, StressGateService stressGateService) {
+    public StressController(StressTaskService stressTaskService, StressGateService stressGateService,
+                            StressTemplateService stressTemplateService, HttpServletRequest request) {
         this.stressTaskService = stressTaskService;
         this.stressGateService = stressGateService;
+        this.stressTemplateService = stressTemplateService;
+        this.request = request;
     }
 
     /** 创建并启动压测任务（异步执行，立即返回任务） */
@@ -72,6 +83,51 @@ public class StressController {
                                                         @RequestParam String url,
                                                         @RequestParam(defaultValue = "20") int limit) {
         return ApiResponse.ok(stressTaskService.trend(appName, url, Math.min(limit, 100)));
+    }
+
+    /**
+     * 压测模板列表（P2-3）。
+     *
+     * @param appName 归属应用（空 = 全部；指定应用时同时返回通用模板 {@code app_name=''})
+     */
+    @GetMapping("/templates")
+    public ApiResponse<List<StressTemplate>> templates(@RequestParam(required = false) String appName,
+                                                       @RequestParam(defaultValue = "100") int limit) {
+        return ApiResponse.ok(stressTemplateService.list(appName, limit));
+    }
+
+    /** 模板详情（「从模板填充」用） */
+    @GetMapping("/templates/{id}")
+    public ApiResponse<StressTemplate> templateDetail(@PathVariable long id) {
+        return ApiResponse.ok(stressTemplateService.detail(id));
+    }
+
+    /** 保存为模板（把当前压测表单参数沉淀下来复用） */
+    @PostMapping("/templates")
+    public ApiResponse<StressTemplate> saveTemplate(@RequestBody StressTemplate template) {
+        return ApiResponse.ok(stressTemplateService.create(template, currentOperator()));
+    }
+
+    /** 更新模板 */
+    @PutMapping("/templates/{id}")
+    public ApiResponse<StressTemplate> updateTemplate(@PathVariable long id, @RequestBody StressTemplate template) {
+        return ApiResponse.ok(stressTemplateService.update(id, template));
+    }
+
+    /** 删除模板 */
+    @DeleteMapping("/templates/{id}")
+    public ApiResponse<Void> deleteTemplate(@PathVariable long id) {
+        stressTemplateService.delete(id);
+        return ApiResponse.ok();
+    }
+
+    /** 当前操作人（模板创建人展示用；与 SourceController 同口径） */
+    private String currentOperator() {
+        if (Boolean.TRUE.equals(request.getAttribute(JwtAuthInterceptor.CI_ATTR))) {
+            return "ci";
+        }
+        Object operator = request.getAttribute(JwtAuthInterceptor.USER_ATTR);
+        return operator == null ? "unknown" : String.valueOf(operator);
     }
 
     /** 任务列表 */

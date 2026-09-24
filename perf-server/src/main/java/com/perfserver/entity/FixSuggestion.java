@@ -22,6 +22,14 @@ public class FixSuggestion {
     private String promptMd;
     /** 是否被选定：1 是 0 否 */
     private Integer selected;
+    /** 修复回写时间（NULL = 未回写） */
+    private LocalDateTime appliedAt;
+    /** 修复来源标识（分支名 / PR 链接 / 补丁摘要） */
+    private String applyRef;
+    /** 修复来源类型：branch / pr / patch */
+    private String applyType;
+    /** 回写后自动触发的重放验证任务 ID（0 = 无） */
+    private Long verifyTaskId;
     private LocalDateTime createTime;
 
     public Long getId() {
@@ -102,6 +110,38 @@ public class FixSuggestion {
 
     public void setSelected(Integer selected) {
         this.selected = selected;
+    }
+
+    public LocalDateTime getAppliedAt() {
+        return appliedAt;
+    }
+
+    public void setAppliedAt(LocalDateTime appliedAt) {
+        this.appliedAt = appliedAt;
+    }
+
+    public String getApplyRef() {
+        return applyRef;
+    }
+
+    public void setApplyRef(String applyRef) {
+        this.applyRef = applyRef;
+    }
+
+    public String getApplyType() {
+        return applyType;
+    }
+
+    public void setApplyType(String applyType) {
+        this.applyType = applyType;
+    }
+
+    public Long getVerifyTaskId() {
+        return verifyTaskId;
+    }
+
+    public void setVerifyTaskId(Long verifyTaskId) {
+        this.verifyTaskId = verifyTaskId;
     }
 
     public LocalDateTime getCreateTime() {

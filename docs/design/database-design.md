@@ -25,7 +25,8 @@
 | `source_repo` | 源码仓库（zip/git/本地路径导入记录） | 新增 |
 | `source_file` | 源码文件索引 | 文件存磁盘，表存元数据，新增 |
 | `performance_issue` | 性能问题（关联检测证据与源码位置） | 新增 |
-| `fix_suggestion` | 修复方案（每个问题 2-3 条） | 含 prompt 文本，新增 |
+| `fix_suggestion` | 修复方案（每个问题 2-3 条） | 含 prompt 文本 + 修复回写字段（applied_at/apply_ref/apply_type/verify_task_id） |
+| `stress_template` | 压测模板（常用场景参数沉淀） | 新增，`app_name=''` = 通用模板 |
 | `chat_message` | AI 对话消息记录 | 可选，用于对话历史 |
 
 ## 3. 新增五张表设计要点
@@ -46,6 +47,15 @@
 ### fix_suggestion（修复方案）
 - 字段：id、issue_id、title、files_json（涉及文件）、changes_json（修改点）、code_changes_json（代码改动要点）、benefit、risk、prompt_md（修复提示词）、selected（是否被用户选定）、create_time；
 - 每个问题 2-3 条方案，用户选定后生成 prompt_md。
+- **修复回写字段**（P2）：applied_at（回写时间，NULL = 未回写）、apply_ref（分支名 / PR 链接 / 补丁摘要，≤512）、apply_type（branch / pr / patch）、verify_task_id（回写后自动触发的重放验证任务，0 = 无）；
+- 老库升级由 `add_column_if_missing('fix_suggestion', ...)` 幂等补列，新库直接在建表语句里定义。
+
+### stress_template（压测模板）
+- 字段：id、template_name、app_name（空 = 通用模板，任何项目可见）、task_json（StressTaskRequest 参数子集）、description、creator、create_time、update_time；
+- 索引 `idx_app_time (app_name, create_time)`；
+- 列表查询按应用过滤时**同时返回通用模板**（`app_name = #{appName} OR app_name = ''`），与知识库检索语义一致；
+- `task_json` 在保存时校验为合法 JSON 对象且体积 ≤64KB（存坏 JSON 会让"从模板填充"时才报错，用户已无从定位）；
+- 模板只是参数快照，**不绕过压测校验**：真正发起时仍走 `StressTaskService.validate`。
 
 ### db_conn（数据库连接配置）
 - 字段：id、conn_name、host（host:port/db，与慢 SQL dbHost 匹配）、app_name（绑定应用，空=不限）、db_url（仅允许 jdbc:mysql://）、username、password、is_default（默认连接）、create_time；
@@ -70,6 +80,26 @@
 | 普通表清理 | `trace_chain` / `slow_sql` / `slow_command` 无分区，按 `trace-chain-days` / `slow-sql-days` / `slow-command-days`（默认 30，`0` = 不清理）分批 `DELETE ... LIMIT delete-batch-size`，每轮每表至多 `max-batches-per-run` 批，避免长事务阻塞上报写入 |
 
 安全性：全部 SQL try/catch 且只告警不抛出；表名/列名来自代码内白名单常量，分区名经 `^p\d{8}$` 校验后拼接（DDL 不支持参数化标识符），时间边界与批大小一律 `#{}` 参数化（见 `RetentionSqlScriptTest`）。首次上线建议先保持 `partition-days: 0`（只建分区不删），观察一轮后再开启回收。
+
+### 项目删除（P2）
+
+`DELETE /api/source/repos/{repoId}`（`ProjectLifecycleService`）编排三件事，顺序固定：
+
+1. **关联历史数据清理**（可选，`cleanData` 默认 true）：复用 `cleanupByAppName(appName, false)`——
+   全局 AI 结论（`app_name=''`）始终保留，原因与上一节同一语义：它不隶属于任何项目；
+2. **删源码文件索引 + 仓库记录**；
+3. **删磁盘源码目录**（`storage-dir/<sanitizeDirName(repoName)>-<repoId>`）。
+
+前置校验：请求体 `repoName` 必须与项目名**完全一致**（trim 后比较，二次确认防误删）；
+该项目绑定的应用存在进行中压测（`pending`/`running`）时拒绝删除——否则压测线程会继续往已删项目写数据。
+
+**路径穿越防护**：仓库名来自用户输入，`resolveRepoTarget` 在解析后校验目标严格位于存储根目录内，
+且**不等于根目录本身**（否则一次误调用会删掉整块存储）。`GET /repos/{repoId}/delete-preview`
+返回将删除的影响面（文件数 / 总大小 / 绑定应用 / 进行中压测数），供前端确认弹窗展示。
+
+**事务边界**：数据库三步中 `DataCleanupService` 自身带事务、索引与记录删除为单语句原子操作；
+磁盘目录删除**刻意放在数据库之后**（失败只告警不回滚）——回滚会留下"记录回滚了但目录已删"
+的不一致，而"记录已删、目录残留"可由运维手工清理。
 
 ### 项目数据清理与全局 AI 结论
 
@@ -138,7 +168,29 @@
 AI 连通性不进健康检查：无 `api-key` 是正常部署形态（自动降级规则模式），
 计入会让健康检查常态化误报。
 
-## 7. 演示数据
+## 7. 修复回写与闭环验证（P2）
+
+原闭环终点是「生成修复提示词」，之后靠人工复制到 IDE、再手工点一次验证，
+中间"改了什么、改在哪、验证的是哪一版"没有任何记录。`POST /api/source/issues/{issueId}/apply-fix`
+（`FixApplyService`）补上这一段：
+
+1. 记录修复来源：`applyType`（`branch` / `pr` / `patch`）+ `applyRef`（分支名 / PR 链接 / 补丁摘要）；
+2. 把对应 `fix_suggestion` 标记为已回写（`applied_at` / `apply_ref` / `apply_type`）；
+3. 复用 `IssueVerifyService` 自动触发一次重放验证，`verify_task_id` 落库。
+
+关键语义：
+
+| 场景 | 行为 |
+| ---- | ---- |
+| 同问题 + 同来源类型 + 同来源标识 重复提交 | **幂等**：直接返回既有记录，不重复触发重放压测（一次重放就是对目标服务打一轮真实压力） |
+| 换来源（又改了一版，如换 PR） | 视为新一版：更新记录并重新触发验证 |
+| 问题未关联压测场景快照（`stress_task_id = 0`） | 只回写记录，`verify_task_id=0`，消息说明"未关联快照，无法自动验证" |
+| 验证触发异常（线程池满 / 引擎异常） | **回写照常落库**，`verify_task_id=0`，消息记录异常原因——"改了什么"比"验证结论"更基础 |
+| `suggestionId` 缺省 | 依次取：该问题已选定方案 → 首条方案；都没有则拒绝（无处记录来源） |
+
+来源标识是外部输入且列宽 512，超长（如整份补丁）截断为摘要后落库，避免插入报错。
+
+## 8. 演示数据
 
 - app_instance：1 条演示应用（perf-demo）；
 - 若干 JVM 指标 / 调用链 / 慢 SQL 演示记录，便于前端首屏展示；

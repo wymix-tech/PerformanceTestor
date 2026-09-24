@@ -56,6 +56,12 @@
         SELECT <include refid="BaseColumns"/> FROM stress_task WHERE id = #{id} LIMIT 1
     </select>
 
+    <!-- 进行中任务数：删除项目/清理前的占用校验（pending/running 均视为占用） -->
+    <select id="countRunningByApp" resultType="int">
+        SELECT COUNT(*) FROM stress_task
+        WHERE app_name = #{appName} AND status IN ('pending', 'running')
+    </select>
+
     <select id="query" resultMap="BaseResultMap">
         SELECT <include refid="BaseColumns"/>
         FROM stress_task

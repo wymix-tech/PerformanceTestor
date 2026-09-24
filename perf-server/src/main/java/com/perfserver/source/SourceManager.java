@@ -501,6 +501,72 @@ public class SourceManager {
         return resync(repoId);
     }
 
+    /**
+     * 删除项目（P2-1）：移除源码文件索引 + 仓库记录 + 磁盘源码目录。
+     *
+     * <p>调用方（Controller/Service）负责前置校验（二次确认、无进行中压测、关联数据清理）
+     * 与审计日志；本方法只做"删项目自身"这件事，且任一失败都抛错回滚事务。
+     *
+     * <p><b>磁盘目录安全</b>：待删目录由 {@code storage-dir + sanitizeDirName(repoName) + "-" + repoId}
+     * 拼出，再经 {@code normalize()} + {@code startsWith(storageRoot)} 校验，
+     * 确保解析后仍位于存储根目录内（防仓库名含路径穿越片段导致误删任意目录）。
+     *
+     * @return 删除的文件索引条数
+     */
+    public int deleteRepo(long repoId) {
+        SourceRepo repo = getRepo(repoId);
+        // 1. 索引（先删子表，避免留下悬空引用）
+        int deletedFiles = sourceFileMapper.deleteByRepo(repoId);
+        // 2. 仓库记录
+        sourceRepoMapper.deleteById(repoId);
+        // 3. 磁盘目录（失败不阻断：记录已删，目录残留由运维清理；但要打日志告警）
+        try {
+            deleteRepoDir(repo.getId(), repo.getRepoName());
+        } catch (Exception e) {
+            log.warn("delete repo dir failed, repoId={}, repoName={}: {}", repoId, repo.getRepoName(), e.getMessage());
+        }
+        // 4. 缓存失效：避免已删除的项目在 30s 缓存窗口内仍放行 agent 上报
+        projectRegistry.evict(repo.getRepoName());
+        log.warn("审计: 删除项目 repoId={}, repoName={}, appName={}, 删除文件索引={}",
+                repoId, repo.getRepoName(), repo.getAppName(), deletedFiles);
+        return deletedFiles;
+    }
+
+    /**
+     * 删除仓库磁盘目录（路径穿越防护）。
+     *
+     * <p>仓库名来自用户输入，可能含 {@code ../} 等片段；即使 {@link #sanitizeDirName(String)}
+     * 已把非法字符替换为下划线，仍在解析后二次校验，保证删除目标严格位于存储根目录内。
+     * 目录不存在时静默返回（幂等，重复删除不报错）。
+     */
+    void deleteRepoDir(long repoId, String repoName) throws IOException {
+        Path target = resolveRepoTarget(repoId, repoName);
+        if (!Files.exists(target)) {
+            return;
+        }
+        try (var stream = Files.walk(target)) {
+            for (Path p : stream.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(p);
+            }
+        }
+    }
+
+    /**
+     * 解析仓库磁盘目录并做越界校验。
+     *
+     * <p>抽成独立方法是为了让"越界必须被拒绝"这一条能被单测直接断言（无需真的造出越界路径）。
+     * 目标 = {@code storageRoot / (sanitizeDirName(repoName) + "-" + repoId)}，解析后必须
+     * <b>严格位于</b>存储根目录之内——等于根目录本身也要拒绝（否则一次误调用会删掉整个存储）。
+     */
+    Path resolveRepoTarget(long repoId, String repoName) {
+        Path root = Paths.get(storageDir).toAbsolutePath().normalize();
+        Path target = root.resolve(sanitizeDirName(repoName) + "-" + repoId).normalize();
+        if (!target.startsWith(root) || target.equals(root)) {
+            throw new IllegalStateException("拒绝删除存储根目录之外的路径: " + target);
+        }
+        return target;
+    }
+
     /** 查询仓库列表 */
     public java.util.List<SourceRepo> listRepos(int limit) {
         return sourceRepoMapper.query(Math.max(1, Math.min(limit, 100)));

@@ -8,14 +8,17 @@ import com.perfserver.entity.SourceFile;
 import com.perfserver.entity.SourceRepo;
 import com.perfserver.mapper.SourceFileMapper;
 import com.perfserver.service.DataCleanupService;
+import com.perfserver.service.FixApplyService;
 import com.perfserver.service.IssueVerifyService;
 import com.perfserver.service.SourceIssueService;
+import com.perfserver.source.ProjectLifecycleService;
 import com.perfserver.source.SourceFileService;
 import com.perfserver.source.SourceManager;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -48,6 +51,8 @@ public class SourceController {
     private final com.perfserver.source.EndpointScanner endpointScanner;
     private final DataCleanupService dataCleanupService;
     private final IssueVerifyService issueVerifyService;
+    private final FixApplyService fixApplyService;
+    private final ProjectLifecycleService projectLifecycleService;
     private final HttpServletRequest request;
 
     public SourceController(SourceManager sourceManager, SourceFileService sourceFileService,
@@ -56,6 +61,8 @@ public class SourceController {
                             com.perfserver.source.EndpointScanner endpointScanner,
                             DataCleanupService dataCleanupService,
                             IssueVerifyService issueVerifyService,
+                            FixApplyService fixApplyService,
+                            ProjectLifecycleService projectLifecycleService,
                             HttpServletRequest request) {
         this.sourceManager = sourceManager;
         this.sourceFileService = sourceFileService;
@@ -65,6 +72,8 @@ public class SourceController {
         this.endpointScanner = endpointScanner;
         this.dataCleanupService = dataCleanupService;
         this.issueVerifyService = issueVerifyService;
+        this.fixApplyService = fixApplyService;
+        this.projectLifecycleService = projectLifecycleService;
         this.request = request;
     }
 
@@ -129,6 +138,35 @@ public class SourceController {
         result.put("includeGlobalKnowledge", includeGlobal);
         result.put("deleted", deleted);
         return ApiResponse.ok(result);
+    }
+
+    /**
+     * 删除项目（P2-1）：删除源码仓库 + 文件索引 + 磁盘源码目录，并可连带清理该项目应用的历史数据。
+     *
+     * <p>请求体参数：
+     * <ul>
+     *   <li>{@code repoName}（<b>必填</b>）：必须与项目名完全一致，作为二次确认防误删；</li>
+     *   <li>{@code cleanData}（默认 {@code true}）：是否连带清理该项目绑定的 appName 关联的
+     *       压测/慢SQL/慢命令/监控/调用链/问题/AI 结论等历史数据；
+     *       全局 AI 结论（{@code app_name=''}）始终保留。</li>
+     * </ul>
+     * 有进行中的压测任务时拒绝删除（避免压测线程继续往已删项目写数据）。
+     */
+    @DeleteMapping("/repos/{repoId}")
+    public ApiResponse<ProjectLifecycleService.DeleteResult> deleteRepo(@PathVariable long repoId,
+                                                                       @RequestBody(required = false) Map<String, Object> body) {
+        Map<String, Object> req = body == null ? Map.of() : body;
+        String confirmName = req.get("repoName") == null ? "" : String.valueOf(req.get("repoName"));
+        boolean cleanData = !"false".equalsIgnoreCase(String.valueOf(req.getOrDefault("cleanData", "true")).trim());
+        log.warn("审计: 用户请求删除项目, repoId={}, confirmRepoName={}, cleanData={}, operator={}",
+                repoId, confirmName, cleanData, currentOperator());
+        return ApiResponse.ok(projectLifecycleService.deleteProject(repoId, confirmName, cleanData));
+    }
+
+    /** 删除前预览：项目名/绑定应用/文件数/进行中压测数（前端确认弹窗展示将删除的影响面） */
+    @GetMapping("/repos/{repoId}/delete-preview")
+    public ApiResponse<Map<String, Object>> deletePreview(@PathVariable long repoId) {
+        return ApiResponse.ok(projectLifecycleService.deletePreview(repoId));
     }
 
     /** 当前操作人：JWT 鉴权命中时为 token subject；CI 静态令牌调用标记为 ci；否则 unknown */
@@ -309,6 +347,41 @@ public class SourceController {
     @GetMapping("/issues/{issueId}/verify")
     public ApiResponse<Map<String, Object>> verifyStatus(@PathVariable long issueId) {
         return ApiResponse.ok(issueVerifyService.verifyStatus(issueId));
+    }
+
+    /**
+     * 修复回写（P2-2）：记录修复来源（分支 / PR / 补丁）并自动触发闭环验证。
+     *
+     * <p>请求体参数：
+     * <ul>
+     *   <li>{@code applyType}（必填）：{@code branch} / {@code pr} / {@code patch}；</li>
+     *   <li>{@code applyRef}（必填）：分支名 / PR 链接 / 补丁摘要；</li>
+     *   <li>{@code suggestionId}（可选）：指定方案，缺省取该问题已选定方案、再退首条。</li>
+     * </ul>
+     * 幂等：同一问题同来源重复提交直接返回既有记录，不重复触发重放压测。
+     */
+    @PostMapping("/issues/{issueId}/apply-fix")
+    public ApiResponse<FixApplyService.ApplyResult> applyFix(@PathVariable long issueId,
+                                                             @RequestBody(required = false) Map<String, Object> body) {
+        Map<String, Object> req = body == null ? Map.of() : body;
+        long suggestionId = parseLong(req.get("suggestionId"));
+        String applyType = req.get("applyType") == null ? "" : String.valueOf(req.get("applyType"));
+        String applyRef = req.get("applyRef") == null ? "" : String.valueOf(req.get("applyRef"));
+        log.info("修复回写请求: issue={}, suggestion={}, type={}, operator={}",
+                issueId, suggestionId, applyType, currentOperator());
+        return ApiResponse.ok(fixApplyService.apply(issueId, suggestionId, applyType, applyRef));
+    }
+
+    /** 宽松解析可选数值参数（缺失/非法一律按 0 = 未指定处理） */
+    private static long parseLong(Object v) {
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(v).trim());
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
     /** 补绑压测场景快照（非压测来源问题建立验证基线） */

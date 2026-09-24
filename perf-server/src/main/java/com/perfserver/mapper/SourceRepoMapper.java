@@ -31,5 +31,8 @@ public interface SourceRepoMapper {
 
     SourceRepo findById(@Param("id") long id);
 
+    /** 删除仓库记录（连带源码文件索引由调用方先行删除；磁盘目录由 SourceManager 处理） */
+    int deleteById(@Param("id") long id);
+
     List<SourceRepo> query(@Param("limit") int limit);
 }
