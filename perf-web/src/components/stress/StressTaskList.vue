@@ -17,7 +17,7 @@
           <span class="flex items-center gap-2 shrink-0">
             <span v-if="t.appName" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue">{{ t.appName }}</span>
             <span v-if="t.appVersion" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-purple/10 text-neon-purple">v{{ t.appVersion }}</span>
-            <span class="text-[11px] px-2 py-0.5 rounded-full" :class="taskStatusClass(t.status)">{{ t.status }}</span>
+            <span class="text-[11px] px-2 py-0.5 rounded-full" :class="taskStatusClass(t.status)" role="status">{{ t.status }}</span>
           </span>
         </div>
         <div class="flex items-center justify-between mt-2 text-[11px] text-fg-sub">

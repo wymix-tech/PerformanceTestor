@@ -12,7 +12,7 @@
           <div><label class="text-xs text-fg-sub">主机标识（匹配慢 SQL dbHost）</label>
             <input v-model="connForm.host" class="input-text w-full" placeholder="127.0.0.1:3306/demo" /></div>
           <div><label class="text-xs text-fg-sub">绑定项目（选后自动接管 EXPLAIN）</label>
-            <select v-model="connForm.appName" class="input-select w-full">
+            <select v-model="connForm.appName" class="input-select w-full" aria-label="绑定项目（选后自动接管 EXPLAIN）">
               <option value="">不绑定（按主机标识匹配）</option>
               <option v-for="name in projectNames" :key="name" :value="name">{{ name }}</option>
             </select></div>

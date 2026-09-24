@@ -62,7 +62,10 @@ flowchart LR
 - **源码管理**：zip 解压（防路径穿越）、git clone、本地目录导入；单文件 ≤1MB、总量 ≤200MB、文件数 ≤5000；项目删除（`DELETE /api/source/repos/{id}`）需 `repoName` 二次确认 + 无进行中压测，磁盘目录删除做路径穿越防护；
 - **压测模板**：常用场景参数沉淀（`stress_template`），`app_name=''` 为通用模板对所有项目可见；模板只存参数快照，发起压测时仍走原有校验；
 - **修复闭环**：`apply-fix` 记录修复来源（分支/PR/补丁）并自动触发重放验证，与一键验证/基线对比共用一条判定链路；
-- **AI 编排**：OpenAI 兼容 API Function Calling 多轮循环，无 Key 时降级规则模板模式。
+- **AI 编排**：OpenAI 兼容 API Function Calling 多轮循环，无 Key 时降级规则模板模式；
+- **明暗主题（P3-3）**：颜色全量收敛为 CSS 变量（`:root` 深色 / `[data-theme='light']` 浅色），Tailwind 以 `rgb(var(--x) / <alpha-value>)` 消费并覆盖内置 `white` 为 `--overlay` 语义变量，使既有叠层类零改动双主题可用；三态（dark/light/system）持久化于 `localStorage`，`index.html` 内联脚本首屏无闪；ECharts 颜色运行时读变量，切主题后失效缓存重算；
+- **文案国际化（P3-1）**：前端 `vue-i18n`（骨架文案，可切语言并持久化 `<html lang>`），后端 Spring `MessageSource`（`i18n/messages*.properties`，语言取自 `Accept-Language`，缺失 key 回显 key 不抛异常）；中英 key 集合一致性由单测锁死，其余业务文案按需分批迁移；
+- **无障碍（P3-2）**：全局 `:focus-visible` 焦点环、skip-link、表格/下拉/图标按钮 `aria-label`、状态徽章 `role=status`、展开控件 `aria-expanded`；未做读屏实测。
 
 ## 6. 数据流
 

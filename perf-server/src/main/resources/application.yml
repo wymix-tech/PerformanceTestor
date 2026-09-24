@@ -23,6 +23,18 @@ spring:
       minimum-idle: 5
       connection-timeout: 10000
 
+  # 后端文案国际化（P3-1）：Spring Boot 默认从 classpath:i18n/messages 加载，
+  # 此处显式声明以便调整编码与缓存策略。
+  #   - encoding UTF-8：properties 默认按 ISO-8859-1 读，中文会变乱码；必须显式指定。
+  #   - fallback-to-system-locale=false：语言由 Accept-Language 决定，取不到时回落默认
+  #     （zh_CN），而不是跟随 JVM 的 LANG，避免同一份部署在不同机器上文案不一致。
+  #   - cache-duration=3600：生产文案不变，缓存 1 小时减少 IO；开发改文案后重启即可。
+  messages:
+    basename: i18n/messages
+    encoding: UTF-8
+    fallback-to-system-locale: false
+    cache-duration: 3600
+
 mybatis:
   mapper-locations: classpath:mapper/*.xml
   type-aliases-package: com.perfserver.entity

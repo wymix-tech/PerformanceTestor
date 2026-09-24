@@ -23,7 +23,7 @@
 
     <!-- 明细表：便于按数值精确核对 -->
     <div v-if="points.length" class="mt-3 overflow-x-auto">
-      <table class="w-full text-xs">
+      <table class="w-full text-xs" aria-label="压测场景历史趋势">
         <thead>
           <tr class="text-fg-sub text-[11px]">
             <th class="text-left py-1 pr-3 font-normal">#</th>

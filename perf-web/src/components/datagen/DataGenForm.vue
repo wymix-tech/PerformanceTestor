@@ -89,7 +89,7 @@
         <!-- 必填字段（连接 / 认证）始终可见，绝不可藏到折叠区 -->
         <div>
           <label class="text-xs text-fg-sub">连接配置（与「问题与优化」页共用，选中自动填充）</label>
-          <select v-model="gen.connId" class="input-select w-full" @change="applyConn">
+          <select v-model="gen.connId" class="input-select w-full" @change="applyConn" aria-label="选择数据库连接配置">
             <option :value="0">— 手动填写连接 —</option>
             <option v-for="c in conns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.dbUrl }}）</option>
           </select>
@@ -115,7 +115,7 @@
         <div>
           <label class="text-xs text-fg-sub">目标表</label>
           <div class="flex gap-2">
-            <select v-model="gen.tableName" class="input-select flex-1" @change="loadColumns">
+            <select v-model="gen.tableName" class="input-select flex-1" @change="loadColumns" aria-label="目标表">
               <option value="">— 先读取表清单 —</option>
               <option v-for="t in tables" :key="t" :value="t">{{ t }}</option>
             </select>
@@ -137,7 +137,7 @@
         <div class="grid grid-cols-2 gap-2.5">
           <div>
             <label class="text-xs text-fg-sub">源码项目（可选）</label>
-            <select v-model="gen.repoId" class="input-select w-full">
+            <select v-model="gen.repoId" class="input-select w-full" aria-label="源码项目（可选）">
               <option :value="0">— 不使用源码分析 —</option>
               <option v-for="r in repoStore.repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
             </select>

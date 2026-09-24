@@ -18,7 +18,7 @@
       <div class="space-y-3">
         <div>
           <label class="text-xs text-fg-sub">SSH 连接（被测服务器）</label>
-          <select v-model="deployConnId" class="input-select w-full">
+          <select v-model="deployConnId" class="input-select w-full" aria-label="SSH 连接（被测服务器）">
             <option :value="0">— 跳过部署，应用已在运行 —</option>
             <option v-for="c in deployConns" :key="c.id" :value="c.id">{{ c.connName }}（{{ c.host }}）</option>
           </select>

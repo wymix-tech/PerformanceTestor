@@ -2,19 +2,89 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * 明暗主题（P3-3）：全部颜色收敛为 CSS 变量，两套值分别定义在
+ *   :root                → 深色（默认，沿用原「深色科技风」色板）
+ *   [data-theme='light'] → 浅色
+ * 变量一律存「R G B」三段裸数值，供 Tailwind 的 rgb(var(--x) / <alpha-value>) 注入，
+ * 从而保留 `bg-bg-card/70` 这类透明度修饰符。
+ *
+ * --overlay 是浅色主题的关键：组件里 `bg-white/5`、`border-white/10` 表达的是
+ * 「在底色上提亮一层」，深色下用白、浅色下必须换成黑，否则白叠白不可见。
+ */
 @layer base {
   :root {
-    --background: 222 47% 8%;
-    --foreground: 213 60% 96%;
-    --card: 222 36% 12%;
-    --card-foreground: 213 60% 96%;
-    --primary: 160 100% 45%;
-    --primary-foreground: 222 47% 8%;
-    --muted: 220 15% 32%;
-    --muted-foreground: 218 14% 60%;
-    --accent: 199 89% 48%;
-    --destructive: 0 84% 60%;
+    color-scheme: dark;
+
+    /* 底色与前景 */
+    --bg-base: 11 18 32;      /* #0B1220 */
+    --bg-card: 17 26 46;      /* #111A2E */
+    --bg-panel: 24 34 56;     /* #182238 */
+    --fg-main: 230 237 247;   /* #E6EDF7 */
+    --fg-sub: 138 148 166;    /* #8A94A6 */
+    --fg-dim: 200 210 224;    /* #C8D2E0 */
+
+    /* 强调色（双主题保持一致，仅浅色下略压亮度以保对比度） */
+    --neon-green: 0 229 160;  /* #00E5A0 */
+    --neon-blue: 14 165 233;  /* #0EA5E9 */
+    --neon-teal: 52 211 153;  /* #34D399 */
+    --neon-purple: 167 139 250;/* #A78BFA */
+
+    /* 叠层基色：深色下为白（提亮），浅色下会被覆盖为黑（压暗） */
+    --overlay: 255 255 255;
+
+    /* 霓虹强调色上的文字：深浅两主题都用深色，保证绿/蓝按钮上的对比度 */
+    --on-neon: 11 18 32;
+
+    /* 其他语义 */
     --border: 220 20% 22%;
+
+    /* 阴影（深浅两套差异较大，独立成变量） */
+    --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --shadow-neon: 0 0 20px rgba(0, 229, 160, 0.25);
+
+    /* 滚动条 / 树背景等零散色 */
+    --scrollbar-track: rgba(255, 255, 255, 0.03);
+    --scrollbar-thumb: rgba(0, 229, 160, 0.25);
+    --scrollbar-thumb-hover: rgba(0, 229, 160, 0.45);
+    --tree-bg: rgba(0, 0, 0, 0.25);
+    --metric-glow: linear-gradient(135deg, rgba(0, 229, 160, 0.12) 0%, rgba(14, 165, 233, 0.06) 50%, transparent 100%);
+  }
+
+  [data-theme='light'] {
+    color-scheme: light;
+
+    /* 浅色底：暖白面板 + 深灰蓝前景，保留青绿强调色作为品牌色 */
+    --bg-base: 244 247 251;   /* #F4F7FB */
+    --bg-card: 255 255 255;   /* #FFFFFF */
+    --bg-panel: 237 242 248;  /* #EDF2F8 */
+    --fg-main: 23 33 48;      /* #172130 */
+    --fg-sub: 100 112 132;    /* #647084 */
+    --fg-dim: 55 68 88;       /* #374458 */
+
+    /* 浅色下同色相略压暗，避免荧光绿在白底上对比不足 */
+    --neon-green: 0 168 118;  /* #00A876 */
+    --neon-blue: 2 132 199;   /* #0284C7 */
+    --neon-teal: 13 148 136;  /* #0D9488 */
+    --neon-purple: 124 92 214;/* #7C5CD6 */
+
+    /* 浅色叠层基色改黑：`bg-white/5` 变成极淡的黑，提供可见的分隔层次 */
+    --overlay: 15 23 42;
+
+    /* 浅色下霓虹色压暗为 #00A876，白字对比度仅 ~3.0（不达标）；
+       深色 (#0B1220) 压在同色上约 4.7，故选深色。 */
+    --on-neon: 11 18 32;
+
+    --border: 214 24% 84%;
+
+    --shadow-glass: 0 6px 24px rgba(23, 33, 48, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    --shadow-neon: 0 0 18px rgba(0, 168, 118, 0.22);
+
+    --scrollbar-track: rgba(15, 23, 42, 0.04);
+    --scrollbar-thumb: rgba(0, 168, 118, 0.3);
+    --scrollbar-thumb-hover: rgba(0, 168, 118, 0.5);
+    --tree-bg: rgba(15, 23, 42, 0.05);
+    --metric-glow: linear-gradient(135deg, rgba(0, 168, 118, 0.12) 0%, rgba(2, 132, 199, 0.06) 50%, transparent 100%);
   }
 
   * {
@@ -27,10 +97,12 @@
   }
 
   body {
-    background-color: #0B1220;
-    color: #E6EDF7;
+    background-color: rgb(var(--bg-base));
+    color: rgb(var(--fg-main));
     font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
+    /* 主题切换时给底色/前景一个短过渡，避免生硬闪白 */
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
   /* 全局滚动条美化 */
@@ -39,14 +111,33 @@
     height: 8px;
   }
   ::-webkit-scrollbar-track {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--scrollbar-track);
   }
   ::-webkit-scrollbar-thumb {
-    background: rgba(0, 229, 160, 0.25);
+    background: var(--scrollbar-thumb);
     border-radius: 4px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(0, 229, 160, 0.45);
+    background: var(--scrollbar-thumb-hover);
+  }
+
+  /*
+   * 无障碍（P3-2）：键盘焦点必须可见。
+   * 用 :focus-visible 而非 :focus，避免鼠标点击也弹出焦点环干扰视觉；
+   * 全局兜底，任何自定义按钮/链接不写 focus 样式也不会「键盘迷失」。
+   */
+  *:focus-visible {
+    outline: 2px solid rgb(var(--neon-green));
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* 首屏加载前先按系统偏好给出底色，避免深色用户白闪一下 */
+  @media (prefers-color-scheme: light) {
+    html:not([data-theme]) body {
+      background-color: #F4F7FB;
+      color: #172130;
+    }
   }
 }
 
@@ -62,7 +153,7 @@
   .metric-card::before {
     content: '';
     @apply absolute inset-0 opacity-60 pointer-events-none;
-    background: linear-gradient(135deg, rgba(0, 229, 160, 0.12) 0%, rgba(14, 165, 233, 0.06) 50%, transparent 100%);
+    background: var(--metric-glow);
   }
   /* 荧光强调文本 */
   .neon-text {
@@ -83,7 +174,7 @@
   }
   .input-select {
     @apply appearance-none cursor-pointer pr-8;
-    background-image: linear-gradient(45deg, transparent 50%, #8A94A6 50%), linear-gradient(135deg, #8A94A6 50%, transparent 50%);
+    background-image: linear-gradient(45deg, transparent 50%, rgb(var(--fg-sub)) 50%), linear-gradient(135deg, rgb(var(--fg-sub)) 50%, transparent 50%);
     background-position: calc(100% - 16px) calc(50% - 2px), calc(100% - 11px) calc(50% - 2px);
     background-size: 5px 5px;
     background-repeat: no-repeat;
@@ -93,7 +184,7 @@
   }
   /* 主按钮：荧光青绿 */
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-bg-base bg-neon-green transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-on-neon bg-neon-green transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
     box-shadow: 0 0 16px rgba(0, 229, 160, 0.3);
   }
   .btn-primary:hover:not(:disabled) {
@@ -116,7 +207,7 @@
   }
   /* 调用树背景 */
   .tree-bg {
-    background: rgba(0, 0, 0, 0.25);
+    background: var(--tree-bg);
   }
   .file-input {
     @apply cursor-pointer;

@@ -60,7 +60,7 @@
             <label class="text-xs text-fg-sub font-medium">② Git 地址</label>
             <input v-model="gitUrl" class="input-text w-full text-xs" placeholder="https://git.xxx.com/group/repo.git" @change="fetchRemoteBranches" />
             <div class="flex gap-2">
-              <select v-model="gitBranch" class="input-select w-28 text-xs" :disabled="!gitUrl || remoteBranchLoading">
+              <select v-model="gitBranch" class="input-select w-28 text-xs" :disabled="!gitUrl || remoteBranchLoading" aria-label="② Git 地址">
                 <option value="">{{ remoteBranchLoading ? '分支获取中…' : remoteBranches.length ? '选择分支' : '默认分支' }}</option>
                 <option v-for="b in remoteBranches" :key="b" :value="b">{{ b }}</option>
               </select>

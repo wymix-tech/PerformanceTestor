@@ -1,6 +1,7 @@
 package com.perfserver.auth;
 
 import com.perfserver.common.ApiResponse;
+import com.perfserver.common.Messages;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,10 +27,12 @@ public class AuthController {
 
     private final AuthProperties properties;
     private final JwtService jwtService;
+    private final Messages messages;
 
-    public AuthController(AuthProperties properties, JwtService jwtService) {
+    public AuthController(AuthProperties properties, JwtService jwtService, Messages messages) {
         this.properties = properties;
         this.jwtService = jwtService;
+        this.messages = messages;
     }
 
     /** 登录请求体 */
@@ -39,13 +42,13 @@ public class AuthController {
     @PostMapping("/login")
     public ApiResponse<Map<String, Object>> login(@RequestBody LoginRequest req) {
         if (req == null || isBlank(req.username()) || isBlank(req.password())) {
-            return ApiResponse.error(401, "请输入账号与密码");
+            return ApiResponse.error(401, messages.get("auth.missing.credentials"));
         }
         boolean ok = properties.getUsername().equals(req.username())
                 && properties.getPassword().equals(req.password());
         if (!ok) {
             log.warn("login failed for username: {}", req.username());
-            return ApiResponse.error(401, "账号或密码错误");
+            return ApiResponse.error(401, messages.get("auth.invalid.credentials"));
         }
         String token = jwtService.issue(properties.getUsername());
         Map<String, Object> data = new LinkedHashMap<>();

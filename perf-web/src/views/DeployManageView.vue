@@ -26,7 +26,7 @@
           </div>
           <div>
             <label class="text-fg-sub">认证方式</label>
-            <select v-model="authType" class="input-select w-full">
+            <select v-model="authType" class="input-select w-full" aria-label="认证方式">
               <option value="password">密码</option>
               <option value="privateKey">私钥（PEM 文本）</option>
             </select>

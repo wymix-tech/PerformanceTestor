@@ -8,7 +8,7 @@
 
     <div class="glass-card p-4 mb-4 flex flex-wrap items-center gap-4">
       <label class="text-xs text-fg-sub">项目</label>
-      <select v-model="query.app" class="input-select w-44" @change="loadTraces">
+      <select v-model="query.app" class="input-select w-44" @change="loadTraces" aria-label="项目">
         <option v-for="name in projectNames" :key="name" :value="name">{{ name }}</option>
       </select>
       <label class="text-xs text-fg-sub">方法</label>
@@ -79,7 +79,7 @@
           <div class="text-sm font-medium">慢命令列表（合并）</div>
           <div class="flex flex-wrap items-center gap-2">
             <label class="text-xs text-fg-sub">类型</label>
-            <select v-model="slowType" class="input-select w-32" @change="loadSlowItems">
+            <select v-model="slowType" class="input-select w-32" @change="loadSlowItems" aria-label="类型">
               <option value="">全部</option>
               <option value="sql">SQL</option>
               <option value="redis">Redis</option>
@@ -87,7 +87,7 @@
               <option value="mq">MQ</option>
             </select>
             <label class="text-xs text-fg-sub ml-2">最小耗时</label>
-            <select v-model="minCostMs" class="input-select w-28" @change="loadSlowItems">
+            <select v-model="minCostMs" class="input-select w-28" @change="loadSlowItems" aria-label="最小耗时">
               <option :value="0">全部</option>
               <option :value="100">100ms</option>
               <option :value="500">500ms</option>
@@ -158,9 +158,13 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { GitBranch } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import TraceTree from '../components/TraceTree.vue'
+import { chartColor } from '@/utils/chartTheme'
 import { fmtTime } from '../utils/format'
+import { useThemeStore } from '@/stores/theme'
 import { traceApi, slowSqlApi, slowCommandApi, hotspotApi, sourceApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
+
+const themeStore = useThemeStore()
 
 const tabs = [
   { key: 'trace', label: '调用链' },
@@ -245,6 +249,8 @@ const flameHeight = computed(() => {
 })
 
 const flameOption = computed(() => {
+  // 依赖主题版本：切换明暗后重算 ECharts 颜色
+  void themeStore.version
   const items = flameItems.value
   if (!items.length) return {}
   const depthCount = Math.max(...items.map(i => i.depth)) + 1
@@ -255,9 +261,9 @@ const flameOption = computed(() => {
     yAxis: { type: 'value', min: 0, max: depthCount, inverse: true, show: false },
     tooltip: {
       confine: true,
-      backgroundColor: '#182238',
+      backgroundColor: chartColor('bgPanel'),
       borderColor: 'rgba(0,229,160,0.3)',
-      textStyle: { color: '#E6EDF7', fontSize: 12 },
+      textStyle: { color: chartColor('fgMain'), fontSize: 12 },
       formatter: (p: any) => {
         const it = items[p.dataIndex]
         if (!it) return ''
@@ -298,7 +304,7 @@ const flameOption = computed(() => {
                 text: label,
                 x: x + 4,
                 y: y + h / 2,
-                fill: '#0B1220',
+                fill: chartColor('bgBase'),
                 fontSize: 10,
                 fontFamily: 'Menlo, Consolas, monospace',
                 verticalAlign: 'middle'
@@ -464,21 +470,24 @@ async function loadHotspots() {
 }
 
 /** CPU 热点横向条形图（命中次数降序） */
-const hotspotOption = computed(() => ({
+const hotspotOption = computed(() => {
+  // 依赖主题版本：切换明暗后重算 ECharts 颜色（普通语句，不能作为 option 的键）
+  void themeStore.version
+  return {
   backgroundColor: 'transparent',
   tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
   grid: { left: 8, right: 48, top: 8, bottom: 8, containLabel: true },
   xAxis: {
     type: 'value',
-    axisLabel: { color: '#8A94A6', fontSize: 10 },
-    splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } }
+    axisLabel: { color: chartColor('fgSub'), fontSize: 10 },
+    splitLine: { lineStyle: { color: chartColor('overlay', 0.06) } }
   },
   yAxis: {
     type: 'category',
     inverse: true,
     data: hotspots.value.map((h) => shortMethod(h.methodName)),
-    axisLabel: { color: '#C8D2E0', fontSize: 10 },
-    axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } }
+    axisLabel: { color: chartColor('fgDim'), fontSize: 10 },
+    axisLine: { lineStyle: { color: chartColor('overlay', 0.15) } }
   },
   series: [{
     type: 'bar',
@@ -493,10 +502,11 @@ const hotspotOption = computed(() => ({
       },
       borderRadius: [0, 4, 4, 0]
     },
-    label: { show: true, position: 'right', color: '#8A94A6', fontSize: 10, formatter: '{c}' },
+    label: { show: true, position: 'right', color: chartColor('fgSub'), fontSize: 10, formatter: '{c}' },
     barMaxWidth: 18
   }]
-}))
+  }
+})
 
 /** 方法全限定名 → 简短显示（com.a.b.Foo#bar → Foo#bar） */
 function shortMethod(name: string): string {

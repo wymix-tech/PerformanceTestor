@@ -8,6 +8,31 @@
 
 ---
 
+## 0. 最新轮次变更摘要（批次 4：P3 i18n / 无障碍 / 明暗主题）
+
+**结论：批次 4 三项（i18n 抽取、无障碍、明暗主题）落地，perf-server 625 测试全绿，前端构建 + 76 单测 + 突变门禁 80.18 通过。**
+
+> 合并顺序：PR #16（P0）→ #17（P1）→ #18（P2）→ 本批 #19（P3）。本批分支 `auto/batch4-p3-ux` 基于 `auto/batch3-p2-lifecycle`。
+
+| 条目 | 新增文件 / 改动 |
+|---|---|
+| P3-1 前端 i18n | `perf-web/src/i18n/index.ts`（[NEW] locale/持久化/`<html lang>`）、`i18n/locales/zh-CN.ts`、`en-US.ts`（[NEW] 骨架文案）、`main.ts`（[MODIFY] `app.use(i18n)`）、`router/index.ts`（[MODIFY] `meta.titleKey`）、`layouts/MainLayout.vue`（[MODIFY] 语言切换 + `t()`）、`views/LoginView.vue`、`views/NotFoundView.vue`（[MODIFY] 全量 `t()`） |
+| P3-1 后端 i18n | `common/Messages.java`（[NEW] `MessageSource` 封装，取 `LocaleContextHolder`）、`resources/i18n/messages.properties`、`messages_en.properties`（[NEW]）、`application.yml`（[MODIFY] `spring.messages.*`）、`auth/AuthController.java`、`common/GlobalExceptionHandler.java`（[MODIFY] 改走 `Messages`） |
+| P3-2 无障碍 | `style.css`（[MODIFY] `:focus-visible` 全局焦点环）、`layouts/MainLayout.vue`（[MODIFY] skip-link / `aria-current` / `aria-hidden`）、`components/TraceTree.vue`（[MODIFY] `aria-expanded`、时间轴 `role=img`）、`components/stress/*`、`views/*`（[MODIFY] 6 处 `<table>` + 32 处 `<select>` 补 `aria-label`，状态徽章 `role=status`，登录页 `role=alert` + `for/id`） |
+| P3-3 明暗主题 | `style.css`（[MODIFY] 全量 CSS 变量 + 两套主题）、`tailwind.config.js`（[MODIFY] 改用 `rgb(var(--x) / <alpha-value>)`，覆盖内置 `white`）、`stores/theme.ts`（[NEW] 三态 + 持久化 + 系统跟随）、`utils/chartTheme.ts`（[NEW] 运行时读变量）、`index.html`（[MODIFY] 首屏无闪内联脚本）、`layouts/MainLayout.vue`（[MODIFY] 切换按钮）、`views/{JvmMonitor,TraceAnalyzer,AiAssistant}View.vue`、`components/stress/StressReport.vue`（[MODIFY] ECharts 色走 `chartColor`） |
+| 单测 | `common/LocaleMessagesTest`（[NEW] 8）、`common/TestMessages`（[NEW] 测试辅助）、`auth/AuthControllerTest`（[MODIFY] +1）、前端 `stores/__tests__/theme.spec.ts`（[NEW] 18）、`utils/__tests__/chartTheme.spec.ts`（[NEW] 13）、`i18n/__tests__/i18n.spec.ts`（[NEW] 9）、`views/__tests__/a11y.spec.ts`（[NEW] 8）、`stryker.config.json`（[MODIFY] mutate 增 `theme.ts` / `chartTheme.ts`） |
+
+**接手必读（本轮口径）**：
+
+- **组件里不要写死颜色 hex**：全站颜色已变量化，写死 hex 会导致浅色主题下失效。Tailwind 消费 `rgb(var(--x) / <alpha-value>)`；`white` 已被覆盖为 `--overlay`（深色=白、浅色=黑），故 `bg-white/5`/`border-white/10` 两主题都可用。
+- 霓虹按钮/强调块上的文字用 `text-on-neon`（浅色下取深色），**不要用 `text-bg-base`**——浅色下 `--bg-base` 变近白，白字压绿按钮对比度骤降。
+- ECharts 图表色经 `chartColor('fgSub')` 等取自 CSS 变量；切主题后由 `theme` store 自动 `clearChartThemeCache()` 并自增 `version`，图表 computed 需 `void themeStore.version` 建立依赖才会重算。
+- 主题首屏由 `index.html` **内联脚本**应用（模块是异步的，来不及），改主题逻辑时须同步维护内联脚本与 `stores/theme.ts` 两份。
+- i18n 只覆盖骨架（通用/导航/登录/404）；后端只迁了鉴权 + 全局异常。**中英 key 集合必须一致**，由 `i18n.spec.ts` / `LocaleMessagesTest` 断言；后端 properties 必须 UTF-8 读（`spring.messages.encoding`）。
+- 无障碍为静态回查 + 关键件手改，**未做读屏实测**；复杂交互与 ECharts 画布仍无替代文本。
+
+---
+
 ## 0. 最新轮次变更摘要（批次 2：P1 可观测性与防呆）
 
 **结论：批次 2 三项（Actuator/自检、游标分页、repoId 防呆）落地，perf-server 563 测试全绿，前端构建 + 突变门禁 83.33 通过。**

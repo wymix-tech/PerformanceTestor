@@ -53,7 +53,7 @@
     <div v-if="stepStats.length" class="mb-4">
       <div class="text-xs text-fg-sub mb-2">分步骤统计（{{ stepStats.length }} 步）</div>
       <div class="overflow-x-auto">
-        <table class="w-full text-xs">
+        <table class="w-full text-xs" aria-label="压测报告数据表">
           <thead>
             <tr class="text-fg-sub text-[11px]">
               <th class="text-left py-1 pr-3 font-normal">步骤</th>
@@ -145,7 +145,7 @@
       <div v-if="capacity.confidenceInterval?.length" class="mt-3 pt-3 border-t border-neon-green/20">
         <div class="text-xs text-fg-sub mb-2">分档 95% 置信区间（QPS 采样 {{ capacity.confidenceInterval[0].qpsSamples }} 点 / 档）</div>
         <div class="overflow-x-auto">
-          <table class="w-full text-xs">
+          <table class="w-full text-xs" aria-label="压测报告数据表">
             <thead>
               <tr class="text-fg-sub text-[11px]">
                 <th class="text-left py-1 pr-3 font-normal">并发</th>
@@ -186,7 +186,11 @@ import axios from 'axios'
 import { onMounted, watch } from 'vue'
 import MetricChart from '../charts/MetricChart.vue'
 import StressTrendChart from './StressTrendChart.vue'
+import { useThemeStore } from '@/stores/theme'
+import { chartColor } from '@/utils/chartTheme'
 import { reportApi, stressApi } from '../../api'
+
+const themeStore = useThemeStore()
 
 /**
  * 压测报告公共组件：指标卡 + QPS/分档曲线 + 容量评估卡片 + 历史趋势。
@@ -335,20 +339,23 @@ async function exportReport(format: 'pdf' | 'doc') {
   }
 }
 
-const sampleOption = computed(() => ({
+const sampleOption = computed(() => {
+  // 依赖主题版本：切换明暗后重算 ECharts 轴色
+  void themeStore.version
+  return ({
   backgroundColor: 'transparent',
   tooltip: { trigger: 'axis' },
   grid: { left: 40, right: 12, top: 12, bottom: 20 },
   xAxis: {
     type: 'category',
     data: props.samples.map((s) => `#${s.id}`),
-    axisLabel: { color: '#8A94A6', fontSize: 10 },
-    axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } }
+    axisLabel: { color: chartColor('fgSub'), fontSize: 10 },
+    axisLine: { lineStyle: { color: chartColor('overlay', 0.15) } }
   },
   yAxis: {
     type: 'value',
-    axisLabel: { color: '#8A94A6', fontSize: 10 },
-    splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } }
+    axisLabel: { color: chartColor('fgSub'), fontSize: 10 },
+    splitLine: { lineStyle: { color: chartColor('overlay', 0.06) } }
   },
   series: [
     {
@@ -363,24 +370,26 @@ const sampleOption = computed(() => ({
       lineStyle: { color: '#FAAD14', width: 1.5 }
     }
   ]
-}))
+})
+})
 
 const stageOption = computed(() => {
+  void themeStore.version
   const pts = props.report?.result?.stagePoints || []
   return {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis' },
-    legend: { textStyle: { color: '#8A94A6', fontSize: 11 }, top: 0 },
+    legend: { textStyle: { color: chartColor('fgSub'), fontSize: 11 }, top: 0 },
     grid: { left: 40, right: 40, top: 26, bottom: 20 },
     xAxis: {
       type: 'category',
       data: pts.map((p: any) => `${p.concurrency} 并发`),
-      axisLabel: { color: '#8A94A6', fontSize: 10 },
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } }
+      axisLabel: { color: chartColor('fgSub'), fontSize: 10 },
+      axisLine: { lineStyle: { color: chartColor('overlay', 0.15) } }
     },
     yAxis: [
-      { type: 'value', name: 'QPS', axisLabel: { color: '#8A94A6', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } } },
-      { type: 'value', name: 'P95ms', axisLabel: { color: '#8A94A6', fontSize: 10 }, splitLine: { show: false } }
+      { type: 'value', name: 'QPS', axisLabel: { color: chartColor('fgSub'), fontSize: 10 }, splitLine: { lineStyle: { color: chartColor('overlay', 0.06) } } },
+      { type: 'value', name: 'P95ms', axisLabel: { color: chartColor('fgSub'), fontSize: 10 }, splitLine: { show: false } }
     ],
     series: [
       { name: 'QPS', type: 'bar', data: pts.map((p: any) => p.qps), itemStyle: { color: '#0EA5E9', borderRadius: [4, 4, 0, 0] } },
@@ -429,6 +438,7 @@ const fitSeries = computed(() => {
 })
 
 const fitOption = computed(() => {
+  void themeStore.version
   const cap = props.capacity
   const markLine = cap?.rtKneeConcurrency
     ? {
@@ -441,19 +451,19 @@ const fitOption = computed(() => {
   return {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis' },
-    legend: { textStyle: { color: '#8A94A6', fontSize: 11 }, top: 0 },
+    legend: { textStyle: { color: chartColor('fgSub'), fontSize: 11 }, top: 0 },
     grid: { left: 50, right: 16, top: 26, bottom: 24 },
     xAxis: {
-      type: 'value', name: '并发', nameTextStyle: { color: '#8A94A6', fontSize: 10 },
+      type: 'value', name: '并发', nameTextStyle: { color: chartColor('fgSub'), fontSize: 10 },
       min: cap?.fittedCurve?.[0]?.concurrency ?? 0,
-      axisLabel: { color: '#8A94A6', fontSize: 10 },
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } },
+      axisLabel: { color: chartColor('fgSub'), fontSize: 10 },
+      axisLine: { lineStyle: { color: chartColor('overlay', 0.15) } },
       splitLine: { show: false }
     },
     yAxis: {
-      type: 'value', name: 'QPS', nameTextStyle: { color: '#8A94A6', fontSize: 10 },
-      axisLabel: { color: '#8A94A6', fontSize: 10 },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } }
+      type: 'value', name: 'QPS', nameTextStyle: { color: chartColor('fgSub'), fontSize: 10 },
+      axisLabel: { color: chartColor('fgSub'), fontSize: 10 },
+      splitLine: { lineStyle: { color: chartColor('overlay', 0.06) } }
     },
     series: fitSeries.value.length
       ? [...fitSeries.value.slice(0, -1), { ...fitSeries.value[fitSeries.value.length - 1], markLine }]
