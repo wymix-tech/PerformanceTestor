@@ -56,6 +56,12 @@ public class AgentReportService {
     private static final int MAX_COMMAND_LEN = 1000;
     /** 单条 INSERT 语句的行数上限（分片提交，防 max_allowed_packet 超限） */
     private static final int INSERT_CHUNK = 200;
+    /**
+     * trace_chain 专属分片更小：{@code trace_json} 是 MEDIUMTEXT 重列，
+     * 200 条满链路可达数 MB，远超 {@code max_allowed_packet} 默认 4MB，
+     * 故按 50 条提交（默认 200 条的 1/4），实测单语句体积稳定在 1MB 量级。
+     */
+    private static final int TRACE_INSERT_CHUNK = 50;
 
     /** 限频告警：未知项目上报被丢弃 */
     private void warnUnknownProjectOnce(String project, String type) {
@@ -166,9 +172,9 @@ public class AgentReportService {
         }
     }
 
-    /** 调用链批量入库 */
+    /** 调用链批量入库（解析逐条容错，落库按 {@value #TRACE_INSERT_CHUNK} 分片批量提交） */
     private void saveTraces(String appName, List<?> items) {
-        int count = 0;
+        List<TraceChain> batch = new ArrayList<>(items.size());
         for (Object item : items) {
             if (!(item instanceof Map<?, ?> m)) {
                 continue;
@@ -184,13 +190,16 @@ public class AgentReportService {
                 chain.setStartTime(toLocalDateTime(longVal(map.get("startTime"))));
                 Object tree = map.get("tree");
                 chain.setTraceJson(tree == null ? "{}" : objectMapper.writeValueAsString(tree));
-                traceChainMapper.insert(chain);
-                count++;
+                batch.add(chain);
             } catch (Exception e) {
-                log.warn("save trace failed, app={}", appName, e);
+                // 单条解析失败不影响整批（解析阶段不做 DB 往返）
+                log.warn("parse trace failed, app={}", appName, e);
             }
         }
-        log.info("agent report: saved {} traces, app={}", count, appName);
+        if (!batch.isEmpty()) {
+            insertInChunks(batch, traceChainMapper::batchInsert, TRACE_INSERT_CHUNK);
+        }
+        log.info("agent report: saved {} traces, app={}", batch.size(), appName);
     }
 
     /** JVM 指标批量入库 */
@@ -222,7 +231,8 @@ public class AgentReportService {
             }
         }
         if (!batch.isEmpty()) {
-            jvmMetricMapper.batchInsert(batch);
+            // 与其余三种类型统一走分片，避免单批过大撑爆 max_allowed_packet
+            insertInChunks(batch, jvmMetricMapper::batchInsert);
         }
         log.info("agent report: saved {} jvm metrics, app={}", batch.size(), appName);
     }
@@ -304,8 +314,14 @@ public class AgentReportService {
      * @return 提交的总条数（供日志统计）
      */
     private static <T> int insertInChunks(List<T> batch, Consumer<List<T>> inserter) {
-        for (int from = 0; from < batch.size(); from += INSERT_CHUNK) {
-            inserter.accept(batch.subList(from, Math.min(from + INSERT_CHUNK, batch.size())));
+        return insertInChunks(batch, inserter, INSERT_CHUNK);
+    }
+
+    /** 分片批量入库（自定义分片大小；trace 等重列类型用更小的片） */
+    private static <T> int insertInChunks(List<T> batch, Consumer<List<T>> inserter, int chunkSize) {
+        int size = Math.max(1, chunkSize);
+        for (int from = 0; from < batch.size(); from += size) {
+            inserter.accept(batch.subList(from, Math.min(from + size, batch.size())));
         }
         return batch.size();
     }

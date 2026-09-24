@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.perfserver.mapper.RetentionMapper">
+
+    <!--
+      分区维护 DDL：MySQL DDL 不支持参数化标识符，只能拼串。
+      安全性由调用方（PartitionMaintainer）保证：
+        1) 表名来自代码内常量白名单（jvm_metric / stress_sample）；
+        2) 分区名经 ^p\d{8}$ 正则校验；
+        3) lessThan 为服务端生成的 LocalDateTime 格式化文本。
+      故此处 ${} 不构成注入面；Mapper XML 内无任何外部输入直入的 ${}。
+    -->
+
+    <select id="listPartitions" resultType="java.util.Map">
+        SELECT PARTITION_NAME AS partitionName,
+               PARTITION_DESCRIPTION AS partitionDescription
+        FROM information_schema.PARTITIONS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = #{tableName}
+          AND PARTITION_NAME IS NOT NULL
+        ORDER BY PARTITION_ORDINAL_POSITION
+    </select>
+
+    <update id="addDailyPartition">
+        ALTER TABLE ${tableName}
+        ADD PARTITION (PARTITION ${partition} VALUES LESS THAN ('${lessThan}'))
+    </update>
+
+    <update id="dropPartition">
+        ALTER TABLE ${tableName} DROP PARTITION ${partition}
+    </update>
+
+    <update id="reorganizeMaxPartition">
+        ALTER TABLE ${tableName}
+        REORGANIZE PARTITION p_max INTO (
+            PARTITION ${partition} VALUES LESS THAN ('${lessThan}'),
+            PARTITION p_max VALUES LESS THAN (MAXVALUE)
+        )
+    </update>
+
+    <delete id="deleteBefore">
+        DELETE FROM ${tableName} WHERE ${column} &lt; #{before} LIMIT #{batchSize}
+    </delete>
+
+</mapper>

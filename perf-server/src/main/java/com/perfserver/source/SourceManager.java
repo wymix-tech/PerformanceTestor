@@ -1,5 +1,6 @@
 package com.perfserver.source;
 
+import com.perfserver.collector.ProjectRegistry;
 import com.perfserver.entity.SourceRepo;
 import com.perfserver.mapper.SourceFileMapper;
 import com.perfserver.mapper.SourceRepoMapper;
@@ -37,6 +38,7 @@ public class SourceManager {
     private final SourceRepoMapper sourceRepoMapper;
     private final SourceFileService sourceFileService;
     private final SourceFileMapper sourceFileMapper;
+    private final ProjectRegistry projectRegistry;
     private final ExecutorService importExecutor = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "source-import");
         t.setDaemon(true);
@@ -47,10 +49,11 @@ public class SourceManager {
     private String storageDir;
 
     public SourceManager(SourceRepoMapper sourceRepoMapper, SourceFileService sourceFileService,
-                         SourceFileMapper sourceFileMapper) {
+                         SourceFileMapper sourceFileMapper, ProjectRegistry projectRegistry) {
         this.sourceRepoMapper = sourceRepoMapper;
         this.sourceFileService = sourceFileService;
         this.sourceFileMapper = sourceFileMapper;
+        this.projectRegistry = projectRegistry;
     }
 
     /**
@@ -88,6 +91,8 @@ public class SourceManager {
         repo.setStatus("importing");
         sourceRepoMapper.insert(repo);
         long repoId = repo.getId();
+        // 新建仓库立即可被 agent 上报认作"已知项目"（否则 30s 缓存窗口内的上报会被整批丢弃）
+        projectRegistry.evict(repo.getRepoName());
 
         importExecutor.submit(() -> {
             try {
@@ -180,6 +185,7 @@ public class SourceManager {
             long totalSize = sizeOf(rootDir);
             sourceRepoMapper.updateIndexed(repoId, indexed, totalSize);
             sourceRepoMapper.updateStatus(repoId, "ready", null);
+            projectRegistry.evict(repo.getRepoName());
             log.info("source repo {} resynced ({}), indexed={}", repoId, type, indexed);
             return indexed;
         } catch (Exception e) {
@@ -465,8 +471,10 @@ public class SourceManager {
      * @return 绑定的应用名
      */
     public String bindApp(long repoId, String appName) {
-        getRepo(repoId);
+        SourceRepo repo = getRepo(repoId);
         sourceRepoMapper.updateAppName(repoId, appName == null ? "" : appName.trim());
+        // 断掉旧项目名可能残留的缓存，避免改名后仍按旧名放行上报
+        projectRegistry.evict(repo.getRepoName());
         return appName == null ? "" : appName.trim();
     }
 

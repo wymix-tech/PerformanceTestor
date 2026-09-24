@@ -1,5 +1,6 @@
 package com.perfserver.controller;
 
+import com.perfserver.auth.JwtAuthInterceptor;
 import com.perfserver.common.ApiResponse;
 import com.perfserver.entity.FixSuggestion;
 import com.perfserver.entity.PerformanceIssue;
@@ -11,6 +12,9 @@ import com.perfserver.service.IssueVerifyService;
 import com.perfserver.service.SourceIssueService;
 import com.perfserver.source.SourceFileService;
 import com.perfserver.source.SourceManager;
+import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -34,6 +38,8 @@ import java.util.Map;
 @RequestMapping("/api/source")
 public class SourceController {
 
+    private static final Logger log = LoggerFactory.getLogger(SourceController.class);
+
     private final SourceManager sourceManager;
     private final SourceFileService sourceFileService;
     private final SourceFileMapper sourceFileMapper;
@@ -42,13 +48,15 @@ public class SourceController {
     private final com.perfserver.source.EndpointScanner endpointScanner;
     private final DataCleanupService dataCleanupService;
     private final IssueVerifyService issueVerifyService;
+    private final HttpServletRequest request;
 
     public SourceController(SourceManager sourceManager, SourceFileService sourceFileService,
                             SourceFileMapper sourceFileMapper, SourceIssueService sourceIssueService,
                             com.perfserver.mapper.FixSuggestionMapper suggestionMapper,
                             com.perfserver.source.EndpointScanner endpointScanner,
                             DataCleanupService dataCleanupService,
-                            IssueVerifyService issueVerifyService) {
+                            IssueVerifyService issueVerifyService,
+                            HttpServletRequest request) {
         this.sourceManager = sourceManager;
         this.sourceFileService = sourceFileService;
         this.sourceFileMapper = sourceFileMapper;
@@ -57,6 +65,7 @@ public class SourceController {
         this.endpointScanner = endpointScanner;
         this.dataCleanupService = dataCleanupService;
         this.issueVerifyService = issueVerifyService;
+        this.request = request;
     }
 
     /** 仓库列表 */
@@ -78,20 +87,57 @@ public class SourceController {
         return ApiResponse.ok(Map.of("repoId", repoId, "indexed", indexed));
     }
 
-    /** 清理项目历史数据：删除该项目（按绑定 appName）关联的压测/慢SQL/监控/问题等全部数据，源码与项目本身保留 */
+    /**
+     * 清理项目历史数据：删除该项目（按绑定 appName）关联的压测/慢SQL/慢命令/监控/问题/AI 结论等全部数据，
+     * 源码与项目本身保留。
+     *
+     * <p>请求体可选参数：
+     * <ul>
+     *   <li>{@code includeGlobalKnowledge}（默认 {@code false}）：是否连带删除
+     *       {@code ai_knowledge} 中 {@code app_name=''} 的<b>全局结论</b>（跨项目共性经验）。</li>
+     *   <li>{@code confirmAppName}：开启删全局结论时<b>必填</b>，需与项目绑定的 appName 完全一致，
+     *       用于二次确认，防止误操作一把清掉所有项目共用的经验。</li>
+     * </ul>
+     * 计数拆分 {@code aiKnowledge}（本应用）与 {@code aiKnowledgeGlobal}（全局，未开启恒为 0）。
+     */
     @PostMapping("/repos/{repoId}/cleanup-data")
-    public ApiResponse<Map<String, Object>> cleanupData(@PathVariable long repoId) {
+    public ApiResponse<Map<String, Object>> cleanupData(@PathVariable long repoId,
+                                                        @RequestBody(required = false) Map<String, Object> body) {
         SourceRepo repo = sourceManager.getRepo(repoId);
         String appName = repo.getAppName();
         if (appName == null || appName.isBlank()) {
             throw new IllegalArgumentException("项目未绑定应用（appName），无法定位历史数据，请先在项目列表绑定应用");
         }
-        Map<String, Integer> deleted = dataCleanupService.cleanupByAppName(appName);
+        Map<String, Object> req = body == null ? Map.of() : body;
+        boolean includeGlobal = Boolean.parseBoolean(String.valueOf(req.getOrDefault("includeGlobalKnowledge", "false")));
+
+        // 删全局结论属高风险：要求请求体回显 appName 二次确认（与 P2-1 删除项目同款）
+        if (includeGlobal) {
+            String confirm = req.get("confirmAppName") == null ? "" : String.valueOf(req.get("confirmAppName")).trim();
+            if (!appName.equals(confirm)) {
+                throw new IllegalArgumentException(
+                        "开启全局知识清理需二次确认：请求体 confirmAppName 必须与项目绑定的 appName 完全一致");
+            }
+            log.warn("审计: 用户请求清理全局 AI 结论, repoId={}, appName={}, operator={}",
+                    repoId, appName, currentOperator());
+        }
+
+        Map<String, Integer> deleted = dataCleanupService.cleanupByAppName(appName, includeGlobal);
         Map<String, Object> result = new HashMap<>();
         result.put("repoId", repoId);
         result.put("appName", appName);
+        result.put("includeGlobalKnowledge", includeGlobal);
         result.put("deleted", deleted);
         return ApiResponse.ok(result);
+    }
+
+    /** 当前操作人：JWT 鉴权命中时为 token subject；CI 静态令牌调用标记为 ci；否则 unknown */
+    private String currentOperator() {
+        if (Boolean.TRUE.equals(request.getAttribute(JwtAuthInterceptor.CI_ATTR))) {
+            return "ci";
+        }
+        Object operator = request.getAttribute(JwtAuthInterceptor.USER_ATTR);
+        return operator == null ? "unknown" : String.valueOf(operator);
     }
 
     /** 分支列表（git 仓库专用，fetch 远端后枚举） */

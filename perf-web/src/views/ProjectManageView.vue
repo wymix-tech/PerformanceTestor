@@ -277,25 +277,54 @@ async function cleanupData(r: Record<string, any>) {
   }
   const ok = window.confirm(
     `确认清理项目「${r.repoName}」的全部历史数据吗？\n` +
-    `将删除该应用(${r.appName})的压测任务/采样、慢SQL/慢命令、JVM监控、调用链、性能问题/修复方案、应用实例、数据库连接等数据。\n` +
+    `将删除该应用(${r.appName})的压测任务/采样、慢SQL/慢命令、JVM监控、调用链、性能问题/修复方案、应用实例、数据库连接、AI 结论等数据。\n` +
+    `AI 知识库中的全局结论（跨项目共性经验）默认保留。\n` +
     `源码与项目本身保留，此操作不可恢复。`
   )
   if (!ok) return
+
+  // 全局结论默认保留；显式开启需二次确认（前端要求手输应用名，后端同样校验 confirmAppName 回显）
+  let includeGlobal = false
+  const askGlobal = window.confirm(
+    `是否同时删除 AI 知识库中的「全局结论」（appName 为空的跨项目共性经验）？\n\n` +
+    `【选"取消"= 安全默认】只删本项目(${r.appName})的结论，全局经验保留。\n` +
+    `【选"确定"= 高风险】全局结论将被删除，所有项目的检索都会受影响，且不可恢复。`
+  )
+  if (askGlobal) {
+    const typed = window.prompt(
+      `即将连带删除全局 AI 结论，此操作影响所有项目。\n请输入应用名「${r.appName}」以确认：`
+    )
+    if (typed === null) return
+    if (typed.trim() !== r.appName) {
+      alert('输入的应用名不匹配，已取消清理（全局结论未删除）')
+      return
+    }
+    includeGlobal = true
+  }
+
   cleaningId.value = r.id
   try {
-    const res = await sourceApi.cleanupData(r.id)
+    const res = await sourceApi.cleanupData(r.id, {
+      includeGlobalKnowledge: includeGlobal,
+      confirmAppName: includeGlobal ? r.appName : ''
+    })
     const d = (res.data?.deleted || {}) as Record<string, number>
     const num = (v: unknown) => Number(v || 0)
     const total =
       num(d.stressSample) + num(d.stressTask) + num(d.slowSql) + num(d.slowCommand) +
       num(d.jvmMetric) + num(d.traceChain) + num(d.performanceIssue) +
-      num(d.fixSuggestion) + num(d.appInstance) + num(d.dbConn)
-    alert(
+      num(d.fixSuggestion) + num(d.appInstance) + num(d.dbConn) + num(d.aiKnowledge)
+    let msg =
       `已清理 ${total} 条历史数据：\n` +
       `压测 ${num(d.stressTask) + num(d.stressSample)} 条、` +
       `慢SQL ${num(d.slowSql)} 条、慢命令 ${num(d.slowCommand)} 条、` +
-      `监控 ${num(d.jvmMetric) + num(d.traceChain)} 条、问题 ${num(d.performanceIssue) + num(d.fixSuggestion)} 条`
-    )
+      `监控 ${num(d.jvmMetric) + num(d.traceChain)} 条、问题 ${num(d.performanceIssue) + num(d.fixSuggestion)} 条、` +
+      `AI 结论 ${num(d.aiKnowledge)} 条`
+    // 全局结论单独报数：两种删除不混在同一个数字里
+    msg += includeGlobal
+      ? `\n\n⚠ 全局 AI 结论 ${num(d.aiKnowledgeGlobal)} 条已一并删除`
+      : `\n\n全局 AI 结论已保留（未开启）`
+    alert(msg)
     await loadRepos()
   } catch (e) {
     alert('清理失败：' + (e instanceof Error ? e.message : String(e)))

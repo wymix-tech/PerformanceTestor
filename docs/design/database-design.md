@@ -52,10 +52,37 @@
 - 用途：慢 SQL 分析时对执行计划跑 EXPLAIN、灌数据任务复用连接配置；
 - 安全：内网演示明文存储，生产环境应加密；agent 上报自动按 host/appName 关联匹配连接。
 
-## 4. 分区策略
+## 4. 分区策略与数据保留
 
-- `jvm_metric`：按 `collect_time` RANGE 按天分区，保留 N 天（可配）；
-- `stress_sample`：按 `sample_time` RANGE 按天分区。
+分区的**创建与回收由 `PartitionMaintainer` 自动完成**（原先建表脚本里的
+`create_daily_partition` 存储过程全仓库无调用，分区会全部退化进 `p_max`）：
+
+- `jvm_metric`：`RANGE COLUMNS (collect_time)` 按天分区，分区名 `pYYYYMMDD`；
+- `stress_sample`：`RANGE COLUMNS (sample_time)` 按天分区，分区名 `pYYYYMMDD`；
+- 两者均保留 `p_max VALUES LESS THAN (MAXVALUE)` 兜底分区，缺分区时不会写入失败。
+
+`PartitionMaintainer` 行为（配置见 `application.yml` → `perf.retention.*`）：
+
+| 动作 | 说明 |
+| ---- | ---- |
+| 补分区 | 启动时执行一次 + 每 `interval-hours`（默认 1h）一次，为未来 `ahead-days`（默认 2）天补齐日分区；`p_max` 存在时若 `ADD PARTITION` 被拒则改走 `REORGANIZE p_max INTO (新分区, p_max)` |
+| 删分区 | 保留期 `partition-days`（默认 30，`0` = 不清理）：只 `DROP` **整分区数据全部过期**的日分区。保留窗口定义为「今天起往前数 keepDays 个完整日期」，即最早保留 `today-(keepDays-1)`，故第 keepDays 天的分区仍保留 |
+| 普通表清理 | `trace_chain` / `slow_sql` / `slow_command` 无分区，按 `trace-chain-days` / `slow-sql-days` / `slow-command-days`（默认 30，`0` = 不清理）分批 `DELETE ... LIMIT delete-batch-size`，每轮每表至多 `max-batches-per-run` 批，避免长事务阻塞上报写入 |
+
+安全性：全部 SQL try/catch 且只告警不抛出；表名/列名来自代码内白名单常量，分区名经 `^p\d{8}$` 校验后拼接（DDL 不支持参数化标识符），时间边界与批大小一律 `#{}` 参数化（见 `RetentionSqlScriptTest`）。首次上线建议先保持 `partition-days: 0`（只建分区不删），观察一轮后再开启回收。
+
+### 项目数据清理与全局 AI 结论
+
+`POST /api/source/repos/{repoId}/cleanup-data`（`DataCleanupService#cleanupByAppName`）按 `app_name`
+删除该项目的采集与派生数据，覆盖：`stress_sample` / `stress_task` / `fix_suggestion` /
+`performance_issue` / `trace_chain` / `jvm_metric` / `slow_sql` / `slow_command` /
+`app_instance` / `db_conn` / `ai_knowledge`。
+
+- `ai_knowledge` 中 `app_name=''` 的**全局结论（跨项目共性经验）默认保留**，返回计数拆
+  `aiKnowledge`（本应用）与 `aiKnowledgeGlobal`（全局，未开启恒为 0）；
+- 需连带删除全局结论时传 `includeGlobalKnowledge=true` **且** `confirmAppName` 回显项目绑定的
+  appName 做二次确认，后端另打 `warn` 审计日志（操作人 / appName / 条数）；
+- `chat_message` 表无 `app_name` 列，**补列前不纳入清理**（避免误删跨应用会话）。
 
 ## 5. 演示数据
 

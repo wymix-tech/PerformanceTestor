@@ -23,6 +23,9 @@ public class JwtAuthInterceptor implements HandlerInterceptor {
     /** 请求属性：命中 API Token 时置为 true，供下游识别 CI 调用方 */
     public static final String CI_ATTR = "perf.auth.ci";
 
+    /** 请求属性：JWT 校验通过时写入 subject（用户名），供审计日志记录操作人 */
+    public static final String USER_ATTR = "perf.auth.user";
+
     private static final String API_TOKEN_HEADER = "X-Perf-Api-Token";
 
     private final AuthProperties properties;
@@ -54,6 +57,8 @@ public class JwtAuthInterceptor implements HandlerInterceptor {
         if (auth != null && auth.startsWith("Bearer ")) {
             String subject = jwtService.verify(auth.substring(7));
             if (subject != null) {
+                // 记录操作人：高风险操作（清理全局知识、删除项目）的审计日志需要
+                request.setAttribute(USER_ATTR, subject);
                 return true;
             }
         }
