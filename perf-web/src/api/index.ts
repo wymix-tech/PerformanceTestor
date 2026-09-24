@@ -15,30 +15,70 @@ export const appApi = {
   list: () => http.get('/apps')
 }
 
+/**
+ * 游标分页返回体：与后端 CursorPage 一一对应。
+ * nextCursor 为 null 表示没有下一页（hasMore=false），调用方据此停止加载。
+ */
+export interface CursorPage<T> {
+  items: T[]
+  nextCursor: string | null
+  hasMore: boolean
+}
+
+/** 时序列表统一分页参数：cursor 传上一页的 nextCursor，不传即首屏 */
+export interface CursorParams {
+  app?: string
+  start?: string | number
+  end?: string | number
+  minCostMs?: number
+  /** 每页条数（默认 50，上限 500） */
+  size?: number
+  /** 上一页返回的游标 */
+  cursor?: string
+  /** @deprecated 兼容旧调用：后端仅在未传 size 时回退到 limit，新代码请用 size */
+  limit?: number
+}
+
+/**
+ * 游标分页结果归一化：统一成 {items,nextCursor,hasMore}，
+ * 并对旧接口返回的裸数组做兜底（后端灰度期间新旧响应并存时不至于崩）。
+ */
+function normalizePage<T>(resp: any): CursorPage<T> {
+  const data = resp?.data
+  if (Array.isArray(data)) {
+    return { items: data as T[], nextCursor: null, hasMore: false }
+  }
+  return {
+    items: (data?.items ?? []) as T[],
+    nextCursor: data?.nextCursor ?? null,
+    hasMore: !!data?.hasMore
+  }
+}
+
 export const jvmApi = {
-  // JVM 指标时序数据（start/end 支持 epoch 毫秒或 ISO，默认最近 1 小时）
-  metrics: (params: { app?: string; start?: string | number; end?: string | number; limit?: number }) =>
-    http.get('/jvm/metrics', { params })
+  // JVM 指标时序数据（游标分页，最新在前；图表需自行 reverse 成正序）
+  metrics: (params: { app?: string; start?: string | number; end?: string | number; size?: number; cursor?: string }) =>
+    http.get('/jvm/metrics', { params }).then((r) => normalizePage<Record<string, any>>(r))
 }
 
 export const traceApi = {
-  // 调用链列表（时间倒序）
-  list: (params: { app?: string; method?: string; start?: string | number; end?: string | number; limit?: number }) =>
-    http.get('/traces', { params }),
+  // 调用链列表（游标分页，按开始时间倒序）
+  list: (params: CursorParams & { method?: string }) =>
+    http.get('/traces', { params }).then((r) => normalizePage<Record<string, any>>(r)),
   // 调用链详情（含 traceJson 调用树）
   detail: (traceId: string) => http.get(`/traces/${traceId}`)
 }
 
 export const slowSqlApi = {
-  // 慢 SQL 列表（耗时倒序）
-  list: (params: { app?: string; start?: string | number; end?: string | number; minCostMs?: number; limit?: number }) =>
-    http.get('/slow-sqls', { params })
+  // 慢 SQL 列表（游标分页，按执行时间倒序）
+  list: (params: CursorParams) =>
+    http.get('/slow-sqls', { params }).then((r) => normalizePage<Record<string, any>>(r))
 }
 
 export const slowCommandApi = {
-  // 中间件慢命令列表（Redis / ES / MQ，耗时倒序；type 为空表示全部）
-  list: (params: { app?: string; type?: string; start?: string | number; end?: string | number; minCostMs?: number; limit?: number }) =>
-    http.get('/slow-commands', { params })
+  // 中间件慢命令列表（游标分页，按执行时间倒序；type 为空表示全部）
+  list: (params: CursorParams & { type?: string }) =>
+    http.get('/slow-commands', { params }).then((r) => normalizePage<Record<string, any>>(r))
 }
 
 export const hotspotApi = {
@@ -190,8 +230,13 @@ export const sourceApi = {
   endpoints: (repoId: number) => http.get(`/source/repos/${repoId}/endpoints`),
   // 重新同步仓库：重新拉取源码并重建索引（源码更新后调用）
   resync: (repoId: number) => http.post(`/source/repos/${repoId}/resync`),
-  // 清理项目历史数据：删除该应用关联的压测/慢SQL/监控/问题等全部数据（源码与项目本身保留）
-  cleanupData: (repoId: number) => http.post(`/source/repos/${repoId}/cleanup-data`),
+  // 清理项目历史数据：删除该应用关联的压测/慢SQL/监控/问题/AI结论等全部数据（源码与项目本身保留）
+  // includeGlobalKnowledge=true 时额外删除全局 AI 结论（跨项目共性经验），需同时传 confirmAppName 二次确认
+  cleanupData: (repoId: number, options?: { includeGlobalKnowledge?: boolean; confirmAppName?: string }) =>
+    http.post(`/source/repos/${repoId}/cleanup-data`, {
+      includeGlobalKnowledge: options?.includeGlobalKnowledge ?? false,
+      confirmAppName: options?.confirmAppName ?? ''
+    }),
   // 分支列表（git 仓库）
   branches: (repoId: number) => http.get(`/source/repos/${repoId}/branches`),
   // 切换分支（git 仓库，切换后自动重新同步）

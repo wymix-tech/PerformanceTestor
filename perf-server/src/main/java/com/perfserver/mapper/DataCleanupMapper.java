@@ -47,4 +47,21 @@ public interface DataCleanupMapper {
 
     /** 数据库连接配置 */
     int deleteDbConnsByApp(@Param("appName") String appName);
+
+    /**
+     * AI 知识库（本应用结论）：条件固定 {@code app_name = #{appName}}。
+     *
+     * <p><b>不含</b> {@code app_name = ''} 的全局结论（跨项目共性经验），
+     * 详见方案文档 §二·5。{@code appName} 为空时由 Service 短路返回 0，
+     * 不允许空应用名触发无过滤删除。
+     */
+    int deleteAiKnowledgeByApp(@Param("appName") String appName);
+
+    /**
+     * AI 知识库（全局结论）：仅删 {@code app_name = ''}。
+     *
+     * <p>只在调用方显式开启 {@code includeGlobalKnowledge} 时才允许执行，
+     * 属高风险操作，调用前须完成二次确认并写审计日志。
+     */
+    int deleteGlobalAiKnowledge();
 }

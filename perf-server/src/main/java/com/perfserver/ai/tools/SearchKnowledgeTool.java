@@ -32,9 +32,12 @@ public class SearchKnowledgeTool extends AbstractAiTool {
 
     @Override
     public String description() {
-        return "检索性能知识库（历史分析结论与修复经验）。参数：query 检索关键词（中文即可）；"
-                + "app 应用名（可选，空表示全部）；limit 条数上限（默认 5，最大 20）。"
-                + "分析根因或给出修复建议前应优先检索，复用已有结论。";
+        return "检索性能知识库（历史分析结论与修复经验）。参数：query 检索关键词（中文即可，必填）；"
+                + "app 应用名（可选，空表示全部；传 app 时本应用结论与全局结论一并召回，"
+                + "返回项 appName 为空表示跨项目共性经验）；limit 条数上限（默认 5，最大 20）。"
+                + "分析根因或给出修复建议前应优先检索，复用已有结论。"
+                + "注意：返回 count=0 表示知识库确实没有匹配的历史结论，"
+                + "不代表当前没有问题，应按证据链独立分析。";
     }
 
     @Override

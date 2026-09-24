@@ -97,14 +97,39 @@ class AiKnowledgeServiceTest {
         verify(mapper).recent("app", 5);
     }
 
-    /** 检索无命中时给出最近结论作参考，避免模型误判"无历史经验" */
+    /**
+     * 检索无命中必须返回空：不能回落 recent 把无关结论当"参考经验"喂给模型
+     * （与提示词"工具返回空 = 暂无数据"一致，见方案文档 §二·5 的语义冲突裁决）。
+     */
     @Test
-    void returnsRecentWhenNoHit() {
+    void returnsEmptyWhenNoHit() {
         when(mapper.search(anyString(), anyString(), anyInt())).thenReturn(List.of());
-        when(mapper.recent(anyString(), anyInt())).thenReturn(List.of(new AiKnowledge(), new AiKnowledge()));
 
-        assertEquals(2, service.search("冷门关键词", "app", 8).size());
-        verify(mapper).recent("app", 5);
+        assertEquals(0, service.search("冷门关键词", "app", 8).size());
+        verify(mapper, never()).recent(anyString(), anyInt());
+    }
+
+    /** mapper.search 返回 null（极端情况）同样按"无命中"处理，不回落 recent */
+    @Test
+    void returnsEmptyWhenHitsNull() {
+        when(mapper.search(anyString(), anyString(), anyInt())).thenReturn(null);
+
+        assertEquals(0, service.search("关键词", "app", 5).size());
+        verify(mapper, never()).recent(anyString(), anyInt());
+    }
+
+    /** 有命中时如实返回，不额外拼接最近结论 */
+    @Test
+    void returnsHitsWithoutAppendingRecent() {
+        AiKnowledge hit = new AiKnowledge();
+        hit.setTitle("命中结论");
+        when(mapper.search(anyString(), anyString(), anyInt())).thenReturn(List.of(hit));
+
+        List<AiKnowledge> result = service.search("慢 SQL", "app", 5);
+
+        assertEquals(1, result.size());
+        assertEquals("命中结论", result.get(0).getTitle());
+        verify(mapper, never()).recent(anyString(), anyInt());
     }
 
     @Test

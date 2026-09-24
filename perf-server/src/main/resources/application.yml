@@ -101,12 +101,51 @@ perf:
     # 并发等待验证的线程数（每次验证会重放一次完整压测，放宽会同时占用目标服务压测资源）
     max-concurrent: 2
 
+  # 数据生命周期：分区自动维护 + 保留期回收（PartitionMaintainer）
+  retention:
+    enabled: true              # 总开关：关闭后既不建分区也不清理
+    interval-hours: 1          # 定时周期（小时）；启动时另有一次立即执行
+    ahead-days: 2              # 提前创建的未来分区天数（覆盖周末/短假期）
+    partition-days: 30         # jvm_metric / stress_sample 分区保留天数，0 = 不清理（只建分区）
+    trace-chain-days: 30       # trace_chain 保留天数，0 = 不清理（分批 DELETE）
+    slow-sql-days: 30          # slow_sql 保留天数，0 = 不清理
+    slow-command-days: 30      # slow_command 保留天数，0 = 不清理
+    delete-batch-size: 5000    # 每批删除行数（防单事务过大阻塞写入）
+    max-batches-per-run: 20    # 每轮每表最多删除批数（防单次扫描吃满 IO）
+
+  # 健康检查与启动自检
+  health:
+    # 启动自检开关（就绪后打印一次平台体检结论）
+    startup-check-enabled: true
+    # 严格模式：自检不通过直接终止启动（默认 false —— 容器编排下平台常先于依赖启动）
+    fail-fast: false
+    # 磁盘剩余空间告警阈值 MB（低于该值 /actuator/health 返回 DOWN）
+    min-free-disk-mb: 512
+    # 源码存储目录（与 perf.source.storage-dir 保持一致，自检其可写性与磁盘余量）
+    storage-dir: /data/perf-source
+    # 分区维护要求的最低 MySQL 版本
+    min-mysql-version: "5.7"
+
   # Agent 上报接口配置
   agent:
     # 上报数据落库的采样写入批大小
     batch-size: 200
     # 上报缓冲区（agent 侧）上限，超出丢弃旧数据
     buffer-size: 5000
+
+# ===== 运维端点（Actuator）=====
+# 只暴露白名单端点：health（存活探针 + platform 细节项）、info、metrics。
+# env / heapdump / threaddump 等含敏感信息或可触发重负载，一律不暴露。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always   # 内网运维端点：展示 db/storage/disk 细节便于定位
+      probes:
+        enabled: true        # 开放 /actuator/health/liveness 与 /readiness（容器编排探针）
 
 logging:
   level:

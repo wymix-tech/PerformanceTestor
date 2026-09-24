@@ -74,6 +74,20 @@ const range = ref(3600000)
 const auto = ref(true)
 const appList = ref<Array<{ appName: string }>>([])
 const rows = ref<Array<Record<string, any>>>([])
+/**
+ * 最新一条指标。
+ *
+ * <p>接口改为游标分页后按 collectTime 倒序返回（分页必须"最新在前"才翻得动），
+ * 而卡片要展示最新值——故这里显式按时间取最大值，不再依赖数组末位。
+ * 图表侧 seriesData 已有排序，不受返回顺序影响。
+ */
+const latestRow = computed(() => {
+  let latest: Record<string, any> | null = null
+  for (const r of rows.value) {
+    if (!latest || new Date(r.collectTime).getTime() > new Date(latest.collectTime).getTime()) latest = r
+  }
+  return latest || {}
+})
 const rulePanel = ref<InstanceType<typeof JvmAlertRulePanel> | null>(null)
 const toast = ref('')
 let timer: number | undefined
@@ -87,7 +101,7 @@ function onNotify(msg: string) {
 }
 
 const metricCards = computed(() => {
-  const last = rows.value[rows.value.length - 1] || {}
+  const last = latestRow.value
   return [
     { label: '堆已用', value: last.heapUsedMb != null ? `${Number(last.heapUsedMb).toFixed(0)} MB` : '—', color: 'text-neon-green' },
     { label: '堆上限', value: last.heapMaxMb != null ? `${Number(last.heapMaxMb).toFixed(0)} MB` : '—' },
@@ -157,10 +171,11 @@ async function loadData() {
   const end = Date.now()
   const start = end - Number(range)
   const [j, a] = await Promise.allSettled([
-    jvmApi.metrics({ app: app.value || undefined, start, end, limit: 200 }),
+    // 图表数据源：按上限取一屏（后端分页上限 500），自动刷新周期内足够铺满曲线
+    jvmApi.metrics({ app: app.value || undefined, start, end, size: 500 }),
     appApi.list()
   ])
-  if (j.status === 'fulfilled') rows.value = j.value.data
+  if (j.status === 'fulfilled') rows.value = j.value.items
   if (a.status === 'fulfilled') {
     appList.value = a.value.data
     // 默认选中第一个项目
