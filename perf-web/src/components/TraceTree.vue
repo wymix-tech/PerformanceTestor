@@ -11,10 +11,11 @@
       </div>
       <!-- 右侧时间轴：以根节点总耗时为 100%，条 left=开始偏移、width=耗时占比（甘特图），体现调用顺序 -->
       <div class="flex-1 flex items-center gap-2 min-w-0">
-        <div class="relative flex-1 h-2 rounded bg-white/5 min-w-[60px]" :title="tooltip">
+        <div class="relative flex-1 h-2 rounded bg-white/5 min-w-[60px]" :title="tooltip" role="img" :aria-label="tooltip">
           <div
             class="absolute top-0 h-full rounded transition-all"
             :style="{ left: leftPct + '%', width: barWidth + '%', background: depthColor(depth) }"
+            aria-hidden="true"
           ></div>
         </div>
         <span class="text-[10px] text-fg-sub w-12 text-right shrink-0">{{ pctText }}</span>
@@ -23,6 +24,8 @@
           <button
             v-if="hasChildren"
             class="text-fg-sub hover:text-neon-green text-[11px]"
+            :aria-expanded="expanded ? 'true' : 'false'"
+            :aria-label="(expanded ? '收起' : '展开') + ' ' + node.method + ' 的子调用'"
             @click="expanded = !expanded"
           >{{ expanded ? '收起' : '展开' }}</button>
         </span>

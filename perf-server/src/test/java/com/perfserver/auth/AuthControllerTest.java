@@ -1,6 +1,7 @@
 package com.perfserver.auth;
 
 import com.perfserver.common.ApiResponse;
+import com.perfserver.common.TestMessages;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +25,7 @@ class AuthControllerTest {
         properties.setUsername("admin");
         properties.setPassword("secret-pass");
         properties.setSecret("unit-test-secret-key-with-32-bytes-minimum!!");
-        controller = new AuthController(properties, new JwtService(properties));
+        controller = new AuthController(properties, new JwtService(properties), TestMessages.zh());
     }
 
     @Test
@@ -43,6 +44,8 @@ class AuthControllerTest {
                 controller.login(new AuthController.LoginRequest("admin", "wrong"));
         assertEquals(401, res.getCode());
         assertNull(res.getData());
+        // P3-1：文案走 i18n，默认语言下为中文
+        assertEquals("账号或密码错误", res.getMessage());
     }
 
     @Test
@@ -56,5 +59,20 @@ class AuthControllerTest {
     void loginRejectsBlankCredentials() {
         assertEquals(401, controller.login(new AuthController.LoginRequest("", "")).getCode());
         assertEquals(401, controller.login(null).getCode());
+    }
+
+    @Test
+    void loginMessageFollowsRequestLocale() {
+        // 通过 LocaleContextHolder 模拟 Accept-Language: en 的请求
+        var prev = org.springframework.context.i18n.LocaleContextHolder.getLocale();
+        try {
+            org.springframework.context.i18n.LocaleContextHolder.setLocale(java.util.Locale.ENGLISH);
+            AuthController en = new AuthController(properties, new JwtService(properties),
+                    new com.perfserver.common.Messages(com.perfserver.common.TestMessages.source()));
+            assertEquals("Invalid username or password",
+                    en.login(new AuthController.LoginRequest("admin", "wrong")).getMessage());
+        } finally {
+            org.springframework.context.i18n.LocaleContextHolder.setLocale(prev);
+        }
     }
 }

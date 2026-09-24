@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import StressReport from '../StressReport.vue'
+
+// StressReport 的图表 option 依赖 theme store（P3-3 主题色），挂载必须提供 Pinia
+const pinia = createPinia()
 
 /**
  * ECharts 图表打桩：jsdom 无 canvas 实现，真渲染会在 zrender 里抛
@@ -26,7 +30,7 @@ const report = {
 
 describe('StressReport 分步骤统计表格', () => {
   it('渲染分步骤表格并展示引用未命中列', () => {
-    const w = mount(StressReport, { props: { report, samples: [] } })
+    const w = mount(StressReport, { props: { report, samples: [] }, global: { plugins: [pinia] } })
     const txt = w.text()
     expect(txt).toContain('分步骤统计')
     expect(txt).toContain('step-1')
@@ -40,7 +44,8 @@ describe('StressReport 分步骤统计表格', () => {
 
   it('老报告无 stepStats 时不渲染表格且不报错', () => {
     const w = mount(StressReport, {
-      props: { report: { task: { id: 1, status: 'finished' }, result: { totalRequests: 10 } }, samples: [] }
+      props: { report: { task: { id: 1, status: 'finished' }, result: { totalRequests: 10 } }, samples: [] },
+      global: { plugins: [pinia] }
     })
     expect(w.text()).not.toContain('分步骤统计')
     expect(w.text()).not.toContain('引用未命中')

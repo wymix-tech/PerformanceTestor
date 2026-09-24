@@ -9,7 +9,7 @@
     <!-- 页面级项目筛选（控制问题列表与一键创建） -->
     <div class="glass-card p-3 mb-4 flex items-center gap-3">
       <span class="text-sm font-medium">项目</span>
-      <select v-model="issueApp" class="input-select w-44 text-xs">
+      <select v-model="issueApp" class="input-select w-44 text-xs" aria-label="项目">
         <option value="">全部项目（{{ issues.length }}）</option>
         <option v-for="a in issueApps" :key="a" :value="a">{{ a }}（{{ issues.filter(x => x.appName === a).length }}）</option>
       </select>
@@ -85,7 +85,7 @@
           <div v-if="needBindRepo" class="p-3 rounded-lg bg-amber-400/5 border border-amber-400/30 mb-4">
             <div class="text-xs text-amber-400 mb-2">⚠ 压测问题必须先关联项目源码才能分析（用于定位接口对应的 Controller 源码并生成修复方案）</div>
             <div class="flex gap-2">
-              <select v-model="bindRepoId" class="input-select flex-1 text-xs">
+              <select v-model="bindRepoId" class="input-select flex-1 text-xs" aria-label="选择项目源码作为分析目标">
                 <option :value="0">— 选择项目源码 —</option>
                 <option v-for="r in repos" :key="r.id" :value="r.id">
                   {{ r.repoName }}{{ r.appName ? `（${r.appName}）` : '' }}
@@ -155,7 +155,7 @@
             </div>
 
             <!-- 基线对比明细（复用基线对比表格语义） -->
-            <table v-if="verifyResult.rows?.length" class="w-full text-[11px]">
+            <table v-if="verifyResult.rows?.length" class="w-full text-[11px]" aria-label="修复验证重放结果（慢 SQL 与耗时）">
               <thead>
                 <tr class="text-fg-sub">
                   <th class="text-left font-normal py-1">指标</th>
@@ -179,7 +179,7 @@
 
             <!-- 无场景快照时补绑入口 -->
             <div v-if="verifyResult.noSnapshot" class="mt-3 flex gap-2">
-              <select v-model="bindStressId" class="input-select flex-1 text-xs">
+              <select v-model="bindStressId" class="input-select flex-1 text-xs" aria-label="选择压测任务作为验证基线">
                 <option :value="0">— 选择压测任务作为验证基线 —</option>
                 <option v-for="s in stressTasks" :key="s.id" :value="s.id">{{ s.taskName || s.targetUrl }}</option>
               </select>
@@ -193,7 +193,7 @@
           <div v-if="applyPanelOpen" class="p-3 rounded-lg bg-neon-blue/5 border border-neon-blue/30 mb-4">
             <div class="text-xs font-medium text-neon-blue mb-2">回写修复来源（自动触发闭环验证）</div>
             <div class="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2">
-              <select v-model="applyType" class="input-select text-xs">
+              <select v-model="applyType" class="input-select text-xs" aria-label="回写修复来源（自动触发闭环验证）">
                 <option value="branch">分支名</option>
                 <option value="pr">PR 链接</option>
                 <option value="patch">补丁摘要</option>
@@ -203,7 +203,7 @@
                 class="input-text text-xs md:col-span-2"
                 :placeholder="applyRefPlaceholder"
               />
-              <select v-model="applySuggestionId" class="input-select text-xs">
+              <select v-model="applySuggestionId" class="input-select text-xs" aria-label="补丁摘要">
                 <option :value="0">— 默认方案（已选定/首条）—</option>
                 <option v-for="s in detail.suggestions" :key="s.id" :value="s.id">{{ s.title }}</option>
               </select>
@@ -286,7 +286,7 @@
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div class="p-3 rounded-lg bg-white/5">
           <div class="text-xs text-fg-sub mb-2">慢 SQL → 调用链 / 实体定位（MyBatis・JPA・Hibernate 通用）</div>
-          <select v-model="fastSlowSql" class="input-select w-full mb-2" title="">
+          <select v-model="fastSlowSql" class="input-select w-full mb-2" aria-label="选择最近慢 SQL 创建问题">
             <option :value="0">— 最近慢 SQL —</option>
             <option v-for="s in recentSlow" :key="s.id" :value="s.id" :title="s.sqlText">{{ s.sqlText?.slice(0, 80) }}（{{ Number(s.costMs).toFixed(0) }}ms）</option>
           </select>
@@ -300,7 +300,7 @@
         </div>
         <div class="p-3 rounded-lg bg-white/5">
           <div class="text-xs text-fg-sub mb-2">压测任务 → URL 关联</div>
-          <select v-model="fastStress" class="input-select w-full mb-2">
+          <select v-model="fastStress" class="input-select w-full mb-2" aria-label="压测任务 → URL 关联">
             <option :value="0">— 最近压测任务 —</option>
             <option v-for="s in stressTasks" :key="s.id" :value="s.id">{{ s.taskName || s.targetUrl }}</option>
           </select>

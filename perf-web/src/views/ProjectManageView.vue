@@ -23,7 +23,7 @@
             <label class="text-xs text-fg-sub">Git 地址导入<span class="ml-2 font-normal">私有仓库填写凭据（令牌/密码仅存储于平台服务器，不回显）</span></label>
             <div class="flex gap-2 mt-1">
               <input v-model="gitUrl" class="input-text flex-1" placeholder="https://git.xxx.com/group/repo.git" @change="fetchRemoteBranches" />
-              <select v-model="gitBranch" class="input-select w-36" :disabled="!gitUrl || remoteBranchLoading">
+              <select v-model="gitBranch" class="input-select w-36" :disabled="!gitUrl || remoteBranchLoading" aria-label="选择导入的 Git 分支">
                 <option value="">{{ remoteBranchLoading ? '分支获取中…' : remoteBranches.length ? '选择分支（可选）' : '默认分支' }}</option>
                 <option v-for="b in remoteBranches" :key="b" :value="b">{{ b }}</option>
               </select>
@@ -63,7 +63,7 @@
                     :value="r.branch || ''"
                     @focus="loadBranches(r)"
                     @change="switchBranch(r, ($event.target as HTMLSelectElement).value)"
-                  >
+                   aria-label="切换项目分支">
                     <!-- 已加载远端列表：渲染列表；当前分支不在列表中（本地未推送）时额外补一项 -->
                     <template v-if="(branchMap[r.id] || []).length">
                       <option v-for="b in branchMap[r.id]" :key="b" :value="b">{{ b }}</option>
@@ -83,8 +83,8 @@
               <div v-if="r.status === 'failed' && r.errorMsg" class="text-[11px] text-red-400 mt-1 break-all max-w-md">{{ r.errorMsg }}</div>
             </div>
             <div class="flex items-center gap-2">
-              <span class="text-[11px] px-2 py-0.5 rounded-full flex items-center gap-1" :class="statusClass(r.status)">
-                <span v-if="r.status === 'importing'" class="inline-block w-2 h-2 rounded-full bg-neon-blue animate-pulse"></span>
+              <span class="text-[11px] px-2 py-0.5 rounded-full flex items-center gap-1" :class="statusClass(r.status)" role="status">
+                <span v-if="r.status === 'importing'" class="inline-block w-2 h-2 rounded-full bg-neon-blue animate-pulse" aria-hidden="true"></span>
                 {{ r.status === 'importing' ? '拉取中' : r.status }}
               </span>
               <button class="text-xs text-neon-blue hover:underline" :disabled="resyncingId === r.id || r.status === 'importing'" @click="resyncRepo(r)">

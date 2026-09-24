@@ -2,7 +2,7 @@
 
 面向 Java 应用的**性能检测智能体平台**：平台（perf-server、MySQL、源码存储）与被测应用**分离部署**在不同服务器，避免压测与监控互相干扰。通过 Java Agent 无侵入采集 JVM 指标、业务方法调用链耗时、慢 SQL、中间件慢命令与 CPU 热点方法；提供自研压测引擎（单接口 / 多接口混合场景）与自动灌数据能力；支持 SSH 远程编译部署、定时压测与 CI 性能门禁；AI 自然语言对话自动编排检测任务；采集项目源代码，将检测结果关联到源码位置，由大模型分析根因并给出多种修改方案，选定方案后生成修复提示词，并可重放压测自动验证修复效果。
 
-> 本次更新相对上一版的主要增量：JWT 鉴权与登录页、SSH 部署管理、中间件慢命令与 CPU 热点采样、JVM 告警规则、定时压测与基线对比、CI 性能门禁、报告导出（HTML/PDF/Word）、修复效果自动验证、AI 流式对话（SSE）与知识库沉淀、多接口场景步骤上下文引用（`{{p1.result.x}}`）、perf-datagen 新增 PostgreSQL 方言与 JPA 解析器。
+> 本次更新相对上一版的主要增量：JWT 鉴权与登录页、SSH 部署管理、中间件慢命令与 CPU 热点采样、JVM 告警规则、定时压测与基线对比、CI 性能门禁、报告导出（HTML/PDF/Word）、修复效果自动验证、AI 流式对话（SSE）与知识库沉淀、多接口场景步骤上下文引用（`{{p1.result.x}}`）、perf-datagen 新增 PostgreSQL 方言与 JPA 解析器。**运维与数据生命周期加固（P0→P3）**：分区自动维护与保留策略、探针上报批量写、缓存失效与知识库清理一致性、健康检查/启动自检、列表游标分页、删除项目、修复回写闭环、压测模板沉淀，以及本轮 **i18n / 无障碍 / 明暗主题**（前端 vue-i18n 骨架 + 后端 MessageSource 基建、ARIA 与键盘焦点、CSS 变量化明暗主题）。
 
 ## 模块总览
 
@@ -391,11 +391,17 @@ GET  /api/capacity/advice          # 扩容建议 + JVM 配置建议
 
 | 模块 | 内容 |
 | ---- | ---- |
-| perf-server | 56 个测试类共 563 个用例，覆盖压测引擎（`HttpStressEngine` / `JmeterStressEngine` / 场景 / 步骤上下文 / 统计）、AI（ReAct 循环 / 流式 / 知识库 / 提示词 / 工具防呆）、鉴权（JWT / Agent Token）、基线对比、压力门禁、JVM 告警、修复验证、报告导出、凭据加密、慢命令上报、数据生命周期（分区维护 / 保留策略 / 数据清理）、游标分页（编解码 / 边界 / SQL 约束）、健康检查与启动自检等 |
+| perf-server | 625 个用例，覆盖压测引擎（`HttpStressEngine` / `JmeterStressEngine` / 场景 / 步骤上下文 / 统计）、AI（ReAct 循环 / 流式 / 知识库 / 提示词 / 工具防呆）、鉴权（JWT / Agent Token / 文案 i18n）、基线对比、压力门禁、JVM 告警、修复验证、报告导出、凭据加密、慢命令上报、数据生命周期（分区维护 / 保留策略 / 数据清理）、游标分页（编解码 / 边界 / SQL 约束）、健康检查与启动自检等 |
 | perf-datagen | 13 个测试类约 85 个用例（H2 MySQL 模式驱动全流程）；PIT 突变测试阈值 75 |
-| perf-web | Vitest + jsdom 单测，Stryker 突变测试（`npm run test:mutation`） |
+| perf-web | Vitest + jsdom 单测 76 个用例（工具函数 / 状态样式 / 压测表单模板往返 / 明暗主题 store / 图表主题色 / i18n key 对齐 / 无障碍静态回查），Stryker 突变测试（`npm run test:mutation`，门禁 70） |
 
 端到端脚本：`verify-datagen-mysql.sh`、`verify-datagen-postgres.sh`、`verify-scenario-context.sh`、`perf-gate.sh`（CI）。
+
+## 前端约定（明暗主题 / i18n / 无障碍）
+
+- **明暗主题**：颜色统一走 CSS 变量（`perf-web/src/style.css` 的 `:root` 与 `[data-theme='light']`），Tailwind 以 `rgb(var(--x) / <alpha-value>)` 消费。**不要在组件里写死颜色 hex**——浅色下会失效。`white` 已被覆盖为 `--overlay` 语义变量（深色=白、浅色=黑），故 `bg-white/5` 这类叠层在两个主题下都可用。主题三态 `dark/light/system` 存于 `localStorage['perf_theme']`，首屏由 `index.html` 内联脚本无闪应用；ECharts 图表色经 `utils/chartTheme.ts` 运行时读变量，切主题后必须调用 `clearChartThemeCache()`（`theme` store 已自动接入）。
+- **i18n**：前端文案放 `perf-web/src/i18n/locales/{zh-CN,en-US}.ts`，用 `useI18n()` 的 `t()` 取值，语言存 `localStorage['perf_locale']`。后端文案放 `perf-server/src/main/resources/i18n/messages{,_en}.properties`，用 `Messages#get(key, args...)` 取值（语言取自请求 `Accept-Language`）。两类资源的中英 key 集合都必须完全一致，由 `i18n.spec.ts` / `LocaleMessagesTest` 断言。当前仅覆盖骨架与高频入口，其余文案按需分批迁移。
+- **无障碍**：新增交互件请带 `aria-label`（图标按钮、下拉、表格），状态变化用 `role="status"`，展开控件用 `aria-expanded`，纯装饰元素加 `aria-hidden`。键盘焦点环由全局 `:focus-visible` 提供，勿用 `outline: none` 抹掉。
 
 ## 归档约定
 

@@ -74,7 +74,7 @@
                 <span v-if="diffOf[s.id].regressed" class="text-[11px] px-2 py-0.5 rounded-full bg-red-400/10 text-red-400">⚠ 检测到性能回归</span>
                 <span v-else class="text-[11px] px-2 py-0.5 rounded-full bg-neon-green/10 text-neon-green">✓ 指标正常</span>
               </div>
-              <table class="w-full text-[11px]">
+              <table class="w-full text-[11px]" aria-label="定时压测调度列表">
                 <tbody>
                   <tr v-for="r in diffOf[s.id].rows" :key="r.label" class="border-b border-white/5">
                     <td class="py-1 text-fg-dim">{{ r.label }}</td>

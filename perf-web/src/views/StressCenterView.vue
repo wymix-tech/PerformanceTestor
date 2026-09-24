@@ -32,7 +32,7 @@
               </button>
             </div>
             <div class="flex gap-2">
-              <select v-model.number="templateId" class="input-select flex-1 text-xs">
+              <select v-model.number="templateId" class="input-select flex-1 text-xs" aria-label="压测模板">
                 <option :value="0">— 从模板填充 —</option>
                 <option v-for="t in templates" :key="t.id" :value="t.id">
                   {{ t.templateName }}{{ t.appName ? `（${t.appName}）` : '（通用）' }}
@@ -55,7 +55,7 @@
 
           <div>
             <label class="text-xs text-fg-sub">项目</label>
-            <select v-model="repoId" class="input-select w-full" @change="loadEndpoints">
+            <select v-model="repoId" class="input-select w-full" @change="loadEndpoints" aria-label="项目">
               <option :value="0">— 手动填写 URL —</option>
               <option v-for="r in repoStore.repos" :key="r.id" :value="r.id">{{ r.repoName }}</option>
             </select>
@@ -75,7 +75,7 @@
                 :disabled="resyncing"
                 @focus="loadBranchOptions"
                 @change="changeBranch(($event.target as HTMLSelectElement).value)"
-              >
+               aria-label="切换仓库分支">
                 <!-- 已加载列表：渲染全部远端分支；当前分支不在列表中时补当前项 -->
                 <template v-if="branchOptions.length">
                   <option v-for="b in branchOptions" :key="b" :value="b">{{ b }}</option>
@@ -121,7 +121,7 @@
         <div v-if="compareCandidates.length" class="mb-4 p-4 rounded-lg bg-white/5 border border-white/10">
           <div class="flex items-center gap-3 mb-3">
             <span class="text-xs text-fg-sub shrink-0">版本对比</span>
-            <select v-model.number="compareTaskId" class="input-select flex-1" @change="loadCompare(compareTaskId)">
+            <select v-model.number="compareTaskId" class="input-select flex-1" @change="loadCompare(compareTaskId)" aria-label="版本对比">
               <option :value="0">选择要对比的历史任务…</option>
               <option v-for="t in compareCandidates" :key="t.id" :value="t.id">
                 {{ compareLabel(t) }}
@@ -130,7 +130,7 @@
             <span v-if="compareLoading" class="text-[11px] text-fg-sub">加载中…</span>
           </div>
           <div v-if="compareReport" class="overflow-x-auto">
-            <table class="w-full text-xs">
+            <table class="w-full text-xs" aria-label="压测任务列表">
               <thead>
                 <tr class="text-fg-sub border-b border-white/10">
                   <th class="text-left py-1.5 font-normal">指标</th>

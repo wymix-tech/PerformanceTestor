@@ -26,7 +26,7 @@
                 <!-- ReAct 推理过程（Thought / Action / Observation） -->
                 <div v-if="m.thought"
                   class="mb-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[11px] text-fg-sub flex items-start gap-1.5">
-                  <Loader2 v-if="m.streaming" class="w-3 h-3 mt-px shrink-0 animate-spin text-neon-blue" />
+                  <Loader2 v-if="m.streaming" class="w-3 h-3 mt-px shrink-0 animate-spin text-neon-blue" aria-hidden="true" />
                   <span class="truncate">{{ m.thought }}</span>
                 </div>
                 <div v-for="(tool, ti) in m.toolCalls" :key="ti"
@@ -38,7 +38,7 @@
                 </div>
                 <div v-if="m.content || !m.streaming"
                   class="px-4 py-2.5 rounded-2xl rounded-bl-sm bg-white/8 border border-white/10 text-sm text-fg-main whitespace-pre-wrap break-words"
-                  style="background:rgba(255,255,255,0.08)">{{ m.content }}<span v-if="m.streaming" class="inline-block w-1.5 h-3.5 ml-0.5 bg-neon-green animate-pulse align-middle"></span></div>
+                  style="background:rgba(var(--overlay), 0.08)">{{ m.content }}<span v-if="m.streaming" class="inline-block w-1.5 h-3.5 ml-0.5 bg-neon-green animate-pulse align-middle"></span></div>
                 <div v-if="m.roleLabel" class="mt-1 text-[11px] text-fg-sub">
                   角色 {{ m.roleLabel }} · {{ m.mode === 'rule' ? '规则演示模式' : '大模型 ReAct' }}<span v-if="m.rounds"> · {{ m.rounds }} 轮推理</span>
                 </div>

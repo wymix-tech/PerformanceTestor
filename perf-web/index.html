@@ -6,6 +6,26 @@
     <link rel="alternate icon" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PerformanceTestor - Java 性能检测智能体平台</title>
+    <!--
+      明暗主题首屏无闪（P3-3）：必须在样式表与 Vue 挂载前同步解析并写入 data-theme，
+      否则深色用户会先看到一帧浅色底（FOUC）。此处逻辑与 stores/theme.ts 保持一致，
+      但刻意内联且不依赖模块加载——模块是异步的，来不及。
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('perf_theme')
+          var pref = stored === 'dark' || stored === 'light' || stored === 'system' ? stored : 'system'
+          var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+          var theme = pref === 'system' ? (prefersLight ? 'light' : 'dark') : pref
+          document.documentElement.setAttribute('data-theme', theme)
+          if (theme === 'dark') document.documentElement.classList.add('dark')
+          document.documentElement.style.colorScheme = theme
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark')
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

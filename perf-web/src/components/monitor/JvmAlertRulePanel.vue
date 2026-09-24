@@ -14,7 +14,7 @@
       暂无规则。新增后每 60 秒检测一次，冷却期内不重复发送。
     </div>
     <div v-else class="overflow-x-auto">
-      <table class="w-full text-xs">
+      <table class="w-full text-xs" aria-label="告警规则列表">
         <thead class="text-fg-sub">
           <tr class="border-b border-white/10">
             <th class="py-2 text-left font-normal">应用</th>
@@ -61,7 +61,7 @@
         </div>
         <div>
           <label class="text-xs text-fg-sub">指标</label>
-          <select v-model="form.metricKey" class="input-select w-full" :disabled="isEdit">
+          <select v-model="form.metricKey" class="input-select w-full" :disabled="isEdit" aria-label="指标">
             <option v-for="m in metricOptions" :key="m.key" :value="m.key">{{ m.label }}</option>
           </select>
         </div>

@@ -5,7 +5,7 @@ const routes = [
     path: '/login',
     name: 'Login',
     component: () => import('@/views/LoginView.vue'),
-    meta: { title: '登录', public: true }
+    meta: { title: '登录', titleKey: 'nav.login', public: true }
   },
   {
     path: '/',
@@ -16,55 +16,55 @@ const routes = [
         path: 'dashboard',
         name: 'Dashboard',
         component: () => import('@/views/DashboardView.vue'),
-        meta: { title: '总览' }
+        meta: { title: '总览', titleKey: 'nav.dashboard' }
       },
       {
         path: 'quick-start',
         name: 'QuickStart',
         component: () => import('@/views/QuickStartView.vue'),
-        meta: { title: '快速开始' }
+        meta: { title: '快速开始', titleKey: 'nav.quickStart' }
       },
       {
         path: 'projects',
         name: 'ProjectManage',
         component: () => import('@/views/ProjectManageView.vue'),
-        meta: { title: '项目管理' }
+        meta: { title: '项目管理', titleKey: 'nav.projects' }
       },
       {
         path: 'deploy',
         name: 'DeployManage',
         component: () => import('@/views/DeployManageView.vue'),
-        meta: { title: '部署管理' }
+        meta: { title: '部署管理', titleKey: 'nav.deploy' }
       },
       {
         path: 'jvm',
         name: 'JvmMonitor',
         component: () => import('@/views/JvmMonitorView.vue'),
-        meta: { title: '项目监控' }
+        meta: { title: '项目监控', titleKey: 'nav.jvm' }
       },
       {
         path: 'trace',
         name: 'TraceAnalyzer',
         component: () => import('@/views/TraceAnalyzerView.vue'),
-        meta: { title: '调用链分析' }
+        meta: { title: '调用链分析', titleKey: 'nav.trace' }
       },
       {
         path: 'stress',
         name: 'StressCenter',
         component: () => import('@/views/StressCenterView.vue'),
-        meta: { title: '压测中心' }
+        meta: { title: '压测中心', titleKey: 'nav.stress' }
       },
       {
         path: 'optimize',
         name: 'Optimize',
         component: () => import('@/views/OptimizeView.vue'),
-        meta: { title: '性能优化' }
+        meta: { title: '性能优化', titleKey: 'nav.optimize' }
       },
       {
         path: 'ai',
         name: 'AiAssistant',
         component: () => import('@/views/AiAssistantView.vue'),
-        meta: { title: 'AI 助手' }
+        meta: { title: 'AI 助手', titleKey: 'nav.ai' }
       }
     ]
   },
@@ -72,7 +72,7 @@ const routes = [
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
     component: () => import('@/views/NotFoundView.vue'),
-    meta: { title: '页面不存在', public: true }
+    meta: { title: '页面不存在', titleKey: 'nav.notFound', public: true }
   }
 ]
 

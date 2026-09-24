@@ -13,6 +13,12 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    private final Messages messages;
+
+    public GlobalExceptionHandler(Messages messages) {
+        this.messages = messages;
+    }
+
     /** 参数校验失败（IllegalArgumentException） */
     @ExceptionHandler(IllegalArgumentException.class)
     public ApiResponse<Void> handleIllegalArgument(IllegalArgumentException e) {
@@ -23,6 +29,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ApiResponse<Void> handleException(Exception e) {
         log.error("unexpected error", e);
-        return ApiResponse.error("服务器内部错误: " + e.getMessage());
+        return ApiResponse.error(messages.get("common.error.internal", e.getMessage()));
     }
 }

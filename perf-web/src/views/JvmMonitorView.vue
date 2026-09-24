@@ -9,11 +9,11 @@
     <!-- 过滤条 -->
     <div class="glass-card p-4 mb-4 flex flex-wrap items-center gap-4">
       <label class="text-xs text-fg-sub">项目</label>
-      <select v-model="app" class="input-select" @change="loadData">
+      <select v-model="app" class="input-select" @change="loadData" aria-label="项目">
         <option v-for="a in appList" :key="a.appName" :value="a.appName">{{ a.appName }}</option>
       </select>
       <label class="text-xs text-fg-sub">时间范围</label>
-      <select v-model="range" class="input-select" @change="loadData">
+      <select v-model="range" class="input-select" @change="loadData" aria-label="时间范围">
         <option value="3600000">近 1 小时</option>
         <option value="21600000">近 6 小时</option>
         <option value="86400000">近 24 小时</option>
@@ -67,7 +67,11 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Activity } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
 import JvmAlertRulePanel from '../components/monitor/JvmAlertRulePanel.vue'
+import { useThemeStore } from '@/stores/theme'
+import { chartColor } from '@/utils/chartTheme'
 import { jvmApi, appApi } from '../api'
+
+const themeStore = useThemeStore()
 
 const app = ref('')
 const range = ref(3600000)
@@ -126,17 +130,17 @@ function buildOption(datas: Array<{ name: string; key: string; color: string; ar
   return {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis' },
-    legend: { textStyle: { color: '#8A94A6', fontSize: 11 }, top: 0 },
+    legend: { textStyle: { color: chartColor('fgSub'), fontSize: 11 }, top: 0 },
     grid: { left: 44, right: 16, top: 28, bottom: 24 },
     xAxis: {
       type: 'category', data: pts.map((p) => p.t),
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.15)' } },
-      axisLabel: { color: '#8A94A6', fontSize: 11 }
+      axisLine: { lineStyle: { color: chartColor('overlay', 0.15) } },
+      axisLabel: { color: chartColor('fgSub'), fontSize: 11 }
     },
     yAxis: {
       type: 'value', name: yName,
-      axisLabel: { color: '#8A94A6', fontSize: 11 },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } }
+      axisLabel: { color: chartColor('fgSub'), fontSize: 11 },
+      splitLine: { lineStyle: { color: chartColor('overlay', 0.06) } }
     },
     series: datas.map((d) => ({
       name: d.name, type: 'line' as const, smooth: true, showSymbol: false,
@@ -148,24 +152,32 @@ function buildOption(datas: Array<{ name: string; key: string; color: string; ar
   }
 }
 
-const memOption = computed(() =>
-  buildOption([
+const memOption = computed(() => {
+  void themeStore.version
+  return buildOption([
     { name: '堆已用', key: 'heapUsedMb', color: '#00E5A0', area: true },
     { name: '堆上限', key: 'heapMaxMb', color: '#0EA5E9' },
     { name: '非堆', key: 'nonHeapUsedMb', color: '#FAAD14' }
-  ], 'MB'))
-const gcOption = computed(() =>
-  buildOption([
+  ], 'MB')
+})
+const gcOption = computed(() => {
+  void themeStore.version
+  return buildOption([
     { name: 'Young GC 耗时', key: 'youngGcMs', color: '#0EA5E9' },
     { name: 'Full GC 耗时', key: 'fullGcMs', color: '#F5222D' }
-  ], 'ms'))
-const threadOption = computed(() =>
-  buildOption([{ name: '线程数', key: 'threadCount', color: '#00E5A0', area: true }], '个'))
-const cpuOption = computed(() =>
-  buildOption([
+  ], 'ms')
+})
+const threadOption = computed(() => {
+  void themeStore.version
+  return buildOption([{ name: '线程数', key: 'threadCount', color: '#00E5A0', area: true }], '个')
+})
+const cpuOption = computed(() => {
+  void themeStore.version
+  return buildOption([
     { name: 'JVM CPU', key: 'cpuUsage', color: '#00E5A0', area: true },
     { name: '系统 CPU', key: 'systemCpu', color: '#0EA5E9' }
-  ], '%'))
+  ], '%')
+})
 
 async function loadData() {
   const end = Date.now()

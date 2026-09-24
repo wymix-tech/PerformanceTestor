@@ -22,7 +22,7 @@
     <template v-if="!isScenario">
       <div v-if="endpoints.length">
         <label class="text-xs text-fg-sub">从源码接口选择</label>
-        <select v-model.number="endpointIdx" class="input-select w-full" @change="selectEndpoint">
+        <select v-model.number="endpointIdx" class="input-select w-full" @change="selectEndpoint" aria-label="从源码接口选择">
           <option :value="-1">— 选择接口（共 {{ endpoints.length }} 个）—</option>
           <option v-for="(e, i) in endpoints" :key="i" :value="i">
             [{{ e.httpMethod }}] {{ e.path }}（{{ e.className }}#{{ e.methodName || '?' }}）
@@ -38,7 +38,7 @@
       </div>
       <div>
         <label class="text-xs text-fg-sub">方法</label>
-        <select v-model="method" class="input-select w-full">
+        <select v-model="method" class="input-select w-full" aria-label="方法">
           <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
         </select>
       </div>
@@ -81,7 +81,7 @@
                 class="input-select text-[10px] flex-1 min-w-0"
                 :value="stepPick[i] ?? -1"
                 @change="applyEndpointToStep(i, $event)"
-              >
+               aria-label="暂无步骤，点击「+ 添加步骤」开始编排">
                 <option :value="-1">从源码接口选择…</option>
                 <option v-for="(e, ei) in endpoints" :key="ei" :value="ei">
                   [{{ e.httpMethod }}] {{ e.path }}（{{ e.className }}#{{ e.methodName || '?' }}）
@@ -100,7 +100,7 @@
               </div>
               <div class="col-span-2">
                 <label class="text-[10px] text-fg-sub">方法</label>
-                <select v-model="s.method" class="input-select w-full text-xs">
+                <select v-model="s.method" class="input-select w-full text-xs" aria-label="方法">
                   <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
                 </select>
               </div>
@@ -131,7 +131,7 @@
               </div>
               <div class="col-span-3">
                 <label class="text-[10px] text-fg-sub">提取来源</label>
-                <select v-model="s.extractSource" class="input-select w-full text-xs">
+                <select v-model="s.extractSource" class="input-select w-full text-xs" aria-label="提取来源">
                   <option value="body">响应体 JSON</option>
                   <option value="header">响应头</option>
                 </select>
@@ -179,7 +179,7 @@
     <div class="grid grid-cols-2 gap-3">
       <div>
         <label class="text-xs text-fg-sub">引擎</label>
-        <select v-model="engineType" class="input-select w-full">
+        <select v-model="engineType" class="input-select w-full" aria-label="引擎">
           <option value="http">http（内置）</option>
           <option value="jmeter" title="需平台服务器安装 JMeter 并配置 JMETER_HOME">jmeter</option>
         </select>
