@@ -55,8 +55,12 @@ public class PartitionMaintainer {
     /**
      * 分区表白名单：表名 → 分区列。
      * 用代码常量而非配置项，避免配置被改坏后拼进 DDL（DDL 不支持参数化，标识符只能拼串）。
+     *
+     * <p>public 供启动自检/健康检查复用：自检要按"建表脚本声明的分区表"回查
+     * {@code information_schema}，与本类维护的表必须是同一份清单，否则会出现
+     * "自检说分区就绪、维护却漏了某张表"的分裂。
      */
-    static final Map<String, String> PARTITIONED_TABLES = Map.of(
+    public static final Map<String, String> PARTITIONED_TABLES = Map.of(
             "jvm_metric", "collect_time",
             "stress_sample", "sample_time");
 

@@ -13,6 +13,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  *   <li>/api/agent/** —— 探针上报通道（被测服务器无 JWT 能力，必须保持开放）。</li>
  * </ul>
  *
+ * <p>Actuator 端点不在 {@code /api/**} 之下，天然不受 JWT 拦截；
+ * 暴露面由 {@code management.endpoints.web.exposure.include} 白名单收口
+ * （只放 health/info/metrics，不暴露 env/heapdump 等敏感端点）。
+ *
  * <p>探针上报通道改由 {@link AgentAuthInterceptor} 独立把关：令牌配置后
  * 需携带 {@code X-Perf-Agent-Token}，未配置时放行以保持向后兼容。
  * 两个拦截器的路径互斥，不存在放行冲突。

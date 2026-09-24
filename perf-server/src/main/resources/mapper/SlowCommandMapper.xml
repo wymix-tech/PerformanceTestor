@@ -42,6 +42,28 @@
         LIMIT #{limit}
     </select>
 
+    <!-- 游标分页：按执行时间倒序 -->
+    <select id="queryByCursor" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM slow_command
+        WHERE execute_time &gt;= #{start} AND execute_time &lt;= #{end}
+        <if test="appName != null and appName != ''">
+            AND app_name = #{appName}
+        </if>
+        <if test="type != null and type != ''">
+            AND type = #{type}
+        </if>
+        <if test="minCostMs != null">
+            AND cost_ms &gt;= #{minCostMs}
+        </if>
+        <if test="cursorTime != null">
+            AND (execute_time &lt; #{cursorTime}
+                 OR (execute_time = #{cursorTime} AND id &lt; #{cursorId}))
+        </if>
+        ORDER BY execute_time DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
     <select id="findByTraceId" resultMap="BaseResultMap">
         SELECT <include refid="BaseColumns"/>
         FROM slow_command
