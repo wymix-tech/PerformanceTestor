@@ -23,6 +23,36 @@
           已填入上次压测配置，可调整后点击「开始压测」重新发起
         </div>
         <div class="space-y-3">
+          <!-- 压测模板（P2-3）：常用场景参数沉淀，一键填充/保存 -->
+          <div class="rounded-lg border border-white/10 bg-white/5 p-3">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs text-fg-sub">压测模板 <span class="font-normal">（常用场景参数复用）</span></span>
+              <button class="text-[11px] text-neon-blue hover:underline" @click="toggleTemplates">
+                {{ templatesOpen ? '收起' : `模板（${templates.length}）` }}
+              </button>
+            </div>
+            <div class="flex gap-2">
+              <select v-model.number="templateId" class="input-select flex-1 text-xs">
+                <option :value="0">— 从模板填充 —</option>
+                <option v-for="t in templates" :key="t.id" :value="t.id">
+                  {{ t.templateName }}{{ t.appName ? `（${t.appName}）` : '（通用）' }}
+                </option>
+              </select>
+              <button class="btn-primary text-xs !px-3 !py-1.5" :disabled="!templateId" @click="fillFromTemplate">填充</button>
+              <button class="btn-ghost text-xs !px-3 !py-1.5" @click="saveAsTemplate">保存为模板</button>
+            </div>
+            <div v-if="templatesOpen && templates.length" class="mt-2 space-y-1 max-h-[180px] overflow-y-auto">
+              <div v-for="t in templates" :key="t.id" class="flex items-center justify-between px-2 py-1.5 rounded bg-black/20 text-[11px]">
+                <span class="text-fg-main truncate">
+                  {{ t.templateName }}
+                  <span class="text-fg-sub">· {{ t.appName || '通用' }} · {{ t.creator }}</span>
+                </span>
+                <button class="text-red-400 hover:underline shrink-0" @click="removeTemplate(t)">删除</button>
+              </div>
+            </div>
+            <div v-if="templateMsg" class="text-[11px] mt-2" :class="templateMsg.ok ? 'text-neon-green' : 'text-red-400'">{{ templateMsg.text }}</div>
+          </div>
+
           <div>
             <label class="text-xs text-fg-sub">项目</label>
             <select v-model="repoId" class="input-select w-full" @change="loadEndpoints">
@@ -151,7 +181,7 @@ import CapacityAdvicePanel from '../components/stress/CapacityAdvicePanel.vue'
 import SchedulePanel from '../components/stress/SchedulePanel.vue'
 import DataGenForm from '../components/datagen/DataGenForm.vue'
 import { fmtTime } from '../utils/format'
-import { stressApi, sourceApi, appApi, capacityApi, dataGenPlanApi } from '../api'
+import { stressApi, stressTemplateApi, sourceApi, appApi, capacityApi, dataGenPlanApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 import { useRoute } from 'vue-router'
 
@@ -182,6 +212,82 @@ const repoId = ref(0)
 const endpoints = ref<Array<Record<string, any>>>([])
 const appInstances = ref<Array<Record<string, any>>>([])
 const stressFormRef = ref<InstanceType<typeof StressForm> | null>(null)
+
+// ===== 压测模板（P2-3）=====
+const templates = ref<Array<Record<string, any>>>([])
+const templateId = ref(0)
+const templatesOpen = ref(false)
+const templateMsg = ref<{ ok: boolean; text: string } | null>(null)
+
+async function loadTemplates() {
+  try {
+    const r = await stressTemplateApi.list({ limit: 100 })
+    templates.value = r.data || []
+  } catch { /* 模板加载失败不影响压测主流程 */ }
+}
+
+function toggleTemplates() {
+  templatesOpen.value = !templatesOpen.value
+  if (templatesOpen.value) loadTemplates()
+}
+
+/** 从模板填充：把模板参数写入表单（含场景/断言/请求头） */
+async function fillFromTemplate() {
+  if (!templateId.value) return
+  try {
+    const r = await stressTemplateApi.detail(templateId.value)
+    let payload: Record<string, any> = {}
+    try {
+      payload = r.data?.taskJson ? JSON.parse(r.data.taskJson) : {}
+    } catch {
+      templateMsg.value = { ok: false, text: '模板参数不是合法 JSON，无法填充' }
+      return
+    }
+    stressFormRef.value?.fillFromPayload(payload)
+    templateMsg.value = { ok: true, text: `已从模板「${r.data?.templateName}」填充，可调整后开始压测` }
+  } catch (e: any) {
+    templateMsg.value = { ok: false, text: '填充失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
+  }
+}
+
+/** 保存为模板：把当前表单参数（buildPayload 产物）沉淀 */
+async function saveAsTemplate() {
+  const payload = stressFormRef.value?.buildPayload?.()
+  if (!payload) {
+    templateMsg.value = { ok: false, text: '当前表单无可保存的参数' }
+    return
+  }
+  const name = window.prompt('请输入模板名称（如 登录→下单 混合场景）：')
+  if (name === null) return
+  if (!name.trim()) {
+    templateMsg.value = { ok: false, text: '模板名称不能为空' }
+    return
+  }
+  const desc = window.prompt('模板说明（可选）：') || ''
+  try {
+    await stressTemplateApi.create({
+      templateName: name.trim(),
+      appName: currentRepoApp.value || '',
+      description: desc,
+      taskJson: JSON.stringify(payload)
+    })
+    templateMsg.value = { ok: true, text: `模板「${name.trim()}」已保存` }
+    await loadTemplates()
+  } catch (e: any) {
+    templateMsg.value = { ok: false, text: '保存失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
+  }
+}
+
+async function removeTemplate(t: Record<string, any>) {
+  if (!window.confirm(`确认删除模板「${t.templateName}」？`)) return
+  try {
+    await stressTemplateApi.remove(t.id)
+    if (templateId.value === t.id) templateId.value = 0
+    await loadTemplates()
+  } catch (e: any) {
+    templateMsg.value = { ok: false, text: '删除失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
+  }
+}
 // 任务名（选中接口时自动派生）
 const taskName = ref('')
 

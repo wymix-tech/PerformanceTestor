@@ -94,6 +94,9 @@
               <button class="text-xs text-red-400 hover:underline" :disabled="cleaningId === r.id" @click="cleanupData(r)">
                 {{ cleaningId === r.id ? '清理中…' : '清理数据' }}
               </button>
+              <button class="text-xs text-red-500 hover:underline font-medium" :disabled="deletingId === r.id || r.status === 'importing'" @click="deleteRepo(r)">
+                {{ deletingId === r.id ? '删除中…' : '删除项目' }}
+              </button>
             </div>
           </div>
         </div>
@@ -357,6 +360,60 @@ async function switchBranch(r: Record<string, any>, branch: string) {
     await loadRepos()
   } finally {
     resyncingId.value = 0
+  }
+}
+
+// ===================== 删除项目（P2-1）=====================
+// 删除不可恢复：删源码仓库 + 文件索引 + 磁盘目录，并连带清理该项目应用的历史数据
+const deletingId = ref<number>(0)
+async function deleteRepo(r: Record<string, any>) {
+  if (!r.appName) {
+    if (!window.confirm(
+      `项目「${r.repoName}」未绑定应用，将只删除源码仓库、文件索引与磁盘目录（不含任何历史数据）。\n\n` +
+      `此操作不可恢复，确认删除？`
+    )) return
+    return doDeleteRepo(r, false)
+  }
+  // 先取预览：把"将删除的影响面"摆在用户面前，而不是让他凭感觉确认
+  let preview: Record<string, any> | null = null
+  try {
+    const res = await sourceApi.deletePreview(r.id)
+    preview = res.data || null
+  } catch { /* 预览失败不阻断主流程，按通用确认继续 */ }
+  if (preview && Number(preview.runningStress) > 0) {
+    alert(`项目「${r.repoName}」绑定的应用 ${preview.appName} 有 ${preview.runningStress} 个压测任务进行中，请等待完成后再删除`)
+    return
+  }
+  const runningHint = preview ? `（当前无进行中压测）` : ''
+  const ok = window.confirm(
+    `确认删除项目「${r.repoName}」吗？${runningHint}\n\n` +
+    `将删除：源码仓库 + ${preview?.fileCount ?? r.fileCount} 个文件索引 + 磁盘源码目录\n` +
+    `并连带清理应用 ${r.appName} 的压测任务/采样、慢SQL/慢命令、JVM监控、调用链、性能问题/修复方案、应用实例、数据库连接、AI 结论等历史数据。\n` +
+    `AI 知识库中的全局结论（跨项目共性经验）始终保留。\n\n` +
+    `此操作不可恢复！`
+  )
+  if (!ok) return
+  // 二次确认：手输项目名（与后端 repoName 精确匹配校验同口径）
+  const typed = window.prompt(`请输入项目名「${r.repoName}」以确认删除：`)
+  if (typed === null) return
+  if (typed.trim() !== r.repoName) {
+    alert('输入的项目名不匹配，已取消删除')
+    return
+  }
+  await doDeleteRepo(r, true)
+}
+
+async function doDeleteRepo(r: Record<string, any>, cleanData: boolean) {
+  deletingId.value = r.id
+  try {
+    await sourceApi.deleteRepo(r.id, r.repoName, cleanData)
+    fileList.value = []
+    await loadRepos()
+    alert(`项目「${r.repoName}」已删除`)
+  } catch (e: any) {
+    alert('删除失败：' + (e?.response?.data?.message || e?.message || '请求异常'))
+  } finally {
+    deletingId.value = 0
   }
 }
 

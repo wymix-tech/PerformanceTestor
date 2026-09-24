@@ -30,6 +30,9 @@ public interface StressTaskMapper {
 
     StressTask findById(@Param("id") long id);
 
+    /** 进行中（pending/running）任务数量：按应用名过滤（删除项目前的占用校验） */
+    int countRunningByApp(@Param("appName") String appName);
+
     /** 任务列表：按状态过滤（空查全部），时间倒序 */
     List<StressTask> query(@Param("status") String status, @Param("limit") int limit);
 
