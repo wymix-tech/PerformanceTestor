@@ -54,6 +54,25 @@
         LIMIT #{limit}
     </select>
 
+    <!-- 游标分页：ORDER BY (start_time DESC, id DESC)，游标条件复刻该次序 -->
+    <select id="queryByCursor" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM trace_chain
+        WHERE start_time &gt;= #{start} AND start_time &lt;= #{end}
+        <if test="appName != null and appName != ''">
+            AND app_name = #{appName}
+        </if>
+        <if test="method != null and method != ''">
+            AND root_method LIKE CONCAT('%', #{method}, '%')
+        </if>
+        <if test="cursorTime != null">
+            AND (start_time &lt; #{cursorTime}
+                 OR (start_time = #{cursorTime} AND id &lt; #{cursorId}))
+        </if>
+        ORDER BY start_time DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
     <select id="findByTraceId" resultMap="BaseResultMap">
         SELECT <include refid="BaseColumns"/>
         FROM trace_chain

@@ -248,6 +248,8 @@ GATE_CONCURRENCY=20 GATE_DURATION=60 ./scripts/perf-gate.sh
 ## 关键 API
 
 > 鉴权：`/api/**` 默认需 JWT（`Authorization: Bearer`），白名单仅 `/api/auth/**` 与 `/api/agent/**`；`/api/agent/**` 另由 `X-Perf-Agent-Token` 校验；CI 可用静态令牌 `X-Perf-Api-Token`。
+>
+> 游标分页：`/api/traces`、`/api/slow-sqls`、`/api/slow-commands`、`/api/jvm/metrics` 返回 `{ items, nextCursor, hasMore }`，请求参数 `cursor`（上一页原样回传）+ `size`（默认 50，上限 500）；旧 `limit` 仅在未传 `size` 时生效。排序键为 `(时间, id)` 复合游标，非法游标按首屏处理。
 
 ```
 # 鉴权
@@ -257,11 +259,13 @@ GET  /api/auth/me                          # 会话探测
 # 采集与上报
 POST /api/agent/report             # agent 批量上报（JVM/调用链/慢SQL/慢命令/热点；项目不存在则丢弃）
 GET  /api/apps                     # 应用实例列表
-GET  /api/jvm/metrics              # JVM 指标查询
-GET  /api/traces                   # 调用链列表
+GET  /api/jvm/metrics              # JVM 指标查询（游标分页：{items,nextCursor,hasMore}）
+GET  /api/traces                   # 调用链列表（游标分页）
 GET  /api/traces/{traceId}         # 调用链详情（含 trace_json 调用树）
-GET  /api/slow-sqls                # 慢 SQL 查询
-GET  /api/slow-commands            # 中间件慢命令（Redis/ES/MQ）
+GET  /api/slow-sqls                # 慢 SQL 查询（游标分页）
+GET  /api/slow-commands            # 中间件慢命令（Redis/ES/MQ，游标分页）
+GET  /actuator/health              # 健康检查（含 platform：库连通/源码目录/磁盘余量）
+GET  /actuator/health/readiness    # 就绪探针（容器编排用）
 GET  /api/hotspots                 # 方法级 CPU 热点排行
 POST /api/slowlog/parse            # MySQL 慢日志文本解析导入
 
@@ -371,6 +375,9 @@ GET  /api/capacity/advice          # 扩容建议 + JVM 配置建议
 | `perf.ai.*` | `gpt-4o-mini`、`PERF_AI_API_KEY` | OpenAI 兼容 API，无 key 自动降级规则模式 |
 | `perf.verify.*` | `300` / `2` | 修复验证超时与并发上限 |
 | `perf.agent.*` | `200` / `5000` | 上报落库批大小与缓冲区上限 |
+| `perf.retention.*` | `enabled=true` / 各保留 30 天 | 分区维护与数据保留：`partition-days` / `trace-chain-days` / `slow-sql-days` / `slow-command-days`，`0` = 只建分区不删 |
+| `perf.health.*` | `startup-check-enabled=true`、`fail-fast=false`、`min-free-disk-mb=512` | 启动自检与健康检查阈值；`fail-fast=true` 时自检不通过终止启动 |
+| `management.endpoints.web.exposure.include` | `health,info,metrics` | Actuator 端点白名单（`env`/`heapdump` 等不暴露） |
 
 ## 数据库
 
@@ -384,7 +391,7 @@ GET  /api/capacity/advice          # 扩容建议 + JVM 配置建议
 
 | 模块 | 内容 |
 | ---- | ---- |
-| perf-server | 31 个测试类，覆盖压测引擎（`HttpStressEngine` / `JmeterStressEngine` / 场景 / 步骤上下文 / 统计）、AI（ReAct 循环 / 流式 / 知识库 / 提示词）、鉴权（JWT / Agent Token）、基线对比、压力门禁、JVM 告警、修复验证、报告导出、凭据加密、慢命令上报等 |
+| perf-server | 56 个测试类共 563 个用例，覆盖压测引擎（`HttpStressEngine` / `JmeterStressEngine` / 场景 / 步骤上下文 / 统计）、AI（ReAct 循环 / 流式 / 知识库 / 提示词 / 工具防呆）、鉴权（JWT / Agent Token）、基线对比、压力门禁、JVM 告警、修复验证、报告导出、凭据加密、慢命令上报、数据生命周期（分区维护 / 保留策略 / 数据清理）、游标分页（编解码 / 边界 / SQL 约束）、健康检查与启动自检等 |
 | perf-datagen | 13 个测试类约 85 个用例（H2 MySQL 模式驱动全流程）；PIT 突变测试阈值 75 |
 | perf-web | Vitest + jsdom 单测，Stryker 突变测试（`npm run test:mutation`） |
 

@@ -30,6 +30,23 @@ public interface TraceChainMapper {
                            @Param("end") LocalDateTime end,
                            @Param("limit") int limit);
 
+    /**
+     * 游标分页查询：按 {@code (start_time, id)} 复合游标倒序翻页。
+     *
+     * <p>不传游标（{@code cursorTime}/{@code cursorId} 为 null）时退化为首屏查询，
+     * 行为等价旧的 {@code LIMIT} 口径。
+     *
+     * <p>{@code (time < ? OR (time = ? AND id < ?))} 而非 {@code time < ?}：
+     * 同一毫秒的多条链路必须靠 id 定序，否则并列时间点的记录会被整批跳过。
+     */
+    List<TraceChain> queryByCursor(@Param("appName") String appName,
+                                   @Param("method") String method,
+                                   @Param("start") LocalDateTime start,
+                                   @Param("end") LocalDateTime end,
+                                   @Param("cursorTime") LocalDateTime cursorTime,
+                                   @Param("cursorId") Long cursorId,
+                                   @Param("limit") int limit);
+
     /** 按 traceId 查询详情 */
     TraceChain findByTraceId(@Param("traceId") String traceId);
 }
