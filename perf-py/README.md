@@ -31,8 +31,25 @@ uv run ruff check .         # lint
 | `perf stress run <scenario.yaml>` | 读场景 → `POST /api/stress/gate` → 等待完成 → 输出报告 + JSON 工件 |
 | `perf gate [--scenario x.yaml]` | 替代 `scripts/perf-gate.sh`，退出码 0/1/2 语义对齐 |
 | `perf scenario validate <file>` | 场景 YAML 校验 |
+| `perf datagen run <spec.json> [--dry-run] [--source-dir DIR]` | 灌数引擎直连执行（Dry-Run 优先/拓扑排序/批量写入），结果 camelCase JSON |
 | `perf-engine <scenario.yaml> -e locust [-o result.json]` | 本地引擎发压（不经平台），产出对齐 StressTaskResult 契约的工件 |
 | `perf version` | 版本号 |
+
+## 灌数引擎（阶段 3 步骤 5）
+
+`perf datagen run` 直连数据库执行灌数（不经 perf-server REST），宿主装配对齐 Java
+`DataGenEngineConfig`：MySQL + PostgreSQL 双方言路由、MyBatis/JPA 双 ORM 解析器注册。
+
+```bash
+pip install -e 'perf-py[datagen-drivers]'        # pymysql / psycopg2-binary
+perf datagen run spec.json --dry-run             # 试运行（估算 + 校验，不写入）
+perf datagen run spec.json --source-dir ../perf-demo/src/main/java -o result.json
+scripts/verify-datagen-py-mysql.sh               # 真实库端到端冒烟
+scripts/verify-datagen-py-postgres.sh
+```
+
+spec JSON 形状对齐 Java `DataGenRequest`（dbUrl/dbUser/dbPassword/dryRun/tables，
+fields 为规则 JSON，兼容旧单表 ruleJson 形式）；退出码：0 成功 / 1 引擎失败 / 2 调用异常。
 
 ## 本地引擎选择（阶段 2 实测结论）
 

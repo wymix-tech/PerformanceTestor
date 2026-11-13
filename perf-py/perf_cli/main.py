@@ -18,6 +18,7 @@ from rich.console import Console
 
 from perf_cli import __version__
 from perf_cli.config import (
+    EXIT_GATE_FAILED,
     EXIT_INVOCATION_ERROR,
     EXIT_OK,
 )
@@ -30,8 +31,10 @@ app = typer.Typer(
 )
 stress_app = typer.Typer(help="压测执行相关命令。", no_args_is_help=True)
 scenario_app = typer.Typer(help="场景文件管理（校验/列举）。", no_args_is_help=True)
+datagen_app = typer.Typer(help="灌数引擎（perf-datagen Python 化）。", no_args_is_help=True)
 app.add_typer(stress_app, name="stress")
 app.add_typer(scenario_app, name="scenario")
+app.add_typer(datagen_app, name="datagen")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -118,6 +121,54 @@ def gate(
         console=console,
         err_console=err_console,
     )
+
+
+@datagen_app.command("run")
+def datagen_run(
+    spec_file: Path = typer.Argument(..., exists=True, readable=True, help="灌数规格 JSON 文件"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="强制试运行（覆盖 spec 内 dryRun 字段）"),
+    source_dir: Path = typer.Option(
+        None, "--source-dir", exists=True, file_okay=False, help="源码目录（.java/.xml，供语义扫描与 ORM 解析）"
+    ),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径（默认仅 stdout）"),
+) -> None:
+    """执行灌数任务：读 spec → 引擎编排（Dry-Run 优先/拓扑排序/批量写入）→ 输出结果。
+
+    退出码：0 = 执行成功；1 = 引擎失败（含方言路由失败/表缺失/Dry-Run 校验未过）；
+    2 = 调用异常（spec 文件不存在 / JSON 解析失败）。
+    """
+    import json
+
+    from perf_cli.datagen_runner import (
+        ConsoleListener,
+        build_default_engine,
+        load_spec,
+        result_to_camel_json,
+    )
+
+    try:
+        spec = load_spec(spec_file, source_dir)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        err_console.print(f"[red]spec 加载失败：[/red]{exc}")
+        raise typer.Exit(EXIT_INVOCATION_ERROR) from None
+    if dry_run:
+        spec.dry_run = True
+
+    engine = build_default_engine()
+    listener = ConsoleListener()
+    result = engine.execute(spec, listener)
+
+    text = result_to_camel_json(result)
+    if output:
+        output.write_text(text + "\n", encoding="utf-8")
+    else:
+        console.print(text)
+
+    if not result.success:
+        err_console.print(f"[red]灌数失败：[/red]{result.error_msg or '未知错误'}")
+        raise typer.Exit(EXIT_GATE_FAILED) from None
+    console.print(f"[green]✓ 灌数{'试运行' if result.dry_run else '执行'}成功[/green] "
+                  f"插入 {result.inserted_rows}/{result.total_rows} 行")
 
 
 def run_cli() -> int:

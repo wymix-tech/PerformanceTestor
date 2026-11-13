@@ -94,3 +94,38 @@ def test_serial_default_detected():
     assert is_serial_default("NEXTVAL('s'::regclass)")
     assert not is_serial_default(None)
     assert not is_serial_default("0")
+
+
+# ===== JDBC URL 解析与生产 connect（阶段 3 步骤 5） =====
+
+
+def test_parse_jdbc_url_mysql_variants():
+    from datagen.dialects import parse_jdbc_url
+    host, port, db, params = parse_jdbc_url(
+        "jdbc:mysql://127.0.0.1:3306/demo?useSSL=false&x=1", "mysql")
+    assert (host, port, db) == ("127.0.0.1", 3306, "demo")
+    assert params == {"useSSL": "false", "x": "1"}
+    host, port, db, params = parse_jdbc_url("jdbc:mysql://localhost/demo", "mysql")
+    assert (host, port, db, params) == ("localhost", 0, "demo", {})
+    host, port, db, params = parse_jdbc_url("jdbc:mysql://h", "mysql")
+    assert (host, port, db) == ("h", 0, None)
+
+
+def test_parse_jdbc_url_postgres_and_reject():
+    from datagen.dialects import parse_jdbc_url
+    host, port, db, params = parse_jdbc_url(
+        "jdbc:postgresql://127.0.0.1:5432/demo?reWriteBatchedInserts=true", "postgresql")
+    assert (host, port, db, params) == ("127.0.0.1", 5432, "demo",
+                                        {"reWriteBatchedInserts": "true"})
+    import pytest
+    with pytest.raises(ValueError):
+        parse_jdbc_url("jdbc:mysql://h/db", "postgresql"), "scheme 不匹配拒绝"
+    with pytest.raises(ValueError):
+        parse_jdbc_url("not-a-jdbc-url", "mysql")
+
+
+def test_connect_missing_driver_message():
+    """驱动缺失时给出可执行的安装指引（pymysql/psycopg 环境差异由 .self 检查覆盖）。"""
+    from datagen.dialects import DRIVER_HINT
+    assert "datagen-drivers" in DRIVER_HINT
+

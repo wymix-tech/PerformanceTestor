@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+from datagen.dialects import DRIVER_HINT, parse_jdbc_url
 from datagen.model import ColumnMeta, FkMeta, SchemaMetadata
 from datagen.spi import DatabaseDialect
 
@@ -34,6 +35,23 @@ class MysqlDialect(DatabaseDialect):
         return jdbc_url + ("&" if "?" in jdbc_url else "?") \
             + "rewriteBatchedStatements=true&useInformationSchema=true"
 
+    def connect(self, jdbc_url: str, user: str, password: str):
+        """生产连接：pymysql（懒加载；缺失时报可执行的安装指引）。"""
+        try:
+            import pymysql
+        except ImportError as exc:  # pragma: no cover - 环境差异路径
+            raise RuntimeError(f"MySQL {DRIVER_HINT}") from exc
+        host, port, database, _params = parse_jdbc_url(jdbc_url, "mysql")
+        return pymysql.connect(
+            host=host,
+            port=port or 3306,
+            user=user,
+            password=password or "",
+            database=database,
+            charset="utf8mb4",
+            autocommit=False,
+        )
+
     def fetch_metadata(self, conn, table_name: str) -> SchemaMetadata:
         meta = SchemaMetadata(table_name=table_name)
         p = self.param
@@ -42,7 +60,7 @@ class MysqlDialect(DatabaseDialect):
         sql = (
             "SELECT COLUMN_NAME, COLUMN_TYPE, "
             "COALESCE(CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, 0), "
-            "IS_NULLABLE, COLUMN_EXTRA, COLUMN_COMMENT "
+            "IS_NULLABLE, EXTRA, COLUMN_COMMENT "
             "FROM information_schema.COLUMNS "
             f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {p} ORDER BY ORDINAL_POSITION"
         )

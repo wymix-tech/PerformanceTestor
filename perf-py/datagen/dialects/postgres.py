@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from datagen.dialects import DRIVER_HINT, parse_jdbc_url
 from datagen.model import ColumnMeta, FkMeta, SchemaMetadata
 from datagen.spi import DatabaseDialect
 
@@ -39,6 +40,28 @@ class PostgresDialect(DatabaseDialect):
         if "stringtype" not in url:
             url += ("&" if "?" in url else "?") + "stringtype=unspecified"
         return url
+
+    def connect(self, jdbc_url: str, user: str, password: str):
+        """生产连接：优先 psycopg2，回退 psycopg3（均懒加载）。"""
+        host, port, database, _params = parse_jdbc_url(jdbc_url, "postgresql")
+        kwargs = {
+            "host": host,
+            "port": port or 5432,
+            "user": user,
+            "password": password or "",
+            "dbname": database,
+        }
+        try:
+            import psycopg2
+        except ImportError:
+            pass
+        else:
+            return psycopg2.connect(**kwargs)
+        try:
+            import psycopg  # noqa: PLC0415  psycopg3 回退
+        except ImportError as exc:  # pragma: no cover - 环境差异路径
+            raise RuntimeError(f"PostgreSQL {DRIVER_HINT}") from exc
+        return psycopg.connect(**kwargs)
 
     def fetch_metadata(self, conn, table_name: str) -> SchemaMetadata:
         meta = SchemaMetadata(table_name=table_name)
