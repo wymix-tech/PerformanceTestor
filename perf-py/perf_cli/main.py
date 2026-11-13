@@ -79,21 +79,45 @@ def scenario_validate(
 def stress_run(
     scenario_file: Path = typer.Argument(..., exists=True, readable=True, help="场景 YAML 文件"),
     profile: str = typer.Option(None, "--profile", "-p", help="profile 名称（profiles/<name>.toml）"),
-    output: Path = typer.Option(None, "--output", "-o", help="报告输出路径（默认 stdout）"),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径（默认仅 stdout）"),
 ) -> None:
-    """执行压测场景（阶段 1 步骤 3 实现：调用 /api/stress/gate 并等待完成）。"""
-    _fail("stress run 将在阶段 1 步骤 3 实现（场景 → /api/stress/gate → 报告）")
+    """执行压测场景：读场景 → POST /api/stress/gate → 等待完成 → 输出报告。
+
+    退出码：0 = 任务完成且门禁通过；1 = 任务失败/超时/门禁未通过；2 = 调用异常。
+    """
+    from perf_cli.gate_runner import execute_gate
+
+    execute_gate(
+        scenario_file=scenario_file,
+        profile=profile,
+        output=output,
+        console=console,
+        err_console=err_console,
+    )
 
 
 @app.command()
 def gate(
     profile: str = typer.Option(None, "--profile", "-p", help="profile 名称（profiles/<name>.toml）"),
     scenario_file: Path = typer.Option(
-        None, "--scenario", "-s", exists=True, readable=True, help="从场景文件读取门禁参数（覆盖环境变量默认值）"
+        None, "--scenario", "-s", exists=True, readable=True, help="从场景文件读取参数（缺省时使用 GATE_* 环境变量）"
     ),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径（默认仅 stdout）"),
 ) -> None:
-    """性能回归门禁（阶段 1 步骤 3 实现，替代 scripts/perf-gate.sh）。"""
-    _fail("gate 将在阶段 1 步骤 3 实现（退出码 0/1/2 对齐 perf-gate.sh）")
+    """性能回归门禁：替代 scripts/perf-gate.sh。
+
+    参数来源：--scenario 场景文件（优先）或 GATE_* 环境变量（与 shell 脚本变量一致）。
+    退出码：0 = 通过；1 = 未通过（回归/超时/失败）；2 = 调用异常（参数/网络）。
+    """
+    from perf_cli.gate_runner import execute_gate
+
+    execute_gate(
+        scenario_file=scenario_file,
+        profile=profile,
+        output=output,
+        console=console,
+        err_console=err_console,
+    )
 
 
 def run_cli() -> int:
