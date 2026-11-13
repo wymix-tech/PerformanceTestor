@@ -8,6 +8,26 @@
 
 ---
 
+## 0. 最新轮次变更摘要（批次 2：P1 可观测性与防呆）
+
+**结论：批次 2 三项（Actuator/自检、游标分页、repoId 防呆）落地，perf-server 563 测试全绿，前端构建 + 突变门禁 83.33 通过。**
+
+| 条目 | 新增文件 / 改动 |
+|---|---|
+| P1-1 健康检查与自检 | `health/HealthProperties`（[NEW] `perf.health.*`）、`health/HealthCheckService`（[NEW] 库/表/分区/目录/磁盘五类探针）、`health/PlatformHealthIndicator`（[NEW] `/actuator/health` 的 `platform` 项）、`health/StartupSelfCheck`（[NEW] `ApplicationRunner`，默认只告警）、`health/HealthMapper(.xml)`（[NEW] 元数据只读回查）、`perf-server/pom.xml`（[MODIFY] +`spring-boot-starter-actuator`）、`application.yml`（[MODIFY] +`perf.health.*` / `management.*`）、`auth/WebAuthConfig`（[MODIFY] 注释说明 Actuator 不在 `/api/**` 之下） |
+| P1-2 游标分页 | `common/page/CursorPage`（[NEW] 返回体）、`CursorPageRequest`（[NEW] size 默认 50/上限 500/旧 limit 兼容）、`CursorCodec`（[NEW] `Base64Url("epochMillis|id")`）、`service/MetricQueryService`（[MODIFY] `page()` 泛型 + 四个 `*Page` 方法）、`TraceController`/`SlowSqlController`/`SlowCommandController`/`JvmMetricController`（[MODIFY] 改游标入参）、`TraceChainMapper`/`JvmMetricMapper`/`SlowSqlMapper`/`SlowCommandMapper` 及对应 XML（[MODIFY] +`queryByCursor`）、`perf-web/src/api/index.ts`（[MODIFY] +`CursorPage`/`normalizePage`）、`TraceAnalyzerView`（[MODIFY] 「加载更多」+ `initProjects` 拆出）、`JvmMonitorView`（[MODIFY] `latestRow` 取最新值，不依赖数组末位）、`DashboardView`/`QuickStartView`（[MODIFY] 解包 `.items`） |
+| P1-3 repoId 防呆 | `ai/tools/AnalyzeCodeIssuesTool`（[MODIFY] `repoId` 必填 + Schema `required`，缺失/≤0/不存在/回查异常一律不落库并回仓库清单；`Map.of` 改 `LinkedHashMap` 避免根因为 null 时 NPE） |
+
+**接手必读（本轮口径）**：
+
+- 分页排序键必须是**翻页期间稳定**的列，故慢 SQL/慢命令用 `execute_time` 而非页面热点的 `cost_ms`；`jvm_metric` 的图表查询保持 `ASC`，分页查询 `DESC`，两条语句分开。
+- 游标是 `(time, id)` 复合键，条件为 `(time < ? OR (time = ? AND id < ?))`；**简化成 `time < ?` 会整批跳过同秒记录**（`CursorPagingSqlScriptTest` 已静态锁死）。
+- `hasMore` 靠**多取一条**判定（底层取 `size+1`），游标取"实际返回的最后一条"而非多取的那条。
+- 启动自检默认 `fail-fast=false`：容器编排下平台常先于 MySQL 启动，fail-fast 会把"库未就绪"变成"平台起不来"。AI 连通性**不进**健康检查（无 key 是正常形态）。
+- 分页只改了四张时序表；`hotspot_method`/`/api/source/issues`/`/api/apps` 未纳入，理由见 `docs/plans/运维与数据生命周期加固方案.md` 批次 2 落地记录。
+
+---
+
 ## 0. 第四轮变更摘要（2026-08-31 最终版，M6 端到端验证）
 
 **结论：改进计划 M0–M6 全部 16 项任务完成**，通过真实 `mysql:8.0` + `postgres:16-alpine` 容器端到端验证，全量构建 228 测试全过。

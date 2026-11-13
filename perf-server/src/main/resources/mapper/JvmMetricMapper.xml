@@ -47,4 +47,20 @@
         LIMIT #{limit}
     </select>
 
+    <!-- 游标分页（最新在前）：与 query 的 ASC 方向相反，故独立一条 -->
+    <select id="queryByCursor" resultMap="BaseResultMap">
+        SELECT <include refid="BaseColumns"/>
+        FROM jvm_metric
+        WHERE collect_time &gt;= #{start} AND collect_time &lt;= #{end}
+        <if test="appName != null and appName != ''">
+            AND app_name = #{appName}
+        </if>
+        <if test="cursorTime != null">
+            AND (collect_time &lt; #{cursorTime}
+                 OR (collect_time = #{cursorTime} AND id &lt; #{cursorId}))
+        </if>
+        ORDER BY collect_time DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
 </mapper>

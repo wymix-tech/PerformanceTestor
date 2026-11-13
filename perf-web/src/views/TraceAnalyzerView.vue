@@ -42,6 +42,14 @@
               <span class="text-amber-400 shrink-0">{{ t.totalMs }}ms</span>
             </div>
           </div>
+          <!-- 游标分页：hasMore=false 时不渲染按钮，避免"点了没反应" -->
+          <button
+            v-if="tracesHasMore"
+            class="w-full py-2 rounded-lg text-xs text-fg-sub border border-white/10 hover:text-neon-green hover:border-neon-green/30 transition-all disabled:opacity-50"
+            :disabled="tracesLoading"
+            @click="loadMoreTraces"
+          >{{ tracesLoading ? '加载中…' : '加载更多' }}</button>
+          <div v-else class="text-[11px] text-fg-sub text-center py-1">已到最后一条</div>
         </div>
       </div>
 
@@ -165,6 +173,10 @@ const query = ref<{ app: string; method: string }>({ app: '', method: '' })
 const projectNames = ref<string[]>([])
 const repoStore = useRepoStore()
 const traces = ref<Array<Record<string, any>>>([])
+/** 调用链游标分页状态：cursor 为 null 表示已到末页 */
+const tracesCursor = ref<string | null>(null)
+const tracesHasMore = ref(false)
+const tracesLoading = ref(false)
 const detail = ref<Record<string, any> | null>(null)
 const treeNode = ref<Record<string, any> | null>(null)
 const slowSqls = ref<Array<Record<string, any>>>([])
@@ -303,22 +315,54 @@ const flameOption = computed(() => {
   }
 })
 
+/** 首屏加载：重置游标后拉第一页 */
 async function loadTraces() {
+  tracesCursor.value = null
+  await fetchTraces(false)
+}
+
+/** 加载更多：带上上一页的 nextCursor 追加，不重置已加载内容 */
+async function loadMoreTraces() {
+  if (!tracesHasMore.value || tracesLoading.value) return
+  await fetchTraces(true)
+}
+
+/**
+ * 拉取调用链一页。
+ * @param append true = 翻下一页追加；false = 首屏覆盖
+ */
+async function fetchTraces(append: boolean) {
+  tracesLoading.value = true
   const end = Date.now()
-  const [t] = await Promise.allSettled([
-    traceApi.list({ app: query.value.app || undefined, method: query.value.method || undefined, start: end - 86400000, end, limit: 50 })
-  ])
-  if (t.status === 'fulfilled') traces.value = t.value.data
-  // 项目下拉：全局缓存加载（消除重复拉取），首次加载后默认选中第一个项目
+  try {
+    const page = await traceApi.list({
+      app: query.value.app || undefined,
+      method: query.value.method || undefined,
+      start: end - 86400000,
+      end,
+      size: 50,
+      cursor: append ? tracesCursor.value ?? undefined : undefined
+    })
+    traces.value = append ? [...traces.value, ...page.items] : page.items
+    tracesCursor.value = page.nextCursor
+    tracesHasMore.value = page.hasMore
+  } catch {
+    if (!append) traces.value = []
+    tracesHasMore.value = false
+  } finally {
+    tracesLoading.value = false
+  }
+}
+
+/** 项目下拉初始化：全局缓存加载（消除重复拉取），首次加载后默认选中第一个项目 */
+async function initProjects() {
   await repoStore.load().catch(() => {})
-  if (!projectNames.value.length) {
-    const names = repoStore.repos.map((r: Record<string, any>) => r.repoName).filter(Boolean)
-    projectNames.value = names
-    if (!query.value.app && names.length) {
-      query.value.app = names[0]
-      await loadTraces()
-      return
-    }
+  if (projectNames.value.length) return
+  const names = repoStore.repos.map((r: Record<string, any>) => r.repoName).filter(Boolean)
+  projectNames.value = names
+  if (!query.value.app && names.length) {
+    query.value.app = names[0]
+    await loadTraces()
   }
 }
 
@@ -335,20 +379,26 @@ async function selectTrace(t: Record<string, any>) {
   }
 }
 
-/** 慢命令合并加载：慢 SQL + 中间件慢命令并行拉取，类型过滤在前端合并后统一执行 */
+/**
+ * 慢命令合并加载：慢 SQL + 中间件慢命令并行拉取，类型过滤在前端合并后统一执行。
+ *
+ * <p>按新的游标分页接口取首屏（size=500 上限）：慢命令页签已有类型/耗时双过滤，
+ * 再加一层游标翻页会让界面同时维护三套过滤状态；这里取上限一屏，
+ * 需要深翻历史时由调用方按过滤条件缩小窗口。
+ */
 async function loadSlowItems() {
   const end = Date.now()
-  const window = { start: end - 86400000, end, minCostMs: minCostMs.value || undefined, limit: 50 }
+  const params = { start: end - 86400000, end, minCostMs: minCostMs.value || undefined, size: 500 }
   const app = query.value.app || undefined
   const [sql, cmd] = await Promise.all([
-    slowSqlApi.list({ ...window, app }),
+    slowSqlApi.list({ ...params, app }),
     // 选定 SQL 时无需拉中间件命令；选定具体中间件类型时交由后端过滤（减少传输）
     slowType.value === 'sql'
-      ? Promise.resolve({ data: [] })
-      : slowCommandApi.list({ ...window, app, type: slowType.value || undefined })
+      ? Promise.resolve({ items: [] as Array<Record<string, any>> })
+      : slowCommandApi.list({ ...params, app, type: slowType.value || undefined })
   ])
-  slowSqls.value = sql.data ?? []
-  slowCommands.value = cmd.data ?? []
+  slowSqls.value = sql.items
+  slowCommands.value = cmd.items
 }
 
 /** 合并后的慢命令列表（慢 SQL 与中间件命令统一结构，按耗时倒序） */
@@ -466,8 +516,10 @@ watch(() => query.value.app, () => {
   if (activeTab.value === 'slow') loadSlowItems()
 })
 
-onMounted(() => {
-  loadTraces()
+onMounted(async () => {
+  // 项目下拉可能带上默认项目，届时 initProjects 内已拉过一次首屏，避免重复请求
+  await initProjects()
+  if (!traces.value.length) loadTraces()
   loadSlowItems()
 })
 </script>

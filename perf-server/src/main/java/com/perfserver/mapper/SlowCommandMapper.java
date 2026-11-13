@@ -28,6 +28,16 @@ public interface SlowCommandMapper {
                             @Param("minCostMs") Double minCostMs,
                             @Param("limit") int limit);
 
+    /** 游标分页查询：按 {@code (execute_time, id)} 复合游标倒序翻页（理由同 SlowSqlMapper） */
+    List<SlowCommand> queryByCursor(@Param("appName") String appName,
+                                    @Param("type") String type,
+                                    @Param("start") LocalDateTime start,
+                                    @Param("end") LocalDateTime end,
+                                    @Param("minCostMs") Double minCostMs,
+                                    @Param("cursorTime") LocalDateTime cursorTime,
+                                    @Param("cursorId") Long cursorId,
+                                    @Param("limit") int limit);
+
     /** 按关联调用链 ID 查询（调用链详情联动） */
     List<SlowCommand> findByTraceId(@Param("traceId") String traceId);
 }
