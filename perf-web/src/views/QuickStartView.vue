@@ -677,8 +677,8 @@ function stopPolling() {
 
 async function loadTracesAndIssues() {
   try {
-    const t = await traceApi.list({ app: appName.value || undefined, limit: 5 })
-    traces.value = t.data || []
+    const t = await traceApi.list({ app: appName.value || undefined, size: 5 })
+    traces.value = t.items
   } catch { /* 忽略 */ }
   try {
     const i = await sourceApi.issues({ limit: 5 })
@@ -693,8 +693,8 @@ async function loadTracesAndIssues() {
 async function onDeployed() {
   sessionDone.value[1] = true // deploy ok
   try {
-    const sl = await slowSqlApi.list({ limit: 5 })
-    const url = (sl.data || []).map((x: any) => x.dbUrl).find((u: string) => !!u)
+    const sl = await slowSqlApi.list({ size: 5 })
+    const url = sl.items.map((x: any) => x.dbUrl).find((u: string) => !!u)
     if (url) {
       autoDbUrl.value = url
       const match = conns.value.find((c: any) => url.startsWith(String(c.dbUrl || '').split('?')[0]))

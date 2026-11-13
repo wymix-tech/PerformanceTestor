@@ -174,16 +174,16 @@ const quickActions = [
 async function refresh() {
   const [a, t, g, tr, s, i] = await Promise.allSettled([
     appApi.list(), stressApi.list({ limit: 5 }),
-    dataGenApi.list(10), traceApi.list({ limit: 5 }),
-    slowSqlApi.list({ limit: 5 }), sourceApi.issues({ limit: 5 })
+    dataGenApi.list(10), traceApi.list({ size: 5 }),
+    slowSqlApi.list({ size: 5 }), sourceApi.issues({ limit: 5 })
   ])
   // 项目列表走全局缓存（首次加载后不再重复拉取）
   repoStore.load().then(() => { repos.value = repoStore.repos }).catch(() => {})
   if (a.status === 'fulfilled') apps.value = a.value.data
   if (t.status === 'fulfilled') stressTasks.value = t.value.data
   if (g.status === 'fulfilled') genTasks.value = g.value.data
-  if (tr.status === 'fulfilled') traces.value = tr.value.data
-  if (s.status === 'fulfilled') slowSqls.value = s.value.data
+  if (tr.status === 'fulfilled') traces.value = tr.value.items
+  if (s.status === 'fulfilled') slowSqls.value = s.value.items
   if (i.status === 'fulfilled') issues.value = i.value.data
 }
 
