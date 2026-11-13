@@ -24,14 +24,25 @@ uv run pytest               # 单测
 uv run ruff check .         # lint
 ```
 
-## 命令（阶段 1）
+## 命令
 
-| 命令 | 状态 | 说明 |
+| 命令 | 说明 |
+|---|---|
+| `perf stress run <scenario.yaml>` | 读场景 → `POST /api/stress/gate` → 等待完成 → 输出报告 + JSON 工件 |
+| `perf gate [--scenario x.yaml]` | 替代 `scripts/perf-gate.sh`，退出码 0/1/2 语义对齐 |
+| `perf scenario validate <file>` | 场景 YAML 校验 |
+| `perf-engine <scenario.yaml> -e locust [-o result.json]` | 本地引擎发压（不经平台），产出对齐 StressTaskResult 契约的工件 |
+| `perf version` | 版本号 |
+
+## 本地引擎选择（阶段 2 实测结论）
+
+| 引擎 | 适用 | 实测 |
 |---|---|---|
-| `perf stress run <scenario.yaml>` | 步骤 3 | 读场景 → `POST /api/stress/gate` → 等待完成 → 输出报告 |
-| `perf gate` | 步骤 3 | 替代 `scripts/perf-gate.sh`，退出码 0/1/2 语义对齐 |
-| `perf scenario validate <file>` | 步骤 2 | 场景 YAML 校验 |
-| `perf version` | 可用 | 版本号 |
+| `locust`（`--extra locust`） | 场景编排/混合流量/Agent 编排/QPS 容量验证 | QPS、P50 与 Java 引擎对齐；**P95/P99 长尾系统性偏高**（Python 客户端每请求处理成本所致，多进程分摊无效，已实测） |
+| `jmeter` | JVM 客户端兜底（需本机安装 jmeter CLI） | 已实现；长尾敏感场景用此引擎或平台 Java 引擎 |
+
+统计层三引擎统一：平坦 30000 桶×1ms 直方图，逐位对齐 Java `StressStatistician`；
+结果契约 `perf-py.result.v1`（camelCase，与 Java `resultJson` 结构一致，可直接导入）。
 
 ## 配置
 
