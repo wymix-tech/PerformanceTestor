@@ -73,6 +73,20 @@ perf agent run "分析 /tmp/result.json" -r analysis --max-steps 8  # 单角色
 角色间只传结构化上下文（AgentReport.context_block），单角色截断不阻断下游
 （降级推理，`degraded` 标记）。全部测试由脚本化假 LLM 驱动，无网络依赖。
 
+## 契约固化（阶段 5 · 步骤 1）
+
+`tests/contract/`：对运行中的 Java perf-server 做黑盒契约捕获（本仓库无 springdoc，
+以响应结构 golden 替代 OpenAPI 导出），作为按域迁移的切流门禁：
+
+```bash
+BASE=http://127.0.0.1:8080 ./scripts/capture-contract.sh   # 重新捕获（Java 侧有数据环境）
+uv run pytest tests/contract/ -v                            # 契约测试
+```
+
+规范化规则：dict 保留键名、list 取首元素、标量 → 类型标记（结构与键名即契约）。
+golden 含 normalized + raw 双层。AI 域已对照通过；stress/datagen/auth 域 golden
+已入库，域实现落地后替换占位断言（绞杀者纪律：先契约后切流）。
+
 ## Python server（阶段 4 · 步骤 3/4）
 
 `perf-py/server/`：FastAPI 骨架，AI 域 `/api/ai` 先行接管（绞杀者模式），契约逐端点

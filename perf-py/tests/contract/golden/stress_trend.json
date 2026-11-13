@@ -1,0 +1,16 @@
+{
+  "endpoint": "/api/stress/trend?limit=5",
+  "method": "GET",
+  "capturedAtSource": "java-perf-server",
+  "status": 200,
+  "normalized": {
+    "code": "number",
+    "message": "string",
+    "data": null
+  },
+  "raw": {
+    "code": 1,
+    "message": "服务器内部错误: Required request parameter 'appName' for method parameter type String is not present",
+    "data": null
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "endpoint": "/api/auth/me",
+  "method": "GET",
+  "capturedAtSource": "java-perf-server",
+  "status": 200,
+  "normalized": {
+    "code": "number",
+    "message": "string",
+    "data": {
+      "username": "string",
+      "authEnabled": "boolean"
+    }
+  },
+  "raw": {
+    "code": 0,
+    "message": "success",
+    "data": {
+      "username": "admin",
+      "authEnabled": true
+    }
+  }
+}

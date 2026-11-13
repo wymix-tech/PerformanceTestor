@@ -1,0 +1,16 @@
+{
+  "endpoint": "/api/ai/knowledge?limit=5",
+  "method": "GET",
+  "capturedAtSource": "java-perf-server",
+  "status": 200,
+  "normalized": {
+    "code": "number",
+    "message": "string",
+    "data": []
+  },
+  "raw": {
+    "code": 0,
+    "message": "success",
+    "data": []
+  }
+}

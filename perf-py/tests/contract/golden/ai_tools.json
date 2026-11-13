@@ -1,0 +1,78 @@
+{
+  "endpoint": "/api/ai/tools",
+  "method": "GET",
+  "capturedAtSource": "java-perf-server",
+  "status": 200,
+  "normalized": {
+    "code": "number",
+    "message": "string",
+    "data": [
+      {
+        "name": "string",
+        "description": "string"
+      }
+    ]
+  },
+  "raw": {
+    "code": 0,
+    "message": "success",
+    "data": [
+      {
+        "name": "analyze_code_issues",
+        "description": "分析性能问题根因并生成 2-3 个修复方案。参数：source 必填（slow_sql 慢 SQL 定位 / hot_method 热点方法定位 / stress 压测 URL 定位）；repoId 源码仓库 ID <b>必填</b>（缺失或不存在时返回可用仓库清单，请向用户确认后重试——不要在未确认仓库时创建问题）；慢 SQL 定位需 slowSqlId；热点方法定位需 className 与 methodName（及可选 appName）；压测定位需 stressTaskId。注意：本工具会在平台创建一条性能问题记录。返回问题 ID、根因与生成的方案列表（含涉及文件/修改点/收益/风险）。"
+      },
+      {
+        "name": "build_project",
+        "description": "平台侧编译被测项目（Maven）。参数：repoId 源码仓库 ID（必填）；module 可选 Maven 模块名。返回编译结果与 jar 产物路径（供 deploy_and_start 上传启动）。"
+      },
+      {
+        "name": "capacity_advice",
+        "description": "容量评估与扩容建议。参数：taskId 必填（压测任务 ID）；targetP95Ms 目标 P95 阈值毫秒（可选，默认 200）；app 应用名（可选，用于评估扩容建议）。返回目标阈值下最大可承受并发与 QPS、QPS-RT 曲线、扩容触发条件与方式、以及 JVM 堆/GC 配置建议。"
+      },
+      {
+        "name": "data_gen",
+        "description": "向被测数据库自动灌入测试数据（压测前置准备）。参数：dbUrl 必填（jdbc:mysql:// 或 jdbc:postgresql:// 开头，含库名）；tableName 目标表名；rowCount 生成行数（1-1000000，默认 1000）；taskName 任务名（可选）。按表结构自动生成符合字段类型的数据并批量插入，返回任务 ID 与状态。"
+      },
+      {
+        "name": "deploy_and_start",
+        "description": "上传编译包到被测服务器（SSH）并启动应用。参数：connId SSH 连接配置 ID（必填，凭据服务端读取）；jarPath 平台侧编译包绝对路径（来自 build_project 返回）；agentPath 平台侧 agent 包路径（可选，默认 perf-agent/target/perf-agent.jar 自动探测）；appPort 应用端口（默认 8081，启动后健康检查）。"
+      },
+      {
+        "name": "generate_fix_prompt",
+        "description": "为已选定的修复方案生成结构化修复提示词。参数：issueId 必填（性能问题 ID）；suggestionId 必填（方案 ID）。返回 Markdown 提示词，包含目标文件、检测证据、根因、建议修改与验证方式，可直接复制给 AI 编码工具执行修复。"
+      },
+      {
+        "name": "jvm_metrics",
+        "description": "查询被测应用最近一段时间的 JVM 指标（堆内存、GC、线程、CPU）。参数：app 应用名（可选，缺省查询全部）；minutes 查询最近多少分钟（默认 60）；limit 返回采样点数量上限（默认 100）。返回最新指标、均值与时间序列采样点。"
+      },
+      {
+        "name": "remote_app_status",
+        "description": "检查被测服务器上应用运行状态（进程/HTTP 健康检查/日志尾部）。参数：connId SSH 连接配置 ID（必填）；appPort 应用端口（默认 8081）。"
+      },
+      {
+        "name": "generate_report",
+        "description": "生成性能检测报告（Markdown）。参数：app 应用名（可选）；minutes 统计最近多少分钟（默认 60）。报告包含 JVM 指标概览、慢 SQL 列表、热点调用链、压测与容量评估、性能问题与方案状态，可用于存档或分享。"
+      },
+      {
+        "name": "search_knowledge",
+        "description": "检索性能知识库（历史分析结论与修复经验）。参数：query 检索关键词（中文即可，必填）；app 应用名（可选，空表示全部；传 app 时本应用结论与全局结论一并召回，返回项 appName 为空表示跨项目共性经验）；limit 条数上限（默认 5，最大 20）。分析根因或给出修复建议前应优先检索，复用已有结论。注意：返回 count=0 表示知识库确实没有匹配的历史结论，不代表当前没有问题，应按证据链独立分析。"
+      },
+      {
+        "name": "slow_sql",
+        "description": "查询最近慢 SQL。参数：app 应用名（可选）；minutes 最近多少分钟（默认 1440，即一天）；minCostMs 最小耗时过滤（默认不限制）；limit 条数上限（默认 50）。返回 SQL 文本、耗时毫秒、来源（jdbc/slowlog）、执行时间。"
+      },
+      {
+        "name": "stress_test",
+        "description": "发起一次 HTTP 性能压测。二选一：① 单接口——targetUrl（http/https 开头）；② 多接口混合场景——scenario 步骤数组（每项 url 必填，可选 name/alias/method/headers/body/weight/extract/assertions），按 weight 权重配比发压。通用参数：concurrency 并发数（默认 20，1-1000）；durationSec 持续秒数（默认 30，1-3600）；warmupSec 预热秒数（默认 10，0 关闭）；qpsLimit QPS 上限（0 不限）。步骤间传值：下游步骤可在 url/请求头值/body 中直接写 {{p1.result.data.token}}（引用第 1 步响应体的 data.token）、{{p1.header.X-Request-Id}}（引用第 1 步响应头）、{{login.result.userId}}（用 alias 指代步骤），无需 extract；pN 为步骤序号（从 1 开始），也可用步骤的 alias 或 name。未命中时保留占位符原文，不影响压测继续。返回任务 ID 与状态，任务异步执行，完成后可查询结果与容量评估。"
+      },
+      {
+        "name": "suggest_data_rules",
+        "description": "为目标表生成测试数据规则建议（ruleJson）。参数：repoId 源码仓库 ID（可选，提供时结合源码魔法值扫描结果）；tableName 目标表名。返回字段建议（enum 值集与权重/范围 overThreshold/ref 关联），可直接用于灌数据任务。"
+      },
+      {
+        "name": "trace",
+        "description": "查询业务方法调用链。参数：app 应用名（可选）；method 根方法关键字（类名或方法名，可选）；minutes 最近多少分钟（默认 60）；limit 条数上限（默认 50）。返回调用链 ID、根方法、总耗时与开始时间，可按 traceId 进一步关联源码分析热点方法。"
+      }
+    ]
+  }
+}
