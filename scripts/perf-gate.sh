@@ -4,6 +4,13 @@
 #
 # 用途：在流水线中触发一次压测并与基线比对，不达标则让构建失败。
 #
+# Python 替代入口（Issue #23 阶段 1）：perf-py 已提供等价命令，
+# 环境变量与退出码语义完全一致，CI 可直接替换：
+#   cd perf-py && uv run perf gate            # 参数走 GATE_* 环境变量
+#   cd perf-py && uv run perf gate --scenario scenario/scenarios/demo_nplus1.yaml
+# 注意：本脚本默认 GATE_URL（18080/api/orders）已过时——perf-demo 实际
+# 监听 8081，标准场景见 perf-py/scenario/scenarios/。
+#
 # 用法：
 #   PERF_API_TOKEN=xxx ./scripts/perf-gate.sh [参数覆盖]
 #

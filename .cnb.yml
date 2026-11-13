@@ -53,6 +53,24 @@ main:
                 # 突变测试门禁（仅对已有单测覆盖的文件，约 12 秒）。
                 # 全量突变（npm run test:mutation:all）需约 40 分钟，不接入 CI。
                 npm run test:mutation
+            # perf-py（Issue #23 阶段 1）：Python 工程层门禁——lint + 单测 +
+            # 入库场景校验。场景即代码，场景文件写错应在 PR 阶段拦截。
+            python:
+              name: perf-py lint 与单测
+              image: python:3.12-slim
+              docker:
+                volumes:
+                  - cache:/root/.cache:rw
+              env:
+                # 容器卷与 uv 缓存可能不在同一文件系统，copy 模式消除硬链接告警噪音
+                UV_LINK_MODE: copy
+              script: |
+                set -e
+                pip install --quiet uv
+                cd perf-py
+                uv sync --frozen
+                uv run ruff check .
+                uv run pytest
 
   # =====================================================================
   # 文档知识化流水线

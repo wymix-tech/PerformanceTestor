@@ -1,0 +1,34 @@
+# =====================================================================
+# 可复现场景：慢 SQL 全表扫描（perf-demo OrderAPI）
+#
+# 被测端点：GET /api/order/list?status=SHIPPED&limit=500
+#   perf-demo OrderController：status 无索引 → 全表扫描，随数据量线性劣化。
+#   与 demo-nplus1 一起构成 perf-demo 的两个标准可复现性能场景。
+#
+# 执行：
+#   cd perf-py && PERF_API_TOKEN=xxx uv run perf stress run scenario/scenarios/demo_slow_sql.yaml
+# =====================================================================
+name: demo-slow-sql
+description: perf-demo 慢 SQL 场景（/api/order/list，无索引全表扫描）
+labels: [demo, slow-sql, regression-gate]
+
+app: demo-app
+
+request:
+  url: http://localhost:8081/api/order/list?status=SHIPPED&limit=500
+  method: GET
+  assertions:
+    - source: status
+      op: eq
+      expected: "200"
+
+load:
+  concurrency: 10     # 全表扫描目标，并发过高会把 DB 打满，压测结果本身失去分辨力
+  duration_sec: 60
+  warmup_sec: 5
+  ramp_up_sec: 5
+  qps_limit: 0
+
+gate:
+  timeout_sec: 0
+  fail_on_no_baseline: false

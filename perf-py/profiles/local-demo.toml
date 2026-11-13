@@ -1,0 +1,27 @@
+# =====================================================================
+# 本地演示 profile（单机 start-all.sh 环境）
+#
+# 用法：
+#   cd perf-py && uv run perf gate --profile local-demo
+#   # 或 PERF_PROFILE 语义相反：profile 通过 --profile/--scenario 指定，
+#   # 环境变量（PERF_SERVER / PERF_API_TOKEN / GATE_*）始终优先于本文件
+#
+# 注意：api_token 请勿提交真实值，此处占位需与平台
+# perf-server 的 perf.auth.api-token 配置一致。
+# =====================================================================
+
+[server]
+url = "http://localhost:8080"
+api_token = ""        # 留空则必须由 PERF_API_TOKEN 提供，否则退出码 2
+request_timeout = 1800
+
+[gate]
+target_url = "http://localhost:8081/api/order/list?status=SHIPPED&limit=500"
+app_name = "demo-app"
+method = "GET"
+concurrency = 10
+duration_sec = 60
+warmup_sec = 5
+ramp_up_sec = 5
+qps_limit = 0
+fail_on_no_baseline = false

@@ -1,0 +1,34 @@
+# =====================================================================
+# 可复现场景：JPA N+1 查询（perf-demo UserAPI）
+#
+# 被测端点：GET /api/user/list?limit=2000
+#   perf-demo UserController：循环逐条查库（N+1），并发越高退化越明显。
+#   适合作为「性能回归门禁」与「AI Agent 定位 N+1 热点」的标准输入。
+#
+# 执行：
+#   cd perf-py && PERF_API_TOKEN=xxx uv run perf stress run scenario/scenarios/demo_nplus1.yaml
+# =====================================================================
+name: demo-nplus1
+description: perf-demo JPA N+1 查询场景（/api/user/list，逐条查询放大）
+labels: [demo, nplus1, regression-gate]
+
+app: demo-app
+
+request:
+  url: http://localhost:8081/api/user/list?limit=2000
+  method: GET
+  assertions:
+    - source: status
+      op: eq
+      expected: "200"
+
+load:
+  concurrency: 20
+  duration_sec: 60
+  warmup_sec: 5      # 预热 5s，消除首波冷连接/JIT 对 P99 的污染
+  ramp_up_sec: 5     # 爬坡 5s 落在预热窗口内
+  qps_limit: 0       # 不限流，暴露最大吞吐
+
+gate:
+  timeout_sec: 0          # 0 = 服务端按压测时长自动放宽
+  fail_on_no_baseline: false   # 首次执行放行并记录为基线
