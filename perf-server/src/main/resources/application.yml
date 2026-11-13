@@ -101,6 +101,18 @@ perf:
     # 并发等待验证的线程数（每次验证会重放一次完整压测，放宽会同时占用目标服务压测资源）
     max-concurrent: 2
 
+  # 数据生命周期：分区自动维护 + 保留期回收（PartitionMaintainer）
+  retention:
+    enabled: true              # 总开关：关闭后既不建分区也不清理
+    interval-hours: 1          # 定时周期（小时）；启动时另有一次立即执行
+    ahead-days: 2              # 提前创建的未来分区天数（覆盖周末/短假期）
+    partition-days: 30         # jvm_metric / stress_sample 分区保留天数，0 = 不清理（只建分区）
+    trace-chain-days: 30       # trace_chain 保留天数，0 = 不清理（分批 DELETE）
+    slow-sql-days: 30          # slow_sql 保留天数，0 = 不清理
+    slow-command-days: 30      # slow_command 保留天数，0 = 不清理
+    delete-batch-size: 5000    # 每批删除行数（防单事务过大阻塞写入）
+    max-batches-per-run: 20    # 每轮每表最多删除批数（防单次扫描吃满 IO）
+
   # Agent 上报接口配置
   agent:
     # 上报数据落库的采样写入批大小

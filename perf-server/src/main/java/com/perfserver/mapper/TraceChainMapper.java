@@ -15,6 +15,14 @@ public interface TraceChainMapper {
 
     int insert(TraceChain chain);
 
+    /**
+     * 批量写入（语义与 {@link #insert} 一致：{@code trace_id} 冲突时更新，保持幂等重放）。
+     *
+     * <p>单批 500 条逐条 INSERT 会产生 500 次网络往返与自增锁竞争，是上报写入的吞吐瓶颈；
+     * 批量版把往返降到 1 次（调用方按 {@code INSERT_CHUNK} 分片防 {@code max_allowed_packet} 超限）。
+     */
+    int batchInsert(@Param("list") List<TraceChain> list);
+
     /** 列表查询：应用/根方法关键字/时间窗口过滤，按时间倒序 */
     List<TraceChain> query(@Param("appName") String appName,
                            @Param("method") String method,

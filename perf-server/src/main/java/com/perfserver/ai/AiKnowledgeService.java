@@ -21,6 +21,8 @@ import java.util.Set;
  *
  * <p>检索降级：FULLTEXT 在某些部署（如未建索引、词长过短）下可能抛异常，
  * 此时降级为最近结论列表，保证对话链路不被中断。
+ * 注意：只有"检索异常"才降级；"检索无命中"如实返回空列表，不做 recent 回落——
+ * 把无关的近期结论当"参考经验"回填会污染模型判读（见 {@link #search}）。
  *
  * <p>沉淀去重：同一问题反复对话会产出近似结论，入库前与最近 {@value #DEDUP_LOOKBACK}
  * 条同应用结论做相似度比对，超过 {@value #DEDUP_SIMILARITY} 视为重复并跳过——
@@ -142,10 +144,16 @@ public class AiKnowledgeService {
     }
 
     /**
-     * 全文检索（降级到最近结论）。
+     * 全文检索。
      *
-     * @param query   检索词（空白时返回最近结论）
-     * @param appName 应用名过滤（空表示不过滤）
+     * <p><b>无命中即返回空</b>：早期实现会在"查不到"时回落 {@code recent(...)}，
+     * 把与检索词无关的近期结论当成"参考经验"喂给模型——模型随后把它们当成
+     * 同问题的历史结论复用，结论口径被污染，且与系统提示词"工具返回空 = 暂无数据"
+     * 自相矛盾。故只保留"检索异常"这一种降级（FULLTEXT 不可用时退化为最近结论列表），
+     * 语义上的"无命中"如实返回空列表。
+     *
+     * @param query   检索词（空白时返回最近结论——这是"列最近"而非"检索无命中"，语义不同）
+     * @param appName 应用名过滤（空表示不过滤；非空时含 {@code app_name=''} 的全局结论）
      * @param limit   条数上限（受 {@link #MAX_LIMIT} 约束）
      */
     public List<AiKnowledge> search(String query, String appName, int limit) {
@@ -155,12 +163,10 @@ public class AiKnowledgeService {
                 return mapper.recent(appName, bounded);
             }
             List<AiKnowledge> hits = mapper.search(query.trim(), appName, bounded);
-            if (hits != null && !hits.isEmpty()) {
-                return hits;
-            }
-            // 无命中：返回最近结论作为参考，避免模型因"查不到"而误判无历史经验
-            return mapper.recent(appName, Math.min(bounded, 5));
+            // 无命中返回空：交给模型按"暂无历史经验"处理，不做无关键词相关的回落
+            return hits == null ? new ArrayList<>() : hits;
         } catch (Exception e) {
+            // 异常降级：FULLTEXT 未建索引/兼容库时不能中断对话链路
             log.warn("search ai knowledge failed, fallback to recent: {}", e.getMessage());
             try {
                 return mapper.recent(appName, bounded);

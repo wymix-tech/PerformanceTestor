@@ -38,6 +38,27 @@ class JwtAuthInterceptorTest {
         assertTrue(interceptor.preHandle(request, response(), new Object()));
     }
 
+    /** 鉴权通过时记录操作人：清理全局知识/删除项目等高风险操作的审计日志依赖该属性 */
+    @Test
+    void recordsOperatorAttributeOnSuccess() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("Authorization", "Bearer " + jwtService.issue("alice"));
+
+        assertTrue(interceptor.preHandle(request, response(), new Object()));
+        assertEquals("alice", request.getAttribute(JwtAuthInterceptor.USER_ATTR));
+        assertNull(request.getAttribute(JwtAuthInterceptor.CI_ATTR));
+    }
+
+    /** 未通过鉴权不得写入操作人属性（避免审计日志记录错误来源） */
+    @Test
+    void doesNotRecordOperatorOnFailure() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("Authorization", "Bearer bad-token");
+
+        assertFalse(interceptor.preHandle(request, response(), new Object()));
+        assertNull(request.getAttribute(JwtAuthInterceptor.USER_ATTR));
+    }
+
     @Test
     void rejectsMissingTokenWith401() throws Exception {
         MockHttpServletResponse response = response();
