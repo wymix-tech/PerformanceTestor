@@ -17,12 +17,13 @@ def _hist_from(values):
 
 
 def test_percentile_returns_bucket_index_like_java():
-    # 100 个样本：1ms×60，5ms×30，100ms×10 → P95 target=95 → 累计到第 95 个
-    # 桶（5ms 桶内第 35 个）时 cum=95 → 返回桶下标 5
+    # 100 个样本：1ms×60，5ms×30，100ms×10
+    # P50：cum=60 ≥ 50 → 桶 1；P95：60+30=90 < 95 → 落到 100ms 桶；
+    # P99：同样落在 100ms 桶。与 Java percentile 行为一致（按桶下标取整）。
     h = _hist_from([1] * 60 + [5] * 30 + [100] * 10)
     assert percentile(h, 50) == 1
-    assert percentile(h, 95) == 5
-    assert percentile(h, 99) == 100  # P99 target=99 → 落在 100ms 桶
+    assert percentile(h, 95) == 100
+    assert percentile(h, 99) == 100
     assert percentile(h, 100) == 100
 
 
