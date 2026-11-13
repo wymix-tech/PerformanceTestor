@@ -68,7 +68,8 @@ main:
                 set -e
                 pip install --quiet uv
                 cd perf-py
-                uv sync --frozen
+                # --extra locust：阶段 2 本地引擎依赖，保证 locust 用例真实执行（非 skip）
+                uv sync --frozen --extra locust
                 uv run ruff check .
                 uv run pytest
 
