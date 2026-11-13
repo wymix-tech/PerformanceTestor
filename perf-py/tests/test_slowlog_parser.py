@@ -46,7 +46,7 @@ def test_parse_standard_format():
 
     e2 = entries[1]
     assert e2.user == "perf"
-    assert e2.host == "10.0.0.8"
+    assert e2.host == ""  # "@  [ip]" 双空格 → host 空串（对齐 Java 正则行为）
     assert e2.query_time_ms == 500.0
     assert e2.rows_examined == 50000
 
