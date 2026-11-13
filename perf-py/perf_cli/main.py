@@ -290,6 +290,33 @@ def agent_run(
     raise typer.Exit(EXIT_OK)
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="监听地址"),
+    port: int = typer.Option(8000, "--port", help="监听端口"),
+    knowledge_db: str = typer.Option(None, "--knowledge-db",
+                                     help="知识库 SQLite 文件路径（缺省内存库）"),
+) -> None:
+    """启动 Python server（FastAPI，AI 域 /api/ai）。
+
+    LLM 配置读 PERF_LLM_MODEL / PERF_LLM_BASE_URL / PERF_LLM_API_KEY；
+    未配置时可启动（对话端点将返回 LLM 客户端异常的 error 事件）。
+    """
+    import uvicorn
+
+    from agents.llm import client_from_env
+    from server.app import create_app
+    from server.knowledge import KnowledgeService, SqliteKnowledgeStore
+
+    llm = client_from_env()
+    if llm is None:
+        err_console.print("[yellow]PERF_LLM_MODEL 未配置：server 可启动，"
+                          "但 AI 对话端点会返回 LLM 配置错误[/yellow]")
+    knowledge = KnowledgeService(SqliteKnowledgeStore(knowledge_db or ":memory:"))
+    app = create_app(llm=llm, knowledge=knowledge)
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
 def run_cli() -> int:
     """独立运行入口：供 `perf` console script 使用。"""
     try:

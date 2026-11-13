@@ -246,7 +246,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def test_stress_run_e2e(tmp_path):
-    pytest.importorskip("locust")
+    import sys
+
+    assert "gevent" not in sys.modules, \
+        "父进程必须保持 gevent 未 patch（conftest 闸门保证），否则子进程 fork 会竞态死锁"
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
@@ -258,6 +261,8 @@ def test_stress_run_e2e(tmp_path):
             encoding="utf-8")
         out = call_tool(build_registry(), "stress_run",
                         {"scenario_file": str(scenario), "timeout_sec": 120})
+        if "error" in out and "locust" in (out.get("error") or "") + "".join(out.get("stderrTail") or []):
+            pytest.skip("locust 未安装（uv sync --extra locust）")
         assert "error" not in out, out.get("stderrTail")
         assert out["exitCode"] == 0
         r = out["result"]

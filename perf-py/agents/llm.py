@@ -45,7 +45,12 @@ class ChatResult:
 
 
 class LlmClient(ABC):
-    """最小 chat 契约：messages + tools → ChatResult。"""
+    """最小 chat 契约：messages + tools → ChatResult。
+
+    可选流式能力：实现 chat_stream(messages, tools) 生成器——逐个 yield 正文
+    delta（str），经 StopIteration.value 返回完整 ChatResult（含聚合 tool_calls）。
+    SSE 服务侧以 hasattr 探测该能力，探测失败自动回退非流式。
+    """
 
     @abstractmethod
     def chat(self, messages: list[dict], tools: list[dict]) -> ChatResult:
@@ -76,8 +81,7 @@ class OpenAiCompatClient(LlmClient):
             )
         return self._client
 
-    def chat(self, messages: list[dict], tools: list[dict]) -> ChatResult:
-        client = self._ensure_client()
+    def _params(self, messages: list[dict], tools: list[dict], stream: bool) -> dict:
         params: dict = {
             "model": self.model,
             "messages": messages,
@@ -85,7 +89,13 @@ class OpenAiCompatClient(LlmClient):
         }
         if tools:
             params["tools"] = tools
-        resp = client.chat.completions.create(**params)
+        if stream:
+            params["stream"] = True
+        return params
+
+    def chat(self, messages: list[dict], tools: list[dict]) -> ChatResult:
+        client = self._ensure_client()
+        resp = client.chat.completions.create(**self._params(messages, tools, False))
         msg = resp.choices[0].message
         result = ChatResult(content=msg.content)
         for c in (msg.tool_calls or []):
@@ -94,6 +104,42 @@ class OpenAiCompatClient(LlmClient):
             except json.JSONDecodeError:
                 args = {}
             result.tool_calls.append(ToolCall(id=c.id, name=c.function.name, arguments=args))
+        return result
+
+    def chat_stream(self, messages: list[dict], tools: list[dict]) -> ChatResult:
+        """流式补全（生成器）：yield 正文 delta，StopIteration.value 返回 ChatResult。
+
+        工具调用轮：无正文 delta，仅返回聚合后的 tool_calls（对齐 OpenAI 流式
+        语义：tool_call 分片到达时 content 为空）。
+        """
+        client = self._ensure_client()
+        stream = client.chat.completions.create(**self._params(messages, tools, True))
+        deltas: list[str] = []
+        calls: dict[str, dict] = {}
+        result = ChatResult()
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                deltas.append(delta.content)
+                yield delta.content
+            for c in (delta.tool_calls or []):
+                agg = calls.setdefault(c.index, {"id": "", "name": "", "arguments": ""})
+                if c.id:
+                    agg["id"] = c.id
+                if c.function and c.function.name:
+                    agg["name"] = c.function.name
+                if c.function and c.function.arguments:
+                    agg["arguments"] += c.function.arguments
+        for idx in sorted(calls):
+            agg = calls[idx]
+            try:
+                args = json.loads(agg["arguments"] or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            result.tool_calls.append(ToolCall(id=agg["id"], name=agg["name"], arguments=args))
+        result.content = "".join(deltas) if deltas else None
         return result
 
 

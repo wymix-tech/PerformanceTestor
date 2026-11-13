@@ -80,9 +80,15 @@ def stress_run(args: dict) -> dict:
 
     长耗时工具（read_only=False）：gevent monkey-patch 要求独立进程，
     故以 `python -m perf_cli.engine_entry` 子进程形态执行（同 perf-engine CLI）。
+
+    子进程启动用 os.posix_spawn 而非 subprocess.run：宿主进程可能已被
+    locust/gevent monkey-patch（fork 在多线程下会竞态死锁），posix_spawn
+    绕开 gevent 的 fork 路径；stdout/stderr 落临时文件，waitpid 轮询实现超时。
     """
-    import subprocess
+    import os
+    import signal
     import tempfile
+    import time
 
     scenario = args.get("scenario_file")
     if not scenario:
@@ -96,23 +102,47 @@ def stress_run(args: dict) -> dict:
     # engine_app 为 typer 单命令应用：无 run 子命令，直接跟场景参数
     cmd = [sys.executable, "-m", "perf_cli.engine_entry", scenario,
            "--engine", engine, "--output", output]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"error": f"压测超时（>{timeout}s），任务已终止", "timeoutSec": timeout}
-    except FileNotFoundError as e:
-        return {"error": f"无法启动引擎进程: {e}"}
+
+    with tempfile.TemporaryFile(mode="w+") as out_f, \
+            tempfile.TemporaryFile(mode="w+") as err_f:
+        file_actions = [
+            (os.POSIX_SPAWN_DUP2, out_f.fileno(), 1),
+            (os.POSIX_SPAWN_DUP2, err_f.fileno(), 2),
+        ]
+        try:
+            pid = os.posix_spawn(sys.executable, cmd, dict(os.environ),
+                                 file_actions=file_actions)
+        except OSError as e:
+            return {"error": f"无法启动引擎进程: {e}"}
+
+        deadline = time.monotonic() + timeout
+        status = None
+        while True:
+            wpid, st = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                status = st
+                break
+            if time.monotonic() > deadline:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+                return {"error": f"压测超时（>{timeout}s），任务已终止",
+                        "timeoutSec": timeout}
+            time.sleep(0.1)
+
+        exit_code = os.waitstatus_to_exitcode(status)
+        err_f.seek(0)
+        stderr_text = err_f.read()
 
     body: dict = {
-        "exitCode": proc.returncode,
+        "exitCode": exit_code,
         "engine": engine,
         "artifactPath": output,
     }
-    if proc.stderr.strip():
-        body["stderrTail"] = proc.stderr.strip().splitlines()[-5:]
-    if proc.returncode == 2:
+    if stderr_text.strip():
+        body["stderrTail"] = stderr_text.strip().splitlines()[-5:]
+    if exit_code == 2:
         body["error"] = "引擎调用异常（参数/场景校验失败）"
-        body["stderrTail"] = proc.stderr.strip().splitlines()[-10:]
+        body["stderrTail"] = stderr_text.strip().splitlines()[-10:]
         return body
     summary = stress_result_read({"path": output})
     if "error" in summary:

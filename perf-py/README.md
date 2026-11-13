@@ -73,6 +73,33 @@ perf agent run "分析 /tmp/result.json" -r analysis --max-steps 8  # 单角色
 角色间只传结构化上下文（AgentReport.context_block），单角色截断不阻断下游
 （降级推理，`degraded` 标记）。全部测试由脚本化假 LLM 驱动，无网络依赖。
 
+## Python server（阶段 4 · 步骤 3/4）
+
+`perf-py/server/`：FastAPI 骨架，AI 域 `/api/ai` 先行接管（绞杀者模式），契约逐端点
+对齐 Java（AiController + AiChatStreamController）：
+
+| 端点 | 说明 |
+|---|---|
+| `POST /api/ai/chat` | 同步对话：{reply, toolCalls, mode(llm/rule), role, rounds, steps} |
+| `POST /api/ai/chat/stream` | SSE 流式对话（thought/tool/observation/token/done/error） |
+| `GET /api/ai/tools` | Agent 工具清单（与 Function Calling 同源 registry） |
+| `GET /api/ai/knowledge` | 知识检索（query 空时列最近；无命中如实返回空） |
+| `DELETE /api/ai/knowledge/{id}`、`DELETE /api/ai/session/{sid}` | 清理入口 |
+
+```bash
+pip install -e 'perf-py[server,agents]'
+export PERF_LLM_MODEL=... PERF_LLM_BASE_URL=... PERF_LLM_API_KEY=...
+perf serve --port 8000 --knowledge-db ./kb.sqlite   # 未配 LLM 时 mode=rule 兜底，不 500
+```
+
+知识库：`KnowledgeStore` 协议 + SQLite 起步实现（LIKE + 命中计数评分；
+沉淀阈值 40 字、bigram Jaccard ≥0.9 去重回看 50 条，语义对齐 Java
+AiKnowledgeService）；MySQL FULLTEXT（ngram）与向量检索（RAG）为同契约替换实现。
+
+测试闸门：conftest 默认阻断 locust/gevent 导入（收集期 patch 会污染全进程，
+导致网络型测试挂起）；引擎族用例用 `PERF_PY_ENGINES=1 uv run pytest
+tests/test_locust_engine.py` 单独运行。
+
 ## 灌数引擎（阶段 3 步骤 5）
 
 `perf datagen run` 直连数据库执行灌数（不经 perf-server REST），宿主装配对齐 Java
