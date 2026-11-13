@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import enum
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -338,6 +339,55 @@ class EndpointRef:
 
     def __str__(self) -> str:
         return f"{self.key()} ({self.member_key()}:{self.line})"
+
+
+@dataclass
+class TableStat:
+    """逐表统计。"""
+
+    table: str | None = None
+    rows: int = 0
+
+
+@dataclass
+class EngineResult:
+    """引擎执行结果：成功/失败、行数统计、试运行估算、警告清单（含逐表统计）。"""
+
+    success: bool = False
+    dry_run: bool = False
+    total_rows: int = 0
+    inserted_rows: int = 0
+    # 试运行估算的最大单表事务时长参考（ms，0 表示无估算）
+    estimated_max_txn_ms: int = 0
+    warnings: list[str] = field(default_factory=list)
+    table_stats: list[TableStat] = field(default_factory=list)
+    error_msg: str | None = None
+
+    @classmethod
+    def failure(cls, msg: str) -> EngineResult:
+        r = cls()
+        r.success = False
+        r.error_msg = msg
+        return r
+
+
+class EngineListener(ABC):
+    """进度与语义提示回调契约。
+
+    引擎在执行过程中回调宿主；宿主据此更新任务进度（data_gen_task）与
+    语义提示库（semantic_hint）。
+    """
+
+    @abstractmethod
+    def on_progress(self, total_rows: int, inserted_rows: int, current_table: str | None) -> None:
+        """进度回调：按批（每完成一个事务批次）触发。"""
+
+    @abstractmethod
+    def on_hints(self, magic_hints: list[MagicHint], relation_hints: list[RelationHint]) -> None:
+        """语义提示回调：魔法值候选与表间关联建议（含低置信命名推断）。"""
+
+    def on_warn(self, message: str) -> None:  # noqa: B027  默认空实现（对齐 Java default 方法）
+        """非阻断警告（空表兜底提示、refSkew 高倾斜提示、源码不可读降级等），默认空实现。"""
 
 
 @dataclass

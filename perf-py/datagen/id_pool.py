@@ -16,6 +16,9 @@ MAX_POOL_SIZE = 500_000
 
 
 class IdPool:
+    # 池上限（对齐 Java 静态常量 IdPool.MAX_POOL_SIZE）
+    MAX_POOL_SIZE = MAX_POOL_SIZE
+
     def __init__(self) -> None:
         self._ids: list[int] = []
         self._cumulative_weights: list[float] | None = None
