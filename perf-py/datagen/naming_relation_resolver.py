@@ -2,31 +2,26 @@
 
 子表列 <parent>_id（单复数归一）匹配父表主键 + 类型兼容校验。
 空表兜底：父表 0 行 → 无条件采纳（0.3 / naming_empty_fallback）。
-抽样：父表 <100 行全表、>100 抽 1000 条；超时 500ms 降级纯命名（0.5）。
+抽样：父表 <100 行全表、>100 抽 1000 条。
 
-抽样经 DBAPI cursor（conn.cursor()/execute），表名/列名由 dialect.quote_identifier
-加引号——方言 SPI 在阶段 3 步骤 4e（DefaultDataGenEngine 编排）接入。
+Java→Python 偏差说明：Java 用独立 sampler 线程 + 500ms 超时防 JDBC 查询挂起；
+Python DBAPI 连接（如 sqlite）默认不可跨线程使用，跨线程抽样会必然失败，
+故改为在调用方线程同步执行，防挂起由宿主连接超时（connect timeout /
+socket timeout）与引擎整体超时承担。置信度分级语义不变。
 """
 
 from __future__ import annotations
-
-from concurrent.futures import ThreadPoolExecutor
 
 from datagen.model import RelationHint, SchemaMetadata
 from datagen.rule_engine import is_integer_family
 
 SAMPLE_SIZE = 1000
-SAMPLE_TIMEOUT_S = 0.5
 FULL_SCAN_THRESHOLD = 100
 CONTAIN_RATE_THRESHOLD = 0.95
 
 
 class NamingRelationResolver:
-
-    def __init__(self) -> None:
-        # Java 侧单线程 daemon sampler + 超时降级；Python 用单 worker 池等价
-        self._sampler = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="datagen-naming-sampler")
+    """无状态解析器（实例可复用；conn 由调用方在 resolve 时传入）。"""
 
     def resolve(self, child: SchemaMetadata | None,
                 parents: dict[str, SchemaMetadata],
@@ -97,12 +92,8 @@ class NamingRelationResolver:
                 cur.close()
             return ids
 
-        future = self._sampler.submit(_do)
         try:
-            return future.result(timeout=SAMPLE_TIMEOUT_S)
-        except TimeoutError:
-            future.cancel()
-            return []
+            return _do()  # 同步执行（见模块 docstring：DBAPI 连接不可跨线程）
         except Exception:  # noqa: BLE001 查询失败降级纯命名
             return []
 
