@@ -57,8 +57,22 @@ def version() -> None:
 def scenario_validate(
     scenario_file: Path = typer.Argument(..., exists=True, readable=True, help="场景 YAML 文件"),
 ) -> None:
-    """校验场景文件（阶段 1 步骤 2 实现完整校验逻辑）。"""
-    _fail("scenario validate 将在阶段 1 步骤 2 实现（场景模型 + YAML 加载）")
+    """校验场景文件：结构 / 负载参数 / 断言规则，全部通过才退出码 0。"""
+    from scenario.loader import ScenarioError
+    from scenario.loader import validate_scenario as _validate
+
+    try:
+        s = _validate(scenario_file)
+    except ScenarioError as exc:
+        err_console.print(f"[red]场景校验失败[/red]（{len(exc.errors)} 项）：")
+        for err in exc.errors:
+            err_console.print(f"  - {err}")
+        raise typer.Exit(EXIT_INVOCATION_ERROR) from None
+
+    console.print(f"[green]✓ 场景校验通过[/green] {s.summary_line()}")
+    if s.labels:
+        console.print(f"  标签: {', '.join(s.labels)}")
+    raise typer.Exit(EXIT_OK)
 
 
 @stress_app.command("run")
