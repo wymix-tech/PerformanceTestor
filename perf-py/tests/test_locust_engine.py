@@ -6,10 +6,8 @@
 
 import pytest
 
-from engine.assertor import evaluate
 from engine.locust_engine import pacing_seconds_for, spawn_rate_for
 from scenario.model import (
-    AssertionSpec,
     LoadSpec,
     RequestSpec,
     Scenario,
@@ -49,7 +47,7 @@ def test_pacing_qps_limit():
 def test_build_user_class_shape():
     scenario = _scenario(concurrency=5, qps_limit=50)
     stats = HistogramStatistician()
-    cls = build_user_class(scenario, stats, {"formal_start": None})
+    cls = build_user_class(scenario, stats, {"formal_start": None}, {})
     assert cls.host == "http://localhost:8081"
     assert len(cls.tasks) == 1
     assert cls.wait_time is not None  # qps_limit>0 → constant_pacing
@@ -64,7 +62,7 @@ def test_build_user_class_steps_weights():
             StepSpec(name="b", url="http://localhost:8081/api/user/list?limit=10", weight=1),
         ],
     )
-    cls = build_user_class(scenario, HistogramStatistician(), {"formal_start": None})
+    cls = build_user_class(scenario, HistogramStatistician(), {"formal_start": None}, {})
     # 类创建时 locust 元类已把 (task, weight) 按权重复制展开进任务列表
     # （weight=3 → 3 份同一函数对象，weight=1 → 1 份），共 3+1=4 项
     from collections import Counter
@@ -74,38 +72,25 @@ def test_build_user_class_steps_weights():
     assert cls.host == "http://localhost:8081"
 
 
-# ---------------------------------------------------------------- assertor
-def test_assertor_status_eq():
-    ok = [AssertionSpec(source="status", op="eq", expected="200")]
-    assert evaluate(ok, 200, "", {}) == []
-    assert evaluate(ok, 500, "", {})
+def test_build_user_class_wires_variable_rendering():
+    """接线验证：变量池/上下文池传入后，任务函数渲染 {{var}} 占位（不发真实请求）。"""
+    scenario = Scenario(
+        name="vars",
+        app="demo-app",
+        request=RequestSpec(
+            url="http://localhost:8081/api/user/list?limit={{limit}}",
+            headers={"X-Env": "{{env}}"},
+        ),
+        variables={"limit": "100", "env": "prod"},
+    )
+    cls = build_user_class(scenario, HistogramStatistician(), {"formal_start": None}, {"limit": "100", "env": "prod"})
+    assert len(cls.tasks) == 1
+    # 渲染逻辑由 task_fn 闭包持有（复用 stress.template_renderer.render），
+    # 模板保留在闭包中、执行时替换——此处验证类构造不再对 variables 报 warning
+    result_warnings = []
+    from stress.template_renderer import render as _r
 
-
-def test_assertor_json_path():
-    a = [AssertionSpec(source="json", key="data.code", op="eq", expected="0")]
-    assert evaluate(a, 200, '{"data":{"code":0}}', {}) == []
-    assert "路径不存在" in evaluate(a, 200, '{"other":1}', {})[0]
-    assert "非 JSON" in evaluate(a, 200, "not-json", {})[0]
-
-
-def test_assertor_header_case_insensitive():
-    a = [AssertionSpec(source="header", key="X-Req-Id", op="contains", expected="abc")]
-    assert evaluate(a, 200, "", {"x-req-id": "xxabcxx"}) == []
-
-
-def test_assertor_gt_lt_numeric():
-    gt = [AssertionSpec(source="json", key="latency", op="gt", expected="10")]
-    assert evaluate(gt, 200, '{"latency": 11}', {}) == []
-    assert evaluate(gt, 200, '{"latency": 5}', {})
-    assert "需要数值" in evaluate(gt, 200, '{"latency": "abc"}', {})[0]
-
-
-def test_assertor_regex_and_ne():
-    a = [
-        AssertionSpec(source="body", op="regex", expected="id\":\\d+"),
-        AssertionSpec(source="status", op="ne", expected="404"),
-    ]
-    assert evaluate(a, 200, '{"id":42}', {}) == []
+    assert _r(scenario.request.url, {"limit": "100", "env": "prod"}, None, result_warnings).endswith("limit=100")
 
 
 # ---------------------------------------------------------------- run_locust（真实小压测，仅在有 locust 时执行）

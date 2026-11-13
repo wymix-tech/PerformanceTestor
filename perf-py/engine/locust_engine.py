@@ -13,9 +13,8 @@
 - 最终统计基于正式期累计直方图，qps = total/formalElapsedSec（≥1s）
 - QPS 上限：wait_time = constant_pacing(concurrency/qpsLimit)（全局整形近似）
 - ramp-up：spawn_rate = concurrency/rampUpSec（爬坡期与预热期解耦）
-
-阶段边界（Phase 3 再补）：
-- steps 场景暂不支持 {{var}} 渲染与 extract 变量提取（缺省记 warnings）
+- steps 场景支持 {{var}} 渲染 / extract 变量提取 / 步骤上下文引用（复用 stress/ 移植层，
+  语义对齐 TemplateRenderer + StepContextStore + ResponseVarExtractor）
 """
 
 from __future__ import annotations
@@ -24,10 +23,16 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from engine.assertor import evaluate
 from engine.result import Sample, StressTaskResult
 from engine.stats import HistogramStatistician, percentile, round2
 from scenario.model import Scenario
+from stress.response_assertor import matches as assert_matches
+from stress.response_var_extractor import create_pool, extract
+from stress.template_renderer import (
+    StepContextStore,
+    build_alias_index,
+    render,
+)
 
 
 def spawn_rate_for(scenario: Scenario) -> float:
@@ -54,32 +59,64 @@ def _host_of(url: str) -> str:
     return "/".join(parts[:3]) if len(parts) >= 3 and url.startswith("http") else url
 
 
-def build_user_class(scenario: Scenario, stats: HistogramStatistician, state: dict) -> type:
+def build_user_class(
+    scenario: Scenario,
+    stats: HistogramStatistician,
+    state: dict,
+    pool: dict[str, str],
+    ctx: StepContextStore | None = None,
+) -> type:
     """构造 Locust User 类（纯构造，不启动 runner——便于单测断言类属性）。
 
     state 约定：state["formal_start"]（epoch 秒，None=warmup 未结束）由 run() 填写；
     request listener 据此过滤 warmup 期样本。
+    pool/ctx：变量池与步骤上下文池（steps 场景传入 ctx；单接口模式可为 None）。
     """
     import gevent.monkey  # noqa: F401  # 确保调用方已 patch（缺失时下方 import 会警告）
     from locust import HttpUser, constant_pacing
 
-    assertor_requests: list[tuple[str, str, dict[str, str], str | None, str, list, int]] = []
+    # (url模板, method, headers模板, body模板, name, 断言, 权重, extract规则, 槽位下标)
+    plans: list[tuple[str, str, dict[str, str], str | None, str, list, int, list | None, int | None]] = []
     host = ""
 
     if scenario.request:
         req = scenario.request
         host = _host_of(req.url)
-        assertor_requests.append((req.url, req.method, req.headers, req.body, req.url, req.assertions, 1))
+        plans.append((req.url, req.method, req.headers, req.body, req.url, req.assertions, 1, None, None))
     else:
         first = scenario.steps[0]
         host = _host_of(first.url)
-        for step in scenario.steps:
-            assertor_requests.append(
-                (step.url, step.method, step.headers, step.body, step.name or step.url, step.assertions, step.weight)
+        for i, step in enumerate(scenario.steps):
+            plans.append(
+                (
+                    step.url,
+                    step.method,
+                    step.headers,
+                    step.body,
+                    step.name or step.url,
+                    step.assertions,
+                    step.weight,
+                    step.extract or None,
+                    i,
+                )
             )
 
-    def _make_task(url: str, method: str, headers: dict[str, str], body: str | None, name: str, assertions: list):
+    def _make_task(
+        url_t: str,
+        method: str,
+        headers_t: dict[str, str],
+        body_t: str | None,
+        name: str,
+        assertions: list,
+        extract_rules: list | None,
+        slot: int | None,
+    ):
         def task_fn(user) -> None:  # noqa: ANN001
+            # 双池渲染：上下文引用 → 扁平变量 → 保留原文（对齐 TemplateRenderer）
+            miss = [0]
+            url = render(url_t, pool, ctx, miss)
+            headers = {k: render(v, pool, ctx, miss) for k, v in headers_t.items()}
+            body = render(body_t, pool, ctx, miss) if body_t is not None else None
             with user.client.request(
                 method=method,
                 url=url,
@@ -88,14 +125,16 @@ def build_user_class(scenario: Scenario, stats: HistogramStatistician, state: di
                 name=name,
                 catch_response=True,
             ) as resp:
-                failures = evaluate(
-                    assertions,
-                    resp.status_code or 0,
-                    resp.text or "",
-                    dict(resp.headers or {}),
-                )
-                if failures:
-                    resp.failure("; ".join(failures))
+                status = resp.status_code or 0
+                text = resp.text or ""
+                resp_headers = {k: [v] for k, v in (resp.headers or {}).items()}
+                if not assert_matches(assertions, status, resp_headers, text):
+                    resp.failure(f"assertions failed on {name}")
+                # 变量提取 + 上下文入池（仅真正收到响应时；错误响应照常入池，对齐 Java 契约）
+                if extract_rules:
+                    extract(text, resp_headers, extract_rules, pool, 65536)
+                if ctx is not None and slot is not None:
+                    ctx.put(slot, resp_headers, text)
 
         task_fn.__name__ = f"task_{name}"
         return task_fn
@@ -105,7 +144,7 @@ def build_user_class(scenario: Scenario, stats: HistogramStatistician, state: di
     # 元组原样进入任务队列导致 'tuple' object is not callable。
     # 因此必须用 type() 把 tasks 放进 class_dict 动态建类。
     class_attrs: dict = {
-        "tasks": [(_make_task(*item[:6]), item[6]) for item in assertor_requests],
+        "tasks": [(_make_task(*item[:5], item[5], item[7], item[8]), item[6]) for item in plans],
         "host": host,
     }
     pacing = pacing_seconds_for(scenario)
@@ -135,13 +174,16 @@ def run_locust(
             return  # warmup 期不计入统计（对齐 Java）
         stats.record(kwargs.get("response_time") or 0, kwargs.get("exception") is not None)
 
+    # 变量池 + 步骤上下文池（steps 场景启用上下文引用；别名登记告警写入结果）
     warnings: list[str] = []
-    if scenario.steps and any(s.extract for s in scenario.steps):
-        warnings.append("locust 引擎暂不支持变量提取（extract），相关步骤按静态请求执行（Phase 3 移植）")
-    if scenario.variables:
-        warnings.append("locust 引擎暂不支持 {{var}} 渲染，变量占位将按原文字符串发送（Phase 3 移植）")
+    pool = create_pool(scenario.variables)
+    if scenario.steps:
+        alias_index = build_alias_index(scenario.steps, warnings)
+        ctx: StepContextStore | None = StepContextStore(len(scenario.steps), alias_index, 65536)
+    else:
+        ctx = None
 
-    user_class = build_user_class(scenario, stats, state)
+    user_class = build_user_class(scenario, stats, state, pool, ctx)
     env = Environment(user_classes=[user_class])
     env.events.request.add_listener(on_request)
     runner = LocalRunner(env)
