@@ -32,12 +32,13 @@ def test_tools_list():
     reg = build_registry()
     result, _ = handle_request(reg, "tools/list", {})
     names = [t["name"] for t in result["tools"]]
-    assert names == sorted(names) and len(names) == 6
+    assert names == sorted(names) and len(names) == 7
     for t in result["tools"]:
         assert t["inputSchema"]["type"] == "object"
         assert t["inputSchema"]["additionalProperties"] is False
     ro = {t["name"]: t.get("annotations") for t in result["tools"]}
     assert ro["datagen_run"] == {"readOnlyHint": False}
+    assert ro["stress_run"] == {"readOnlyHint": False}
     assert ro["capacity_analyze"] is None
 
 
@@ -76,7 +77,7 @@ def test_serve_full_session():
     ])
     assert len(responses) == 5, "通知不回包；坏行回 -32700 错误"
     assert responses[0]["result"]["serverInfo"]["name"] == "perf-py"
-    assert len(responses[1]["result"]["tools"]) == 6
+    assert len(responses[1]["result"]["tools"]) == 7
     assert responses[2]["result"]["isError"] is True
     assert responses[3]["error"]["code"] == -32601
     assert responses[4]["error"]["code"] == -32700

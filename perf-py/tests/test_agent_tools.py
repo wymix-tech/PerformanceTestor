@@ -15,10 +15,12 @@ from tools.registry import Tool, build_registry, call_tool, openai_tools_schema
 def test_registry_unique_and_complete():
     reg = build_registry()
     names = set(reg)
-    assert names == {"stress_result_read", "capacity_analyze", "slowlog_analyze",
-                     "source_scan", "datagen_dry_run", "datagen_run"}, "工具名唯一且齐备"
+    assert names == {"stress_result_read", "stress_run", "capacity_analyze",
+                     "slowlog_analyze", "source_scan", "datagen_dry_run",
+                     "datagen_run"}, "工具名唯一且齐备"
     assert reg["datagen_run"].read_only is False, "写库工具必须标非只读"
-    assert all(reg[n].read_only for n in names if n != "datagen_run")
+    assert reg["stress_run"].read_only is False, "发压工具必须标非只读"
+    assert all(reg[n].read_only for n in names if n not in ("datagen_run", "stress_run"))
 
 
 def test_call_tool_unknown_name():

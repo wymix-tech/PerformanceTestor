@@ -33,10 +33,12 @@ stress_app = typer.Typer(help="压测执行相关命令。", no_args_is_help=Tru
 scenario_app = typer.Typer(help="场景文件管理（校验/列举）。", no_args_is_help=True)
 datagen_app = typer.Typer(help="灌数引擎（perf-datagen Python 化）。", no_args_is_help=True)
 tools_app = typer.Typer(help="AI Agent 工具（阶段 4：Function Calling / MCP 双形态）。", no_args_is_help=True)
+agent_app = typer.Typer(help="AI Agent 编排（阶段 4：ReAct 单体 / 三角色流水线）。", no_args_is_help=True)
 app.add_typer(stress_app, name="stress")
 app.add_typer(scenario_app, name="scenario")
 app.add_typer(datagen_app, name="datagen")
 app.add_typer(tools_app, name="tools")
+app.add_typer(agent_app, name="agent")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -218,6 +220,73 @@ def mcp() -> None:
     from perf_cli.mcp_server import serve
 
     serve()
+    raise typer.Exit(EXIT_OK)
+
+
+@agent_app.command("run")
+def agent_run(
+    task: str = typer.Argument(..., help="任务描述（目标端点/场景文件/关注点）"),
+    role: str = typer.Option(
+        "pipeline", "--role", "-r",
+        help="角色：pipeline（压测→分析→修复建议三角色）/ stress / analysis / advisory",
+    ),
+    max_steps: int = typer.Option(10, "--max-steps", help="单 Agent 最大工具调用步数"),
+    model: str = typer.Option(None, "--model", help="模型名（缺省读 PERF_LLM_MODEL）"),
+    base_url: str = typer.Option(None, "--base-url", help="OpenAI 兼容网关（缺省读 PERF_LLM_BASE_URL）"),
+    api_key: str = typer.Option(None, "--api-key", help="API Key（缺省读 PERF_LLM_API_KEY）"),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径"),
+) -> None:
+    """运行 AI Agent：ReAct 循环或三角色流水线，报告与结论以 JSON 输出。
+
+    退出码：0 = 得出结论；1 = 截断/无结论（max-steps 或角色未产出）；
+    2 = 调用异常（LLM 配置缺失 / openai 未安装）。
+    """
+    import json
+
+    from agents.llm import OpenAiCompatClient, client_from_env
+    from agents.pipeline import run_pipeline
+    from agents.react import Agent
+    from agents.roles import ROLES
+    from tools.registry import build_registry
+
+    if model or base_url or api_key:
+        llm = OpenAiCompatClient(model=model or "", base_url=base_url or None,
+                                 api_key=api_key or None)
+    else:
+        llm = client_from_env()
+    if llm is None:
+        err_console.print("[red]LLM 未配置：[/red]设置 PERF_LLM_MODEL / PERF_LLM_BASE_URL / "
+                          "PERF_LLM_API_KEY 或使用 --model/--base-url/--api-key")
+        raise typer.Exit(EXIT_INVOCATION_ERROR) from None
+
+    registry = build_registry()
+    try:
+        if role == "pipeline":
+            result = run_pipeline(task, llm, registry, max_steps)
+        else:
+            role_def = next((r for r in ROLES if r.name == role), None)
+            if role_def is None:
+                err_console.print(f"[red]未知角色：[/red]{role}（可选 pipeline/"
+                                  f"{'/'.join(r.name for r in ROLES)}）")
+                raise typer.Exit(EXIT_INVOCATION_ERROR) from None
+            agent = Agent(name=role_def.name, system_prompt=role_def.prompt(), llm=llm,
+                          registry=registry, tool_names=list(role_def.tool_names),
+                          max_steps=max_steps)
+            result = agent.run(task).to_dict()
+    except RuntimeError as exc:
+        err_console.print(f"[red]Agent 执行失败：[/red]{exc}")
+        raise typer.Exit(EXIT_INVOCATION_ERROR) from None
+
+    text = json.dumps(result, ensure_ascii=False, indent=2)
+    if output:
+        output.write_text(text + "\n", encoding="utf-8")
+    else:
+        console.print(text)
+
+    final = result.get("finalAdvice") if role == "pipeline" else result.get("finalAnswer")
+    if not final:
+        err_console.print("[yellow]Agent 未得出结论（达到 max-steps 截断）[/yellow]")
+        raise typer.Exit(EXIT_GATE_FAILED) from None
     raise typer.Exit(EXIT_OK)
 
 

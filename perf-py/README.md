@@ -32,8 +32,9 @@ uv run ruff check .         # lint
 | `perf gate [--scenario x.yaml]` | 替代 `scripts/perf-gate.sh`，退出码 0/1/2 语义对齐 |
 | `perf scenario validate <file>` | 场景 YAML 校验 |
 | `perf datagen run <spec.json> [--dry-run] [--source-dir DIR]` | 灌数引擎直连执行（Dry-Run 优先/拓扑排序/批量写入），结果 camelCase JSON |
-| `perf tools list` / `perf tools call <name> -a '<json>'` | Agent 工具直接调用（6 个，见下） |
+| `perf tools list` / `perf tools call <name> -a '<json>'` | Agent 工具直接调用（7 个，见下） |
 | `perf mcp` | MCP server（stdio JSON-RPC 2.0），IDE / Agent 子进程接入 |
+| `perf agent run <task> [-r pipeline]` | ReAct Agent / 三角色流水线（压测→分析→修复建议） |
 | `perf-engine <scenario.yaml> -e locust [-o result.json]` | 本地引擎发压（不经平台），产出对齐 StressTaskResult 契约的工件 |
 | `perf version` | 版本号 |
 
@@ -45,6 +46,7 @@ via `tools.registry.openai_tools_schema` / MCP server via `perf mcp`）：
 | 工具 | 能力来源 | 用途 |
 |---|---|---|
 | `stress_result_read` | engine/result | 读压测工件：QPS/P95/P99/错误率 + 分档点 |
+| `stress_run` | engine/（perf-engine 子进程） | 发起本地压测（阻塞执行，非只读） |
 | `capacity_analyze` | capacity/ | 目标 P95 下最大并发/QPS、RT 拐点、R²、CI |
 | `slowlog_analyze` | slowlog/ | 慢日志 Top N + 聚合（扫描行数/耗时分布） |
 | `source_scan` | datagen 源码解析层 | ORM 关联 + SQL 字面量/枚举/范围谓词提示 |
@@ -53,8 +55,23 @@ via `tools.registry.openai_tools_schema` / MCP server via `perf mcp`）：
 
 约定：handler 入参 dict、出参 JSON 可序列化 dict；异常一律转为
 `{"error": ...}`，不向 Agent 抛栈。典型链路：`datagen_dry_run` 造数 →
-发压（平台 gate 或 perf-engine）→ `stress_result_read` 读指标 →
+`stress_run` 发压 → `stress_result_read` 读指标 →
 `capacity_analyze` + `slowlog_analyze` + `source_scan` 关联归因。
+
+## Agent 编排（阶段 4 · 步骤 2）
+
+`perf-py/agents/`：ReAct 循环单体（思考→工具→观察→结论，max_steps 防死循环）
++ 三角色流水线原型：
+
+```bash
+pip install -e 'perf-py[agents]'        # openai-python（懒加载）
+export PERF_LLM_MODEL=... PERF_LLM_BASE_URL=... PERF_LLM_API_KEY=...
+perf agent run "对 demo 场景压测并归因 P95 恶化根因" -r pipeline   # 压测→分析→修复建议
+perf agent run "分析 /tmp/result.json" -r analysis --max-steps 8  # 单角色
+```
+
+角色间只传结构化上下文（AgentReport.context_block），单角色截断不阻断下游
+（降级推理，`degraded` 标记）。全部测试由脚本化假 LLM 驱动，无网络依赖。
 
 ## 灌数引擎（阶段 3 步骤 5）
 
