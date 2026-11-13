@@ -306,6 +306,41 @@ class EndpointTableFact:
 
 
 @dataclass
+class EndpointRef:
+    """HTTP 接口定位：AST 解析 Controller 产出的方法级坐标。
+
+    className 是 simpleName（文件名去 .java），不是 FQCN；字段语义必须与宿主
+    正则实现的产出完全一致，否则按 (httpMethod, path) join 时会失配。
+    """
+
+    http_method: str | None = None
+    path: str | None = None
+    class_name: str | None = None
+    method_name: str | None = None
+    declaring_file: str | None = None
+    line: int = 0
+
+    def key(self) -> str:
+        """匹配键：与方法无关的精确匹配键（HTTP 方法 + 路径）。"""
+        return ((self.http_method or "").upper() + " " + (self.path or ""))
+
+    def path_key(self) -> str:
+        """兜底匹配键：忽略 HTTP 方法。"""
+        return self.path or ""
+
+    def member_key(self) -> str:
+        """兜底匹配键：文件 + 方法名。"""
+        return (self.declaring_file or "") + "#" + (self.method_name or "")
+
+    def class_member_key(self) -> str:
+        """兜底匹配键：类名（simpleName）+ 方法名。"""
+        return (self.class_name or "") + "#" + (self.method_name or "")
+
+    def __str__(self) -> str:
+        return f"{self.key()} ({self.member_key()}:{self.line})"
+
+
+@dataclass
 class DataGenSpec:
     """灌数规格：宿主 → 引擎的唯一入参模型。
 

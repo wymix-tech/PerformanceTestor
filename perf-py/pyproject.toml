@@ -20,11 +20,18 @@ perf-engine = "perf_cli.engine_entry:main"
 [project.optional-dependencies]
 # 本地引擎（阶段 2）：locust 带 gevent，仅 perf-engine 需要
 locust = ["locust>=2.29,<3"]
+datagen-parsers = [
+    "tree-sitter>=0.23,<0.26",
+    "tree-sitter-java>=0.23,<0.26",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8,<9",
     "ruff>=0.6",
+    # datagen 源码解析层（阶段 3 步骤 4d）测试需要
+    "tree-sitter>=0.23,<0.26",
+    "tree-sitter-java>=0.23,<0.26",
 ]
 
 [build-system]
