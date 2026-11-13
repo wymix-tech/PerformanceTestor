@@ -32,9 +32,11 @@ app = typer.Typer(
 stress_app = typer.Typer(help="压测执行相关命令。", no_args_is_help=True)
 scenario_app = typer.Typer(help="场景文件管理（校验/列举）。", no_args_is_help=True)
 datagen_app = typer.Typer(help="灌数引擎（perf-datagen Python 化）。", no_args_is_help=True)
+tools_app = typer.Typer(help="AI Agent 工具（阶段 4：Function Calling / MCP 双形态）。", no_args_is_help=True)
 app.add_typer(stress_app, name="stress")
 app.add_typer(scenario_app, name="scenario")
 app.add_typer(datagen_app, name="datagen")
+app.add_typer(tools_app, name="tools")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -169,6 +171,54 @@ def datagen_run(
         raise typer.Exit(EXIT_GATE_FAILED) from None
     console.print(f"[green]✓ 灌数{'试运行' if result.dry_run else '执行'}成功[/green] "
                   f"插入 {result.inserted_rows}/{result.total_rows} 行")
+
+
+@tools_app.command("list")
+def tools_list() -> None:
+    """列出全部 Agent 工具（名称 / 描述 / 只读标记）。"""
+    import json
+
+    from tools.registry import build_registry
+
+    registry = build_registry()
+    console.print(f"共 {len(registry)} 个工具：")
+    for name in sorted(registry):
+        t = registry[name]
+        ro = "只读" if t.read_only else "写入"
+        console.print(f"  {name}  [{ro}]  {t.description}")
+        console.print(f"    参数: {json.dumps(t.input_schema(), ensure_ascii=False)}")
+
+
+@tools_app.command("call")
+def tools_call(
+    name: str = typer.Argument(..., help="工具名（perf tools list 查看）"),
+    args_json: str = typer.Option("{}", "--args", "-a", help="工具参数 JSON"),
+) -> None:
+    """直接调用一个 Agent 工具（结果以 JSON 输出）。"""
+    import json
+
+    from tools.registry import build_registry, call_tool
+
+    try:
+        args = json.loads(args_json)
+    except json.JSONDecodeError as exc:
+        err_console.print(f"[red]--args JSON 解析失败：[/red]{exc}")
+        raise typer.Exit(EXIT_INVOCATION_ERROR) from None
+    result = call_tool(build_registry(), name, args)
+    console.print(json.dumps(result, ensure_ascii=False, indent=2))
+    raise typer.Exit(EXIT_GATE_FAILED if "error" in result else EXIT_OK)
+
+
+@app.command()
+def mcp() -> None:
+    """启动 MCP server（stdio 传输）：IDE / Agent 以子进程方式接入。
+
+    协议：newline-delimited JSON-RPC 2.0（initialize / tools/list / tools/call）。
+    """
+    from perf_cli.mcp_server import serve
+
+    serve()
+    raise typer.Exit(EXIT_OK)
 
 
 def run_cli() -> int:
