@@ -99,8 +99,13 @@ public class PartitionMaintainer {
      *
      * <p>{@code fixedDelay} 而非 {@code fixedRate}：单轮耗时随数据量变化，
      * 用「上一轮结束后再等 N 小时」保证不会任务堆积。
+     *
+     * <p>注意：{@code initialDelayString} 只接受毫秒数值（或 PT 前缀 ISO-8601），
+     * 不能写 "60s" 这种简单时长写法——写错不会在单测暴露，而是直接导致
+     * Spring 上下文启动失败（BeanCreationException: invalid initialDelayString）。
+     * 周期侧用 SpEL 把 interval-hours（小时）换算为毫秒，保持原有配置语义。
      */
-    @Scheduled(fixedDelayString = "${perf.retention.interval-hours:1}h", initialDelayString = "60s")
+    @Scheduled(fixedDelayString = "#{${perf.retention.interval-hours:1} * 3600000}", initialDelayString = "60000")
     public void scheduled() {
         if (!properties.isEnabled()) {
             return;
