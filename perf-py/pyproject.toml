@@ -31,6 +31,8 @@ datagen-drivers = [
 ]
 # Agent 编排（阶段 4 步骤 2）：OpenAI 兼容 API 客户端，仅真实 LLM 调用需要
 agents = ["openai>=1.40,<2"]
+# datagen 写路径（阶段 5 步骤 7）：db_conn 凭据 AES-GCM 解密（对齐 Java CryptoService）
+security = ["cryptography>=42"]
 # server 骨架（阶段 4 步骤 3）：FastAPI + uvicorn（SSE 用标准 StreamingResponse，无 sse-starlette 依赖）
 # 阶段 5 步骤 2 起 stress 域数据层走 SQLAlchemy（测试默认 sqlite，生产指 MySQL）
 # 阶段 5 步骤 5 auth 域：pyjwt 签发/校验 HS256（与 Java jjwt 跨侧互验）
@@ -43,6 +45,7 @@ server = [
 
 [dependency-groups]
 dev = [
+    "cryptography>=50.0.2",
     "pytest>=8,<9",
     "ruff>=0.6",
     # datagen 源码解析层（阶段 3 步骤 4d）测试需要

@@ -1,10 +1,13 @@
-"""datagen 域数据层（阶段 5 · 步骤 4）：SQLAlchemy 对接 data_gen_task / semantic_hint / data_gen_plan。
+"""datagen 域数据层（阶段 5 · 步骤 4 读路径；步骤 7 写路径）：SQLAlchemy 对接 data_gen_task / semantic_hint / data_gen_plan。
 
-替换 Java MyBatis 的 DataGenTaskMapper / SemanticHintMapper / DataGenPlanMapper（读路径）：
+替换 Java MyBatis 的 DataGenTaskMapper / SemanticHintMapper / DataGenPlanMapper：
 - tasks         → create_time DESC，limit 1..200 截断（DataGenService.list）
 - suggestions   → repoId/tableName/hintType/status 可选过滤，confidence DESC, id DESC，
                   固定 limit 100（DataGenService.suggestions）
 - plans         → repoId/status 可选过滤，create_time DESC, id DESC（DataGenPlanMapper.query）
+- 写路径：insert（total_rows=COALESCE(totalRows,rowCount)、status='pending'、inserted=0）、
+  updateStatus/updateProgress/updateDetail/updateFinished、hint upsert
+  （uk_hint 唯一键 ON DUPLICATE KEY UPDATE 语义）、hint updateStatus
 序列化对齐 Java 实体 Jackson 形态（camelCase；null 字段透传 null）。
 """
 
@@ -15,6 +18,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, Double, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from server.collector_repo import AppInstanceModel
 from server.db import Base, BigIntPk
 
 
@@ -132,10 +136,141 @@ class DataGenPlanModel(Base):
 
 
 class DatagenRepository:
-    """datagen 读路径查询集合（语义对齐 Mapper XML；写路径暂由 Java 承担）。"""
+    """datagen 读写集合（查询与写入语义逐条对齐 Mapper XML）。"""
 
     def __init__(self, session_factory: sessionmaker):
         self._sessions = session_factory
+
+    # ------------------------------------------------------------ 写路径
+
+    def insert_task(self, *, task_name: str, db_url: str, table_name: str,
+                    row_count: int, total_rows: int, tables_json: str | None,
+                    rule_json: str | None) -> int:
+        """对齐 DataGenTaskMapper.insert：status='pending'、inserted=0、
+        total_rows=COALESCE(totalRows, rowCount)。create_time 依赖 DB 默认值
+        （wire 返回 null，与 Java 插入后实体未回填一致）。"""
+        row = DataGenTaskModel(
+            task_name=task_name, db_url=db_url or "", table_name=table_name or "",
+            row_count=row_count, total_rows=total_rows if total_rows is not None else row_count,
+            tables_json=tables_json, rule_json=rule_json,
+            status="pending", inserted=0, create_time=datetime.now(),
+        )
+        with self._sessions() as s:
+            s.add(row)
+            s.commit()
+            return row.id
+
+    def update_task_status(self, task_id: int, status: str) -> None:
+        with self._sessions() as s:
+            row = s.get(DataGenTaskModel, task_id)
+            if row is not None:
+                row.status = status
+                s.commit()
+
+    def update_progress(self, task_id: int, inserted: int) -> None:
+        with self._sessions() as s:
+            row = s.get(DataGenTaskModel, task_id)
+            if row is not None:
+                row.inserted = inserted
+                s.commit()
+
+    def update_detail(self, task_id: int, detail_json: str, total_rows: int) -> None:
+        with self._sessions() as s:
+            row = s.get(DataGenTaskModel, task_id)
+            if row is not None:
+                row.detail_json = detail_json
+                row.total_rows = total_rows
+                s.commit()
+
+    def update_task_finished(self, task_id: int, status: str, inserted: int,
+                             cost_ms: int, error_msg: str | None) -> None:
+        with self._sessions() as s:
+            row = s.get(DataGenTaskModel, task_id)
+            if row is not None:
+                row.status = status
+                row.inserted = inserted
+                row.cost_ms = cost_ms
+                row.error_msg = error_msg
+                s.commit()
+
+    def hint_upsert(self, *, repo_id: int | None, hint_type: str, table_name: str,
+                    column_name: str | None, values_json: str | None,
+                    parent_table: str, parent_column: str, source_refs: str | None,
+                    source: str, confidence: float | None,
+                    status: str = "pending") -> None:
+        """对齐 SemanticHintMapper.upsert：uk_hint(repo_id,hint_type,table_name,
+        column_name,parent_table) 命中时更新 values_json/parent_column/source_refs/
+        source/confidence（ON DUPLICATE KEY UPDATE 语义；status 保留原值）。"""
+        with self._sessions() as s:
+            existing = s.scalars(select(SemanticHintModel)
+                                 .where(SemanticHintModel.repo_id == repo_id)
+                                 .where(SemanticHintModel.hint_type == hint_type)
+                                 .where(SemanticHintModel.table_name == table_name)
+                                 .where(SemanticHintModel.column_name == column_name)
+                                 .where(SemanticHintModel.parent_table == parent_table)
+                                 .limit(1)).first()
+            if existing is not None:
+                existing.values_json = values_json
+                existing.parent_column = parent_column
+                existing.source_refs = source_refs
+                existing.source = source
+                existing.confidence = confidence
+            else:
+                s.add(SemanticHintModel(
+                    repo_id=repo_id, hint_type=hint_type, table_name=table_name,
+                    column_name=column_name, values_json=values_json,
+                    parent_table=parent_table, parent_column=parent_column,
+                    source_refs=source_refs, source=source,
+                    confidence=confidence, status=status,
+                    create_time=datetime.now()))
+            s.commit()
+
+    def hint_by_id(self, hint_id: int) -> SemanticHintModel | None:
+        with self._sessions() as s:
+            return s.get(SemanticHintModel, hint_id)
+
+    def hint_update_status(self, hint_id: int, status: str) -> None:
+        with self._sessions() as s:
+            row = s.get(SemanticHintModel, hint_id)
+            if row is not None:
+                row.status = status
+                s.commit()
+
+    # ------------------------------------------------------------ 跨域读取
+
+    def find_repo(self, repo_id: int):
+        """source_repo 单查（SourceFileProvider.loadFiles / selfCheck 用）。"""
+        from server.collector_repo import SourceRepoModel
+
+        with self._sessions() as s:
+            return s.get(SourceRepoModel, repo_id)
+
+    def list_indexed_files(self, repo_id: int, limit: int = 200) -> list:
+        """source_file 索引（relative_path 升序；SourceFileMapper.listByRepo 语义）。"""
+        from server.collector_repo import SourceFileModel
+
+        stmt = (select(SourceFileModel)
+                .where(SourceFileModel.repo_id == repo_id)
+                .order_by(SourceFileModel.relative_path.asc())
+                .limit(max(1, min(limit, 5000))))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
+    def find_app_instance(self, app_name: str | None):
+        """app_instance 单查（selfCheck 用；AppInstanceMapper.findByAppName）。"""
+        if not app_name:
+            return None
+        with self._sessions() as s:
+            return s.scalars(select(AppInstanceModel)
+                             .where(AppInstanceModel.app_name == app_name)
+                             .limit(1)).first()
+
+    def find_db_conn(self, conn_id: int):
+        """db_conn 单查（connId → 连接三元组；DbConnMapper.findById）。"""
+        from server.collector_repo import DbConnModel
+
+        with self._sessions() as s:
+            return s.get(DbConnModel, conn_id)
 
     def tasks(self, limit: int) -> list[DataGenTaskModel]:
         stmt = (select(DataGenTaskModel)

@@ -30,6 +30,7 @@ from server.collector_api import router as collector_router
 from server.collector_repo import CollectorRepository
 from server.datagen_api import router as datagen_router
 from server.datagen_repo import DatagenRepository
+from server.datagen_service import DatagenWriteService
 from server.db import database_url, make_session_factory
 from server.errors import handle_exception, handle_validation
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
@@ -109,6 +110,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         else CollectorRepository(session_factory)
     app.state.datagen_repo = datagen_repo if datagen_repo is not None \
         else DatagenRepository(session_factory)
+    app.state.datagen_service = DatagenWriteService(app.state.datagen_repo)
     app.state.source_repo = source_repo if source_repo is not None \
         else SourceRepository(session_factory)
     app.state.auth_props = auth if auth is not None \
