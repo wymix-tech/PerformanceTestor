@@ -9,8 +9,8 @@
 - listTables/listColumns：方言直连 + 枚举发现（内联 ENUM/注释）→ ColumnInfo；
 - adopt：建议采纳/忽略（adopted/dismissed）。
 
-有意差异（后续步骤收口）：
-- 环依赖自动降级（PlanIntegrityChecker.breakWeakestCycleEdge）随步骤 8 plans 全链移植；
+有意差异（步骤 8 已收口）：
+- 环依赖自动降级（PlanIntegrityChecker.breakWeakestCycleEdge）已接入 _run_engine；
 - selfCheck 的端点扫描复用 endpoint_index_parser（Controller AST），无扫描产物时跳过。
 """
 
@@ -245,7 +245,7 @@ class DatagenWriteService:
             self._repo.update_task_finished(task_id, "failed", 0, cost_ms, str(exc))
 
     def _run_engine(self, request: dict, task_id: int) -> dict:
-        """对齐 runEngine：spec 装配 → listener → 环依赖降级（步骤 8）→ detailJson。"""
+        """对齐 runEngine：spec 装配 → listener → 环依赖降级重试 → detailJson。"""
         from perf_cli.datagen_runner import spec_from_request
 
         engine = self._engine or self._build_engine()
@@ -273,12 +273,31 @@ class DatagenWriteService:
         try:
             result = engine.execute(spec, _Listener(on_progress, on_hints, on_warn))
         except ValueError as exc:
-            # 环依赖自动降级依赖 PlanIntegrityChecker（步骤 8 移植）；
-            # 此处先保持「任务失败 + 错误信息定位环中表名」的行为
-            if "循环依赖" not in str(exc):
+            # 环依赖降级（对齐 executeWithCycleFallback）：剔除环中置信度最低的一条
+            # ref 边后重试一次；重试复用同一 listener 与 dryRun。置信度必须来自
+            # 规则 JSON——传空表会让「最低置信度」退化为「环中第一条边」。
+            msg = str(exc)
+            if "循环依赖" not in msg:
                 raise
-            warnings.append(f"检测到循环依赖且无法自动降级: {exc}")
-            raise
+            from datagen.plan_pipeline import (
+                PlanTable,
+                break_weakest_cycle_edge,
+                edge_confidence,
+            )
+
+            tables = [PlanTable(table=t["tableName"], row_count=t["rowCount"],
+                                fields=t.get("fields"), access=None)
+                      for t in (request.get("tables") or [])]
+            broke = break_weakest_cycle_edge(tables, msg, edge_confidence(tables))
+            if not broke:
+                warnings.append("检测到循环依赖且无法自动降级: " + msg)
+                raise
+            warnings.append("检测到循环依赖，已剔除一条最低置信度的关联边后重试；"
+                            "被剔除列的外键值将为随机值")
+            request["tables"] = [{"tableName": t.table, "rowCount": t.row_count,
+                                  "fields": t.fields} for t in tables]
+            spec = spec_from_request(request, source_files or None)
+            result = engine.execute(spec, _Listener(on_progress, on_hints, on_warn))
 
         if not source_files and repo_id:
             warnings.append("源码不可读，魔法值仅基于数据库元数据（ENUM/CHECK/列注释），精准度下降")

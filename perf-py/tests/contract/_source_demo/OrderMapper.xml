@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<mapper namespace="OrderMapper">
+<select id="listOrders" resultType="com.demo.Order">SELECT o.*, u.name FROM perf_order o JOIN perf_user u ON o.user_id = u.id WHERE o.status = 'PAID' LIMIT 20</select>
+<select id="getOrder" resultType="com.demo.Order">SELECT * FROM perf_order WHERE id = #{id} LIMIT 1</select>
+<insert id="insertOrder">INSERT INTO perf_order(user_id, order_no) VALUES(#{userId}, #{orderNo})</insert>
+</mapper>

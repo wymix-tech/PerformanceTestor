@@ -193,6 +193,15 @@ class StressRepository:
         with self._sessions() as s:
             return s.get(StressTaskModel, task_id)
 
+    def query_by_task(self, task_id: int, limit: int) -> list[StressSampleModel]:
+        """对齐 StressSampleMapper.queryByTask：采样点时间升序（RT 基线取数）。"""
+        stmt = (select(StressSampleModel)
+                .where(StressSampleModel.task_id == task_id)
+                .order_by(StressSampleModel.sample_time.asc())
+                .limit(max(1, min(limit, 2000))))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
     def query_by_scene(self, app_name: str, target_url: str, status: str,
                        limit: int) -> list[StressTaskModel]:
         stmt = select(StressTaskModel).order_by(StressTaskModel.create_time.desc()).limit(limit)

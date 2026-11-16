@@ -247,7 +247,7 @@ class DatagenRepository:
 
     def list_indexed_files(self, repo_id: int, limit: int = 200) -> list:
         """source_file 索引（relative_path 升序；SourceFileMapper.listByRepo 语义）。"""
-        from server.collector_repo import SourceFileModel
+        from server.source_repo import SourceFileModel
 
         stmt = (select(SourceFileModel)
                 .where(SourceFileModel.repo_id == repo_id)
@@ -315,5 +315,73 @@ class DatagenRepository:
             return list(s.scalars(stmt))
 
     def plan_by_id(self, plan_id: int) -> DataGenPlanModel | None:
+        """对齐 findById。"""
         with self._sessions() as s:
             return s.get(DataGenPlanModel, plan_id)
+
+    # -------------------------------------------------------- plan 写路径
+
+    def insert_plan(self, *, repo_id: int | None, plan_name: str,
+                    endpoint_json: str | None, stress_json: str | None,
+                    conn_id: int | None, db_url: str | None) -> int:
+        """对齐 DataGenPlanMapper.insert：status COALESCE 默认 pending；返回自增 ID。
+
+        create/update_time 依赖 DB 默认值（wire 返回 null，与 Java 插入后实体未回填一致）。
+        """
+        now = datetime.now()
+        row = DataGenPlanModel(
+            repo_id=repo_id, plan_name=plan_name, endpoint_json=endpoint_json,
+            stress_json=stress_json, conn_id=conn_id, db_url=db_url,
+            tables_json=None, warnings_json=None, status="pending",
+            task_id=None, create_time=now, update_time=now)
+        with self._sessions() as s:
+            s.add(row)
+            s.commit()
+            return row.id
+
+    def update_plan_status(self, plan_id: int, status: str) -> None:
+        with self._sessions() as s:
+            row = s.get(DataGenPlanModel, plan_id)
+            if row is not None:
+                row.status = status
+                s.commit()
+
+    def update_task_id(self, plan_id: int, task_id: int) -> None:
+        """对齐 updateTaskId：固定置 status='executed'（dryRun 不回写，防状态失真）。"""
+        with self._sessions() as s:
+            row = s.get(DataGenPlanModel, plan_id)
+            if row is not None:
+                row.task_id = task_id
+                row.status = "executed"
+                s.commit()
+
+    def update_warnings(self, plan_id: int, warnings_json: str) -> None:
+        """对齐 updateWarnings：只更告警防覆盖并发状态变更。"""
+        with self._sessions() as s:
+            row = s.get(DataGenPlanModel, plan_id)
+            if row is not None:
+                row.warnings_json = warnings_json
+                s.commit()
+
+    def update_analysis(self, plan_id: int, tables_json: str | None,
+                        warnings_json: str | None) -> None:
+        """对齐 updateAnalysis：只回写 tables/warnings（分析期间用户可采纳/放弃）。"""
+        with self._sessions() as s:
+            row = s.get(DataGenPlanModel, plan_id)
+            if row is not None:
+                row.tables_json = tables_json
+                row.warnings_json = warnings_json
+                s.commit()
+
+    def update_plan(self, plan: DataGenPlanModel) -> None:
+        """对齐 update（全字段，applyPlanConnection 回填连接用）。"""
+        with self._sessions() as s:
+            s.merge(plan)
+            s.commit()
+
+    def delete_plan(self, plan_id: int) -> None:
+        with self._sessions() as s:
+            row = s.get(DataGenPlanModel, plan_id)
+            if row is not None:
+                s.delete(row)
+                s.commit()

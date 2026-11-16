@@ -29,6 +29,7 @@ from server.auth_service import AUTH_FAIL_BODY, AuthProperties, JwtService
 from server.collector_api import router as collector_router
 from server.collector_repo import CollectorRepository
 from server.datagen_api import router as datagen_router
+from server.datagen_plan_service import DatagenPlanService
 from server.datagen_repo import DatagenRepository
 from server.datagen_service import DatagenWriteService
 from server.db import database_url, make_session_factory
@@ -111,6 +112,10 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.datagen_repo = datagen_repo if datagen_repo is not None \
         else DatagenRepository(session_factory)
     app.state.datagen_service = DatagenWriteService(app.state.datagen_repo)
+    app.state.datagen_plan_service = DatagenPlanService(
+        app.state.datagen_repo, app.state.stress_repo,
+        task_service=app.state.datagen_service,
+        inline_analyze=":memory:" in resolved_db_url)
     app.state.source_repo = source_repo if source_repo is not None \
         else SourceRepository(session_factory)
     app.state.auth_props = auth if auth is not None \
