@@ -33,10 +33,12 @@ datagen-drivers = [
 agents = ["openai>=1.40,<2"]
 # server 骨架（阶段 4 步骤 3）：FastAPI + uvicorn（SSE 用标准 StreamingResponse，无 sse-starlette 依赖）
 # 阶段 5 步骤 2 起 stress 域数据层走 SQLAlchemy（测试默认 sqlite，生产指 MySQL）
+# 阶段 5 步骤 5 auth 域：pyjwt 签发/校验 HS256（与 Java jjwt 跨侧互验）
 server = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.30,<1",
     "sqlalchemy>=2.0,<3",
+    "pyjwt>=2.8,<3",
 ]
 
 [dependency-groups]

@@ -74,7 +74,7 @@ def client() -> TestClient:
     Base.metadata.create_all(factory.kw["bind"])
     _seed(factory)
     app = create_app(stress_repo=StressRepository(factory),
-                     datagen_repo=DatagenRepository(factory))
+                     datagen_repo=DatagenRepository(factory), auth_enabled=False)
     return TestClient(app)
 
 
@@ -83,7 +83,7 @@ def test_tasks_empty_matches_golden(client):
     factory = sessionmaker(bind=make_engine("sqlite:///:memory:"))
     Base.metadata.create_all(factory.kw["bind"])
     empty_app = create_app(stress_repo=StressRepository(factory),
-                           datagen_repo=DatagenRepository(factory))
+                           datagen_repo=DatagenRepository(factory), auth_enabled=False)
     resp = TestClient(empty_app).get("/api/datagen/tasks", params={"limit": 5})
     assert_matches_golden(resp.json(), load_golden("datagen_tasks"), resp.status_code)
 

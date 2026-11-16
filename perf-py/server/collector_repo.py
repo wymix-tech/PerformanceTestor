@@ -47,7 +47,7 @@ class AppInstanceModel(Base):
 
 
 class SourceRepoModel(Base):
-    """source_repo：源码仓库（collector 域仅用作项目准入：repo_name 是否存在）。"""
+    """source_repo：源码仓库（项目准入 + source 域仓库列表共用）。"""
 
     __tablename__ = "source_repo"
 
@@ -55,10 +55,33 @@ class SourceRepoModel(Base):
     repo_name: Mapped[str] = mapped_column(String(128), nullable=False)
     repo_type: Mapped[str] = mapped_column(String(16), nullable=False, default="zip")
     source_path: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    branch: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     app_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    git_user: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    git_token: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="importing")
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
     create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False,
                                                   default=datetime.now)
+
+    def to_camel(self) -> dict:
+        """对齐 Java SourceRepo 实体 Jackson 形态；gitToken 为 @JsonIgnore 永不返回。"""
+        return {
+            "id": self.id,
+            "repoName": self.repo_name,
+            "repoType": self.repo_type,
+            "sourcePath": self.source_path,
+            "branch": self.branch,
+            "appName": self.app_name,
+            "gitUser": self.git_user,
+            "status": self.status,
+            "fileCount": self.file_count,
+            "totalSize": self.total_size,
+            "errorMsg": self.error_msg,
+            "createTime": self.create_time.isoformat(timespec="seconds"),
+        }
 
 
 class JvmMetricModel(Base):

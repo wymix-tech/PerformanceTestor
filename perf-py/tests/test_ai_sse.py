@@ -47,7 +47,8 @@ def _tool(name, args, i="1") -> ChatResult:
 
 
 def _client(llm, knowledge: KnowledgeService | None = None) -> TestClient:
-    app = create_app(llm=llm, knowledge=knowledge or KnowledgeService(SqliteKnowledgeStore()))
+    app = create_app(llm=llm, knowledge=knowledge or KnowledgeService(SqliteKnowledgeStore()),
+                     auth_enabled=False)
     return TestClient(app)
 
 
@@ -141,7 +142,7 @@ def test_chat_llm_without_tools_registry_empty():
 def test_chat_without_llm_falls_back_to_rule_mode():
     """LLM 未配置 → mode="rule" 规则兜底（对齐 Java，不 500），且不入知识库。"""
     knowledge = KnowledgeService(SqliteKnowledgeStore())
-    app = create_app(llm=None, knowledge=knowledge)
+    app = create_app(llm=None, knowledge=knowledge, auth_enabled=False)
     client = TestClient(app)
     data = client.post("/api/ai/chat", json={"message": "分析瓶颈"}).json()["data"]
     assert data["mode"] == "rule"

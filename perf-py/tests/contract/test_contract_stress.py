@@ -91,7 +91,7 @@ def client() -> TestClient:
     factory = sessionmaker(bind=make_engine("sqlite:///:memory:"), expire_on_commit=False)
     Base.metadata.create_all(factory.kw["bind"])
     _seed(factory)
-    app = create_app(stress_repo=StressRepository(factory))
+    app = create_app(stress_repo=StressRepository(factory), auth_enabled=False)
     return TestClient(app)
 
 

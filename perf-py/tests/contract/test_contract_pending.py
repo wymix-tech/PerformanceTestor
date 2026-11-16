@@ -1,28 +1,21 @@
-"""待迁移域的契约占位：golden 已捕获入库，域实现落地后逐个启用（阶段 5 步骤 2+）。
+"""golden 清单完整性检查（阶段 5 · 步骤 5）。
 
-按 Issue #23 域顺序：stress → collector → datagen → source/ai → 其余。
-每域迁移前先跑通对应 golden 的契约测试，再切流量（绞杀者模式纪律）。
+捕获清单中的全部 golden 均已由各域契约测试对照使用（占位已清零）：
+stress → test_contract_stress.py；datagen → test_contract_datagen.py；
+ai → test_contract_ai.py；auth → test_contract_auth.py。
 """
 
 import pytest
 
 from tests.contract._utils import load_golden
 
-PENDING = {
-    "auth_me": "auth 域（pyjwt）",
-}
+GOLDEN_NAMES = ["auth_me", "stress_tasks", "stress_task_detail", "stress_trend",
+                "datagen_tasks", "ai_tools", "ai_knowledge"]
 
 
-@pytest.mark.parametrize("name", sorted(PENDING))
-def test_pending_domain_contract(name):
-    pytest.skip(f"{PENDING[name]}尚未迁移；golden 已入库（{name}.json），"
-                "域实现落地后替换本占位为真实结构断言")
-
-
-def test_golden_files_complete():
+@pytest.mark.parametrize("name", GOLDEN_NAMES)
+def test_golden_files_complete(name):
     """golden 清单完整性：捕获脚本端点与入库文件一一对应。"""
-    for name in ["auth_me", "stress_tasks", "stress_task_detail", "stress_trend",
-                 "datagen_tasks", "ai_tools", "ai_knowledge"]:
-        golden = load_golden(name)
-        assert golden["status"] == 200, f"{name} 捕获时非 200，需在 Java 侧有数据环境重捕"
-        assert "raw" in golden and "normalized" in golden
+    golden = load_golden(name)
+    assert golden["status"] == 200, f"{name} 捕获时非 200，需在 Java 侧有数据环境重捕"
+    assert "raw" in golden and "normalized" in golden

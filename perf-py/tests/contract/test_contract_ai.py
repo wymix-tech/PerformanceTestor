@@ -14,7 +14,8 @@ from tests.contract._utils import assert_matches_golden, load_golden
 
 @pytest.fixture()
 def client() -> TestClient:
-    app = create_app(llm=None, knowledge=KnowledgeService(SqliteKnowledgeStore()))
+    app = create_app(llm=None, knowledge=KnowledgeService(SqliteKnowledgeStore()),
+                     auth_enabled=False)  # AI 域专项测试：鉴权在 auth 契约测试覆盖
     return TestClient(app)
 
 
