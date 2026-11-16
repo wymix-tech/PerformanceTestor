@@ -71,6 +71,14 @@ class KnowledgeStore(ABC):
     def delete(self, item_id: int) -> bool:
         """删除单条，返回是否存在。"""
 
+    def delete_by_app(self, app_name: str) -> int:  # noqa: D401 清理钩子（阶段 5 步骤 9）
+        """删除指定应用的结论（默认实现无存储，返回 0；供 cleanup-data 级联调用）。"""
+        return 0
+
+    def delete_global(self) -> int:
+        """删除全局结论（app_name=''，高风险操作，仅在二次确认后调用）。"""
+        return 0
+
 
 class SqliteKnowledgeStore(KnowledgeStore):
     """SQLite 起步实现（单文件、零部署依赖）。
@@ -162,6 +170,20 @@ class SqliteKnowledgeStore(KnowledgeStore):
         cur.execute("DELETE FROM ai_knowledge WHERE id = ?", (item_id,))
         self.conn.commit()
         return cur.rowcount > 0
+
+    def delete_by_app(self, app_name: str) -> int:
+        """对齐 DataCleanupMapper.deleteAiKnowledgeByApp（app_name<>'' 条件随语义保留）。"""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM ai_knowledge WHERE app_name = ? AND app_name <> ''", (app_name,))
+        self.conn.commit()
+        return cur.rowcount
+
+    def delete_global(self) -> int:
+        """对齐 deleteGlobalAiKnowledge：仅 includeGlobalKnowledge=true 且二次确认后调用。"""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM ai_knowledge WHERE app_name = ''")
+        self.conn.commit()
+        return cur.rowcount
 
     @staticmethod
     def _row_to_item(row, score: float) -> KnowledgeItem:

@@ -41,6 +41,8 @@ server = [
     "uvicorn>=0.30,<1",
     "sqlalchemy>=2.0,<3",
     "pyjwt>=2.8,<3",
+    # 阶段 5 步骤 9 source 写路径：zip 上传导入的 multipart 解析
+    "python-multipart>=0.0.9,<1",
 ]
 
 [dependency-groups]

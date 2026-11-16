@@ -36,7 +36,9 @@ from server.db import database_url, make_session_factory
 from server.errors import handle_exception, handle_validation
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
 from server.source_api import router as source_router
+from server.source_index import SourceFileIndexer
 from server.source_repo import SourceRepository
+from server.source_write_service import DataCleanupService, SourceWriteService
 from server.stress_api import router as stress_router
 from server.stress_repo import StressRepository
 from server.stress_service import InlineRunner, StressTaskService
@@ -67,6 +69,8 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                collector_repo: CollectorRepository | None = None,
                datagen_repo: DatagenRepository | None = None,
                source_repo: SourceRepository | None = None,
+               source_storage_dir: str | None = None,
+               data_cleanup: DataCleanupService | None = None,
                db_url: str | None = None,
                auth: AuthProperties | None = None,
                auth_enabled: bool | None = None,
@@ -118,6 +122,13 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         inline_analyze=":memory:" in resolved_db_url)
     app.state.source_repo = source_repo if source_repo is not None \
         else SourceRepository(session_factory)
+    app.state.source_file_indexer = SourceFileIndexer(app.state.source_repo)
+    app.state.source_write_service = SourceWriteService(
+        app.state.source_repo, app.state.source_file_indexer,
+        storage_dir=source_storage_dir, collector_repo=app.state.collector_repo,
+        inline_import=":memory:" in resolved_db_url)
+    app.state.data_cleanup_service = data_cleanup if data_cleanup is not None \
+        else DataCleanupService(session_factory, app.state.knowledge.store)
     app.state.auth_props = auth if auth is not None \
         else AuthProperties(enabled=auth_enabled)
     app.state.jwt_service = JwtService(app.state.auth_props)

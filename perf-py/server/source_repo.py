@@ -1,4 +1,5 @@
-"""source 域数据层（阶段 5 · 步骤 5）：SQLAlchemy 对接 source_file / performance_issue / fix_suggestion。
+"""source 域数据层（阶段 5 · 步骤 5 读路径；步骤 9 写路径）：SQLAlchemy 对接 source_repo /
+source_file / performance_issue / fix_suggestion。
 
 读查询语义对齐 Mapper XML：
 - repos          → create_time DESC，limit 1..100 截断（SourceManager.listRepos）
@@ -6,6 +7,13 @@
 - issues         → appName/issueType/status 过滤，create_time DESC，limit 1..200
 - recent_slow_sqls → 近 7 天 + app 过滤，cost_ms DESC，limit 1..50（SourceIssueService）
 - suggestions    → 按 issue_id 升序（findByIssue）
+
+写方法语义对齐 SourceRepoMapper / SourceFileMapper：
+- insert_repo      → status 固定 'importing'，file_count/total_size 置 0
+- update_indexed   → status='ready' + file_count + total_size（导入/resync 收尾）
+- update_status    → status + error_msg（导入失败/重同步失败）
+- update_app_name / update_branch → 绑定应用（空串=解绑）/ 切换分支
+- file 路径      → findByRepoAndPath 幂等去重、500 条一批 batchInsert、deleteByRepo 全量重建
 
 source_repo 表模型在 collector_repo（项目准入共用），此处扩展其列集。
 """
@@ -15,10 +23,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from sqlalchemy import BigInteger, DateTime, Integer, String, Text, select
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
 from server.collector_repo import SlowSqlModel, SourceRepoModel
 from server.db import Base, BigIntPk
+
+FILE_INSERT_CHUNK = 500
 
 
 class SourceFileModel(Base):
@@ -124,10 +135,92 @@ class FixSuggestionModel(Base):
 
 
 class SourceRepository:
-    """source 域读路径查询集合（写路径与磁盘操作暂由 Java 承担）。"""
+    """source 域读写集合（写路径步骤 9 收编，语义对齐 Java Mapper XML）。"""
 
     def __init__(self, session_factory: sessionmaker):
         self._sessions = session_factory
+
+    # ------------------------------------------------------------ 写路径
+
+    def insert_repo(self, repo: SourceRepoModel) -> int:
+        """对齐 SourceRepoMapper.insert：status 固定 'importing'，计数置 0；返回生成主键。"""
+        repo.status = "importing"
+        repo.file_count = 0
+        repo.total_size = 0
+        with self._sessions() as s:
+            s.add(repo)
+            s.commit()
+            s.refresh(repo)
+            return repo.id
+
+    def update_app_name(self, repo_id: int, app_name: str) -> None:
+        with self._sessions() as s:
+            repo = s.get(SourceRepoModel, repo_id)
+            if repo is not None:
+                repo.app_name = app_name
+                s.commit()
+
+    def update_status(self, repo_id: int, status: str, error_msg: str | None) -> None:
+        with self._sessions() as s:
+            repo = s.get(SourceRepoModel, repo_id)
+            if repo is not None:
+                repo.status = status
+                repo.error_msg = error_msg
+                s.commit()
+
+    def update_indexed(self, repo_id: int, file_count: int, total_size: int) -> None:
+        """对齐 updateIndexed：status='ready' + file_count + total_size。"""
+        with self._sessions() as s:
+            repo = s.get(SourceRepoModel, repo_id)
+            if repo is not None:
+                repo.status = "ready"
+                repo.file_count = file_count
+                repo.total_size = total_size
+                s.commit()
+
+    def update_branch(self, repo_id: int, branch: str) -> None:
+        with self._sessions() as s:
+            repo = s.get(SourceRepoModel, repo_id)
+            if repo is not None:
+                repo.branch = branch
+                s.commit()
+
+    def repo_by_id(self, repo_id: int) -> SourceRepoModel | None:
+        """对齐 findById（DetailResultMap）：内部详情查询，含 git_token 供 git 操作使用。"""
+        with self._sessions() as s:
+            return s.get(SourceRepoModel, repo_id)
+
+    def file_by_repo_and_path(self, repo_id: int, relative_path: str) -> SourceFileModel | None:
+        stmt = (select(SourceFileModel)
+                .where(SourceFileModel.repo_id == repo_id,
+                       SourceFileModel.relative_path == relative_path)
+                .limit(1))
+        with self._sessions() as s:
+            return s.scalars(stmt).first()
+
+    def batch_insert_files(self, files: list[SourceFileModel]) -> int:
+        """对齐 batchInsert（500 条一批）；create_time 由 DB 默认（Python 侧取当下）。"""
+        now = datetime.now()
+        for f in files:
+            f.create_time = now
+        with self._sessions() as s:
+            for i in range(0, len(files), FILE_INSERT_CHUNK):
+                s.add_all(files[i:i + FILE_INSERT_CHUNK])
+                s.commit()
+        return len(files)
+
+    def delete_files_by_repo(self, repo_id: int) -> int:
+        with self._sessions() as s:
+            deleted = s.execute(
+                sa_delete(SourceFileModel).where(SourceFileModel.repo_id == repo_id)).rowcount
+            s.commit()
+            return deleted
+
+    def file_by_id(self, file_id: int) -> SourceFileModel | None:
+        with self._sessions() as s:
+            return s.get(SourceFileModel, file_id)
+
+    # ------------------------------------------------------------ 读路径
 
     def repos(self, limit: int) -> list[SourceRepoModel]:
         stmt = (select(SourceRepoModel)
