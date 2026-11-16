@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import BigInteger, Integer, create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 DATABASE_URL_ENV = "PERF_PY_DATABASE_URL"
@@ -18,6 +18,10 @@ DATABASE_URL_ENV = "PERF_PY_DATABASE_URL"
 
 class Base(DeclarativeBase):
     """全库共享 ORM 基类：stress / collector 域模型统一 metadata，create_all 一次建齐。"""
+
+
+# sqlite 的 INTEGER PRIMARY KEY 才走 rowid 自增；MySQL 用 BIGINT（方言 variant 统一两侧）
+BigIntPk = BigInteger().with_variant(Integer, "sqlite")
 
 
 def database_url() -> str:

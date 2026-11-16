@@ -21,6 +21,8 @@ from server.ai_api import router as ai_router
 from server.ai_service import AiAgentService
 from server.collector_api import router as collector_router
 from server.collector_repo import CollectorRepository
+from server.datagen_api import router as datagen_router
+from server.datagen_repo import DatagenRepository
 from server.db import database_url, make_session_factory
 from server.errors import handle_exception, handle_validation
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
@@ -33,6 +35,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                registry=None, include_knowledge_tool: bool = True,
                stress_repo: StressRepository | None = None,
                collector_repo: CollectorRepository | None = None,
+               datagen_repo: DatagenRepository | None = None,
                db_url: str | None = None,
                agent_token: str | None = None,
                agent_auth_enabled: bool | None = None) -> FastAPI:
@@ -64,6 +67,8 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         else StressRepository(session_factory)
     app.state.collector_repo = collector_repo if collector_repo is not None \
         else CollectorRepository(session_factory)
+    app.state.datagen_repo = datagen_repo if datagen_repo is not None \
+        else DatagenRepository(session_factory)
     app.state.agent_token = (os.environ.get("PERF_AGENT_TOKEN", "")
                              if agent_token is None else agent_token)
     app.state.agent_auth_enabled = (
@@ -72,6 +77,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.include_router(ai_router)
     app.include_router(stress_router)
     app.include_router(collector_router)
+    app.include_router(datagen_router)
     # 全局异常处理对齐 Java GlobalExceptionHandler：任何异常 → 200 + code=1 错误包装
     app.add_exception_handler(RequestValidationError, handle_validation)
     app.add_exception_handler(Exception, handle_exception)

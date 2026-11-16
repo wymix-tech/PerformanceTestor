@@ -10,7 +10,6 @@ from tests.contract._utils import load_golden
 
 PENDING = {
     "auth_me": "auth 域（pyjwt）",
-    "datagen_tasks": "datagen 域",
 }
 
 

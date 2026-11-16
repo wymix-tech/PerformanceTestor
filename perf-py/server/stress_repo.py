@@ -20,10 +20,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, Double, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
-from server.db import Base
-
-# sqlite 的 INTEGER PRIMARY KEY 才走 rowid 自增；MySQL 用 BIGINT（方言 variant 统一两侧）
-BigIntPk = BigInteger().with_variant(Integer, "sqlite")
+from server.db import Base, BigIntPk
 
 
 def _dt(value: datetime | None) -> str | None:
