@@ -37,6 +37,7 @@ from server.source_api import router as source_router
 from server.source_repo import SourceRepository
 from server.stress_api import router as stress_router
 from server.stress_repo import StressRepository
+from server.stress_service import InlineRunner, StressTaskService
 from tools.registry import build_registry
 
 
@@ -66,13 +67,16 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                source_repo: SourceRepository | None = None,
                db_url: str | None = None,
                auth: AuthProperties | None = None,
-               auth_enabled: bool | None = None) -> FastAPI:
+               auth_enabled: bool | None = None,
+               stress_runner=None) -> FastAPI:
     """构建 FastAPI 应用。
 
     include_knowledge_tool：把 knowledge_search 挂入工具注册表（AI 可检索知识库）。
     各 repo：注入既有仓储（契约测试用种子库）；否则按 db_url/环境变量建库。
     auth：注入完整鉴权配置；或仅以 auth_enabled 覆盖开关（None = 读
     PERF_AUTH_ENABLED，Java perf.auth.enabled 默认 true）。
+    stress_runner：压测写路径执行器（None → 内存库用 InlineRunner 进程内执行，
+    共享库用 SubprocessRunner 子进程执行——gevent 与 uvicorn 运行时隔离）。
     """
     if registry is None:
         registry = build_registry()
@@ -89,8 +93,18 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         else KnowledgeService(SqliteKnowledgeStore())
     app.state.ai_service = AiAgentService(llm, registry, app.state.knowledge)
     session_factory = make_session_factory(db_url or database_url())
+    resolved_db_url = db_url or database_url()
     app.state.stress_repo = stress_repo if stress_repo is not None \
         else StressRepository(session_factory)
+    if stress_runner is not None:
+        runner = stress_runner
+    elif ":memory:" in resolved_db_url:
+        runner = InlineRunner(session_factory)
+    else:
+        from server.stress_service import SubprocessRunner
+
+        runner = SubprocessRunner(resolved_db_url)
+    app.state.stress_service = StressTaskService(app.state.stress_repo, runner)
     app.state.collector_repo = collector_repo if collector_repo is not None \
         else CollectorRepository(session_factory)
     app.state.datagen_repo = datagen_repo if datagen_repo is not None \

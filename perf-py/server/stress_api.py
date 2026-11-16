@@ -1,18 +1,17 @@
-"""stress 域 router（阶段 5 · 步骤 2）：/api/stress 只读端点契约对齐 Java StressController。
+"""stress 域 router（阶段 5 · 步骤 2 读路径；步骤 6 写路径）：契约对齐 Java StressController。
 
 - GET /api/stress/tasks?status&limit      任务列表（时间倒序）
 - GET /api/stress/tasks/{id}              任务详情
 - GET /api/stress/trend?appName&url&limit 历史趋势（同应用+同 URL 已完成任务指标序列）
 - GET /api/stress/tasks/{id}/samples      周期采样（实时图表，时间升序）
 - GET /api/stress/tasks/{id}/report       压测报告 {task, result}
-
-写路径（POST /tasks、/gate）本轮不迁移：压测执行仍由 Java perf-server 承担，
-perf-py CLI `perf stress run` 已直连该契约（阶段 1），读路径先行接管供前端只读页面切换。
+- POST /api/stress/tasks                  创建并启动压测（异步执行，立即返回任务）
+- POST /api/stress/gate                   性能回归门禁（同步阻塞到完成，CI 用）
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Body, Query, Request
 
 from server.stress_repo import StressRepository
 
@@ -29,6 +28,54 @@ def _err(message: str) -> dict:
 
 def _repo(request: Request) -> StressRepository:
     return request.app.state.stress_repo
+
+
+# ---------------------------------------------------------------- 写路径
+
+
+@router.post("/tasks")
+async def start(request: Request) -> dict:
+    """创建并启动压测任务（异步执行，立即返回任务）。
+
+    对齐 Java：请求体为 StressTaskRequest；校验失败（IllegalArgumentException）
+    → code=1 + 文案原样（无「服务器内部错误」前缀）；请求体反序列化失败走
+    全局异常处理器（code=1 + 前缀）。
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:  # noqa: BLE001 — 对齐 HttpMessageNotReadableException 路径
+        return {"code": 1, "message": f"服务器内部错误: {exc}", "data": None}
+    if not isinstance(payload, dict):
+        return {"code": 1, "message": "服务器内部错误: 请求体必须是 JSON 对象", "data": None}
+    try:
+        return _ok(request.app.state.stress_service.create_and_run(payload))
+    except ValueError as exc:
+        # 对齐 GlobalExceptionHandler.handleIllegalArgument：文案原样
+        return _err(str(exc))
+
+
+@router.post("/gate")
+def gate(request: Request,
+         payload: dict = Body(...),
+         baseline_task_id: int | None = Query(None, alias="baselineTaskId"),
+         timeout_sec: int | None = Query(None, alias="timeoutSec"),
+         fail_on_no_baseline: bool = Query(False, alias="failOnNoBaseline"),
+         webhook: str | None = None) -> dict:
+    """性能回归门禁（CI 用）：创建压测 → 等待完成 → 基线比对 → 返回可判定结论。
+
+    对齐 Java：同步阻塞到压测完成（timeoutSec 限制），HTTP 恒 200，
+    流水线按 data.passed 判定退出码。校验失败 → code=1 + 文案原样。
+    """
+    try:
+        return _ok(request.app.state.stress_service.run_gate(
+            payload,
+            baseline_task_id if baseline_task_id is not None else 0,
+            timeout_sec if timeout_sec is not None else 0,
+            fail_on_no_baseline,
+            webhook,
+        ))
+    except ValueError as exc:
+        return _err(str(exc))
 
 
 @router.get("/tasks")

@@ -114,6 +114,22 @@ AiKnowledgeService）；MySQL FULLTEXT（ngram）与向量检索（RAG）为同�
 导致网络型测试挂起）；引擎族用例用 `PERF_PY_ENGINES=1 uv run pytest
 tests/test_locust_engine.py` 单独运行。
 
+## stress 写路径（阶段 5 · 步骤 6）
+
+`POST /api/stress/tasks` 与 `POST /api/stress/gate` 迁入 Python server（校验文案、
+任务落库语义、GateVerdict/基线比对文案逐字对齐 StressTaskService / StressGateService /
+BaselineCompareService）：
+
+- 执行模型：gevent 与 uvicorn 运行时不能共存——默认 `SubprocessRunner` 在 worker
+  子进程（`python -m server.stress_worker`）内跑引擎，采样实时落 `stress_sample`；
+  内存库（测试）自动降级 `InlineRunner` 进程内执行。
+- 引擎映射：平台 `http` 引擎由 locust 引擎等价承担（不做手写线程发压，见阶段 2
+  长尾实测结论）；场景模式回退规则与 Java `resolveEngine` 一致。
+- 分档模式：对齐 `HttpStressEngine`——仅首档 warmup、逐档产 StagePoint、
+  qps/p95/p99 取末档；`stageConcurrencies` 简写均分展开语义一致。
+- 门禁超时：下限=预热+时长+爬坡+原始 stages 各档+60s 余量（简写档不计，对齐 Java）、
+  硬上限 1800s；失败时 webhook 告警（飞书/钉钉/自定义自适应，尽力而为）。
+
 ## 灌数引擎（阶段 3 步骤 5）
 
 `perf datagen run` 直连数据库执行灌数（不经 perf-server REST），宿主装配对齐 Java

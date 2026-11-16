@@ -1,4 +1,4 @@
-"""stress 域数据层（阶段 5 · 步骤 2）：SQLAlchemy 2.0 对接 stress_task / stress_sample。
+"""stress 域数据层（阶段 5 · 步骤 2 读路径；写路径步骤 6）：SQLAlchemy 2.0 对接 stress_task / stress_sample。
 
 替换 Java MyBatis 的 StressTaskMapper / StressSampleMapper：
 - 表名、列名与 sql/init_empty.sql DDL 完全一致（生产共用同一 MySQL 库；
@@ -8,6 +8,7 @@
   findById       → 主键单查
   queryByScene   → appName + targetUrl + status 过滤，时间倒序（趋势图取数）
   queryByTask    → sample_time ASC，LIMIT（1..2000 截断）
+  insert / updateStatus / updateFinished / updateFailed / batchInsert（写路径）
 - 序列化对齐 Java Jackson：camelCase 字段名、LocalDateTime → ISO 秒级字符串、
   errorMsg 为 null 时输出 null（契约测试 golden 的结构即由此而来）。
 """
@@ -101,10 +102,84 @@ class StressSampleModel(Base):
 
 
 class StressRepository:
-    """只读查询集合：语义对齐 MyBatis Mapper（阶段 5 仅迁移读路径，写路径后续跟进）。"""
+    """读写集合：查询与写入语义逐条对齐 MyBatis Mapper。"""
 
     def __init__(self, session_factory: sessionmaker):
         self._sessions = session_factory
+
+    # ------------------------------------------------------------ 写路径
+
+    def insert_task(self, *, task_name: str, engine_type: str | None, target_url: str,
+                    app_name: str, app_version: str, method: str | None,
+                    concurrency: int, duration_sec: int, qps_limit: int) -> int:
+        """对齐 StressTaskMapper.insert：状态固定 pending，返回自增主键。
+
+        注意 create_time 依赖 DB 默认值（MySQL DEFAULT CURRENT_TIMESTAMP），
+        与 Java 同款——插入后立刻返回的实体不含 create_time（wire 契约 createTime=null）。
+        """
+        row = StressTaskModel(
+            task_name=task_name, engine_type=engine_type or "http", target_url=target_url,
+            app_name=app_name, app_version=app_version, method=method or "GET",
+            concurrency=concurrency, duration_sec=duration_sec, qps_limit=qps_limit,
+            status="pending", create_time=datetime.now(),
+        )
+        with self._sessions() as s:
+            s.add(row)
+            s.commit()
+            return row.id
+
+    def update_status(self, task_id: int, status: str) -> None:
+        with self._sessions() as s:
+            row = s.get(StressTaskModel, task_id)
+            if row is not None:
+                row.status = status
+                s.commit()
+
+    def update_finished(self, task_id: int, result_json: str,
+                        finish_time: datetime) -> None:
+        with self._sessions() as s:
+            row = s.get(StressTaskModel, task_id)
+            if row is not None:
+                row.status = "finished"
+                row.result_json = result_json
+                row.finish_time = finish_time
+                s.commit()
+
+    def update_failed(self, task_id: int, error_msg: str | None) -> None:
+        """对齐 updateFailed：error_msg + finish_time = NOW()。"""
+        with self._sessions() as s:
+            row = s.get(StressTaskModel, task_id)
+            if row is not None:
+                row.status = "failed"
+                row.error_msg = error_msg
+                row.finish_time = datetime.now()
+                s.commit()
+
+    def insert_sample(self, *, task_id: int, sample_time: datetime, concurrency: int,
+                      qps: float, p50_ms: float, p95_ms: float, p99_ms: float,
+                      error_count: int) -> None:
+        """对齐 StressSampleMapper.batchInsert（分区表主键含 sample_time，须显式写入）。"""
+        with self._sessions() as s:
+            s.add(StressSampleModel(
+                task_id=task_id, sample_time=sample_time, concurrency=concurrency,
+                qps=qps, p50_ms=p50_ms, p95_ms=p95_ms, p99_ms=p99_ms,
+                error_count=error_count))
+            s.commit()
+
+    def find_app_version(self, app_name: str | None) -> str:
+        """对齐 StressTaskService.resolveCurrentVersion：app_instance 心跳维护的当前版本。"""
+        if not app_name or not app_name.strip():
+            return ""
+        from server.collector_repo import AppInstanceModel
+
+        try:
+            with self._sessions() as s:
+                inst = s.scalars(select(AppInstanceModel)
+                                 .where(AppInstanceModel.app_name == app_name)
+                                 .limit(1)).first()
+                return inst.app_version if inst is not None and inst.app_version else ""
+        except Exception:  # noqa: BLE001 — 对齐 Java：查询失败返回空串不阻断建任务
+            return ""
 
     def query(self, status: str | None, limit: int) -> list[StressTaskModel]:
         stmt = select(StressTaskModel).order_by(StressTaskModel.create_time.desc())
