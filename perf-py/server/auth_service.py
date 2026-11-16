@@ -45,25 +45,44 @@ class AuthProperties:
 
 
 class JwtService:
-    """JWT 签发与校验（HS256）：非法/过期返回 None（调用方按未登录处理）。"""
+    """JWT 签发与校验（HMAC 家族）：非法/过期返回 None（调用方按未登录处理）。
+
+    算法选择对齐 jjwt 0.12 signWith(SecretKey) 行为：按密钥字节数自动升级——
+    >=64 字节 HS512、>=48 字节 HS384、>=32 字节 HS256（默认密钥 59 字节实际出 HS384，
+    双跑实测发现，Java 文档注释写 HS256 与实际行为不符）。校验侧接受整个 HMAC 家族，
+    保证与任意密钥长度的 Java 侧签发互验。
+    """
+
+    _HMAC_ALGS = ("HS256", "HS384", "HS512")
 
     def __init__(self, props: AuthProperties):
         self._props = props
 
+    def _secret_bytes(self) -> bytes:
+        secret = self._props.secret.encode("utf-8")
+        if len(secret) < 32:
+            raise ValueError("perf.auth.secret 长度不足 32 字节，无法用于 HMAC 签名")
+        return secret
+
+    def _alg(self) -> str:
+        n = len(self._secret_bytes())
+        if n >= 64:
+            return "HS512"
+        if n >= 48:
+            return "HS384"
+        return "HS256"
+
     def issue(self, username: str) -> str:
-        secret_bytes = self._props.secret.encode("utf-8")
-        if len(secret_bytes) < 32:
-            raise ValueError("perf.auth.secret 长度不足 32 字节，无法用于 HS256 签名")
         now = int(time.time())
         return pyjwt.encode(
             {"sub": username, "iat": now,
              "exp": now + self._props.expire_hours * 3600},
-            secret_bytes, algorithm="HS256")
+            self._secret_bytes(), algorithm=self._alg())
 
     def verify(self, token: str) -> str | None:
         try:
-            claims = pyjwt.decode(token, self._props.secret.encode("utf-8"),
-                                  algorithms=["HS256"])
+            claims = pyjwt.decode(token, self._secret_bytes(),
+                                  algorithms=list(self._HMAC_ALGS))
             return claims.get("sub")
         except pyjwt.PyJWTError:
             return None

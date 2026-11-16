@@ -19,7 +19,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -27,7 +29,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "perf-py"))
 from tests.contract._utils import normalize  # noqa: E402  与契约测试共用实现（防规则漂移）
 
-GOLDEN_DIR = REPO_ROOT / "perf-py" / "tests" / "contract" / "golden"
+_GOLDEN_DIR_OVERRIDE = os.environ.get("GOLDEN_DIR_OVERRIDE")
+GOLDEN_DIR = Path(_GOLDEN_DIR_OVERRIDE) if _GOLDEN_DIR_OVERRIDE \
+    else REPO_ROOT / "perf-py" / "tests" / "contract" / "golden"
+
+# trend 取数参数可由环境覆盖（须与库中实际压测场景一致，否则捕获到空列表）
+TREND_APP = os.environ.get("TREND_APP", "demo-app")
+TREND_URL = os.environ.get("TREND_URL", "http://localhost:8081/api/user/list?limit=2000")
 
 # 捕获清单：只读/幂等端点（错误包装同样是契约的一部分）
 ENDPOINTS = [
@@ -36,8 +44,8 @@ ENDPOINTS = [
     {"name": "stress_task_detail", "method": "GET", "path": "/api/stress/tasks/1"},
     # trend 首次捕获缺 appName/url 必填参数，拿到的是错误包装；改为带参重捕得真实契约
     {"name": "stress_trend", "method": "GET",
-     "path": "/api/stress/trend?appName=demo-app"
-             "&url=http%3A%2F%2Flocalhost%3A8081%2Fapi%2Fuser%2Flist%3Flimit%3D2000&limit=5"},
+     "path": "/api/stress/trend?appName=" + urllib.parse.quote(TREND_APP)
+             + "&url=" + urllib.parse.quote(TREND_URL, safe="") + "&limit=5"},
     {"name": "datagen_tasks", "method": "GET", "path": "/api/datagen/tasks?limit=5"},
     {"name": "ai_tools", "method": "GET", "path": "/api/ai/tools"},
     {"name": "ai_knowledge", "method": "GET", "path": "/api/ai/knowledge?limit=5"},

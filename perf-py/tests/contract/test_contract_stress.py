@@ -131,12 +131,26 @@ def test_trend_contract_matches_java_source(client):
     assert all(isinstance(p["finishTime"], str) for p in data)
 
 
-def test_trend_missing_param_matches_golden_error_wrapper(client):
+def test_trend_data_contract_matches_java_golden(client):
+    """trend 带参响应对照 Java 重捕 golden（双跑环境捕获）。
+
+    golden 的 data 可能为空列表（捕获环境无匹配场景时），此时退化为包装结构断言；
+    含真实趋势点时则逐字段比对元素结构（9 字段，见 Java StressTaskService.trend）。
+    """
+    golden = load_golden("stress_trend")
+    resp = client.get("/api/stress/trend",
+                      params={"appName": "demo-app", "url": URL_USER, "limit": 5})
+    assert_matches_golden(resp.json(), golden, resp.status_code)
+    if golden["normalized"]["data"]:
+        assert set(golden["normalized"]["data"][0]) == \
+            {"taskId", "taskName", "finishTime", "qps", "p50Ms",
+             "p95Ms", "p99Ms", "errorRate", "totalRequests"}
+
+
+def test_trend_missing_param_error_wrapper(client):
     """缺必填参数 appName：Java 全局异常处理返回 200 + code=1 错误包装
-    （stress_trend golden 正是缺参捕获所得，其结构在此成为真实契约断言）。"""
-    resp = client.get("/api/stress/trend", params={"url": URL_USER, "limit": 5})
-    assert_matches_golden(resp.json(), load_golden("stress_trend"), resp.status_code)
-    body = resp.json()
+    （首次捕获曾得该形态；捕获脚本已改为带参重捕，此处保留行为断言）。"""
+    body = client.get("/api/stress/trend", params={"url": URL_USER, "limit": 5}).json()
     assert body["code"] == 1 and body["data"] is None
     assert "appName" in body["message"], "message 应指明缺失参数"
 

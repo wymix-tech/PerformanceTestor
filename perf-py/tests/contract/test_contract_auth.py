@@ -95,10 +95,32 @@ def test_auth_disabled_allows_anonymous():
 
 
 def test_short_secret_rejected_on_issue():
-    """密钥不足 32 字节：签发即失败（对齐 Java HMAC-SHA256 规范校验）。"""
+    """密钥不足 32 字节：签发即失败（对齐 Java HMAC 规范校验）。"""
     svc = JwtService(AuthProperties(enabled=False, secret="short"))
     with pytest.raises(ValueError, match="32"):
         svc.issue("admin")
+
+
+def test_alg_selection_matches_jjwt_key_size_behavior():
+    """算法按密钥长度自动升级（jjwt 0.12 signWith(SecretKey) 行为，双跑实测发现：
+    默认 59 字节密钥 Java 实际签发 HS384，Java 文档注释 HS256 与实际不符）。"""
+    import time
+
+    import jwt as pyjwt
+
+    from server.auth_service import JwtService as Svc
+
+    assert Svc(AuthProperties(enabled=False))._alg() == "HS384", "默认密钥 59 字节 → HS384"
+    s512 = Svc(AuthProperties(enabled=False, secret="x" * 64))
+    assert s512._alg() == "HS512"
+    s256 = Svc(AuthProperties(enabled=False, secret="x" * 32))
+    assert s256._alg() == "HS256"
+    # Java 侧 HS384 token（任意 HMAC 家族）可被 Python 侧校验
+    props = AuthProperties(enabled=False)
+    t384 = pyjwt.encode({"sub": "admin", "iat": int(time.time()),
+                         "exp": int(time.time()) + 3600},
+                        props.secret.encode(), algorithm="HS384")
+    assert JwtService(props).verify(t384) == "admin"
 
 
 def test_expired_token_rejected():
