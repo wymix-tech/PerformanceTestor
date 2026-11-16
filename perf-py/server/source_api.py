@@ -20,14 +20,21 @@
 
 错误包装对齐 Java GlobalExceptionHandler：IllegalArgumentException（ValueError）→
 code=1 原样文案；IllegalStateException（RuntimeError）→ "服务器内部错误: " 前缀。
-问题创建与验证/大模型分析（SourceIssueService）仍由 Java 承担，随后续步骤收编。
+
+步骤 10 收编问题域写端点（SourceIssueService）与接口扫描（EndpointScanner）：
+- POST /issues/from-slow-sql|from-hot-method|from-stress   从检测数据创建问题（自动定位源码）
+- POST /issues/{issueId}/bind-repo|bind-stress             补绑源码仓库 / 压测场景快照
+- POST /issues/{issueId}/analyze                           大模型分析（规则降级）
+- POST /issues/{issueId}/suggestions/{sid}/select          选定方案生成修复提示词
+- GET  /repos/{repoId}/endpoints                           接口扫描（压测中心自动出接口）
+一键验证（IssueVerifyService 重放压测）仍由 Java 承担，随后续步骤收编。
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 
 from server.source_repo import SourceRepository, slow_sql_to_camel
 
@@ -242,3 +249,82 @@ def file_content(file_id: int, request: Request) -> dict:
         return _err(str(exc))
     except OSError as exc:
         return _err(f"服务器内部错误: 读取文件失败: {exc}")
+
+
+# ---------------------------------------------------------------- 问题域（步骤 10）
+
+
+def _issue_service(request: Request):
+    return request.app.state.issue_service
+
+
+def _issue_to_camel(issue) -> dict:
+    return issue.to_camel()
+
+
+def _detail_to_camel(detail: dict) -> dict:
+    return {"issue": detail["issue"].to_camel(),
+            "suggestions": [s.to_camel() for s in detail["suggestions"]]}
+
+
+@router.get("/repos/{repo_id}/endpoints")
+def endpoints(repo_id: int, request: Request) -> dict:
+    """扫描仓库 HTTP 接口清单（供压测中心选项目自动出接口）。"""
+    return _run(request, lambda: request.app.state.endpoint_scanner.scan(repo_id))
+
+
+@router.post("/issues/from-slow-sql")
+def from_slow_sql(request: Request, slow_sql_id: int = Query(..., alias="slowSqlId"),
+                  repo_id: int = Query(..., alias="repoId")) -> dict:
+    """从慢 SQL 创建问题（关联源码：方法链 → XML → 实体多级定位）。"""
+    return _run(request, lambda: _issue_to_camel(
+        _issue_service(request).create_from_slow_sql(slow_sql_id, repo_id)))
+
+
+@router.post("/issues/from-hot-method")
+def from_hot_method(request: Request, class_name: str = Query(..., alias="className"),
+                    method_name: str = Query(..., alias="methodName"),
+                    repo_id: int = Query(..., alias="repoId"),
+                    app_name: str | None = Query(None, alias="appName")) -> dict:
+    """从热点方法创建问题。"""
+    return _run(request, lambda: _issue_to_camel(
+        _issue_service(request).create_from_hot_method(app_name, class_name,
+                                                       method_name, repo_id)))
+
+
+@router.post("/issues/from-stress")
+def from_stress(request: Request, stress_task_id: int = Query(..., alias="stressTaskId"),
+                repo_id: int = Query(..., alias="repoId"),
+                app_name: str | None = Query(None, alias="appName")) -> dict:
+    """从压测任务创建问题（URL 关联 Controller；可指定归属应用）。"""
+    return _run(request, lambda: _issue_to_camel(
+        _issue_service(request).create_from_stress(stress_task_id, repo_id, app_name)))
+
+
+@router.post("/issues/{issue_id}/bind-repo")
+def bind_issue_repo(issue_id: int, request: Request,
+                    repo_id: int = Query(..., alias="repoId")) -> dict:
+    """补绑源码仓库并自动定位（压测问题分析前置；按问题类型自动定位）。"""
+    return _run(request, lambda: _detail_to_camel(
+        _issue_service(request).bind_repo(issue_id, repo_id)))
+
+
+@router.post("/issues/{issue_id}/bind-stress")
+def bind_stress_task(issue_id: int, request: Request,
+                     stress_task_id: int = Query(..., alias="stressTaskId")) -> dict:
+    """补绑压测场景快照（非压测来源问题建立验证基线）。"""
+    return _run(request, lambda: _issue_to_camel(
+        _issue_service(request).bind_stress_task(issue_id, stress_task_id)))
+
+
+@router.post("/issues/{issue_id}/analyze")
+def analyze_issue(issue_id: int, request: Request) -> dict:
+    """执行大模型分析（生成根因 + 多方案；无 LLM 降级规则模板）。"""
+    return _run(request, lambda: {"generated": _issue_service(request).analyze(issue_id)})
+
+
+@router.post("/issues/{issue_id}/suggestions/{suggestion_id}/select")
+def select_suggestion(issue_id: int, suggestion_id: int, request: Request) -> dict:
+    """选定方案并生成修复提示词。"""
+    return _run(request, lambda: {"promptMd": _issue_service(request).select_suggestion(
+        issue_id, suggestion_id)})

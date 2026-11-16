@@ -305,3 +305,11 @@ class CollectorRepository:
         with self._sessions() as s:
             s.add(conn)
             s.commit()
+
+    def match_order(self) -> list[DbConnModel]:
+        """对齐 DbConnMapper.matchOrder：is_default DESC, id ASC，LIMIT 10（含凭据列）。"""
+        stmt = (select(DbConnModel)
+                .order_by(DbConnModel.is_default.desc(), DbConnModel.id.asc())
+                .limit(10))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))

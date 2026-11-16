@@ -78,7 +78,9 @@ class PerformanceIssueModel(Base):
     stress_task_id: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     verify_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     verify_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Java 侧由 DB DEFAULT CURRENT_TIMESTAMP 兜底（insert SQL 不含 create_time）
+    create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False,
+                                                  default=datetime.now)
 
     def to_camel(self) -> dict:
         return {
@@ -219,6 +221,107 @@ class SourceRepository:
     def file_by_id(self, file_id: int) -> SourceFileModel | None:
         with self._sessions() as s:
             return s.get(SourceFileModel, file_id)
+
+    def files_by_repo_contains(self, repo_id: int, keyword: str, limit: int) -> list[SourceFileModel]:
+        """对齐 listByRepoContains：relative_path LIKE %keyword%，path 升序。"""
+        stmt = (select(SourceFileModel)
+                .where(SourceFileModel.repo_id == repo_id,
+                       SourceFileModel.relative_path.like(f"%{keyword}%"))
+                .order_by(SourceFileModel.relative_path.asc())
+                .limit(max(1, limit)))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
+    def files_by_name(self, repo_id: int, file_name: str, limit: int) -> list[SourceFileModel]:
+        """对齐 listByName：file_name 精确匹配，path 升序。"""
+        stmt = (select(SourceFileModel)
+                .where(SourceFileModel.repo_id == repo_id,
+                       SourceFileModel.file_name == file_name)
+                .order_by(SourceFileModel.relative_path.asc())
+                .limit(max(1, limit)))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
+    # ------------------------------------------------------ 问题与方案写路径
+
+    def insert_issue(self, issue: PerformanceIssueModel) -> int:
+        """对齐 PerformanceIssueMapper.insert：status 固定 'pending'；返回生成主键。"""
+        issue.status = "pending"
+        with self._sessions() as s:
+            s.add(issue)
+            s.commit()
+            s.refresh(issue)
+            return issue.id
+
+    def update_issue_location(self, issue_id: int, source_repo_id: int,
+                              source_file_id: int | None,
+                              line_start: int | None, line_end: int | None) -> None:
+        with self._sessions() as s:
+            issue = s.get(PerformanceIssueModel, issue_id)
+            if issue is not None:
+                issue.source_repo_id = source_repo_id
+                issue.source_file_id = source_file_id
+                issue.line_start = line_start
+                issue.line_end = line_end
+                s.commit()
+
+    def update_issue_stress_task(self, issue_id: int, stress_task_id: int) -> None:
+        with self._sessions() as s:
+            issue = s.get(PerformanceIssueModel, issue_id)
+            if issue is not None:
+                issue.stress_task_id = stress_task_id
+                s.commit()
+
+    def update_issue_analyzed(self, issue_id: int, root_cause: str) -> None:
+        """对齐 updateAnalyzed：root_cause + status='analyzed'。"""
+        with self._sessions() as s:
+            issue = s.get(PerformanceIssueModel, issue_id)
+            if issue is not None:
+                issue.root_cause = root_cause
+                issue.status = "analyzed"
+                s.commit()
+
+    def update_issue_evidence(self, issue_id: int, evidence_json: str) -> None:
+        with self._sessions() as s:
+            issue = s.get(PerformanceIssueModel, issue_id)
+            if issue is not None:
+                issue.evidence_json = evidence_json
+                s.commit()
+
+    def insert_suggestions(self, suggestions: list[FixSuggestionModel]) -> int:
+        """对齐 batchInsert（一次性多值插入）。"""
+        now = datetime.now()
+        for fs in suggestions:
+            fs.create_time = now
+        with self._sessions() as s:
+            s.add_all(suggestions)
+            s.commit()
+        return len(suggestions)
+
+    def clear_selected_by_issue(self, issue_id: int) -> None:
+        with self._sessions() as s:
+            for fs in s.scalars(select(FixSuggestionModel)
+                                .where(FixSuggestionModel.issue_id == issue_id)):
+                fs.selected = 0
+            s.commit()
+
+    def update_selected(self, suggestion_id: int, selected: int) -> None:
+        with self._sessions() as s:
+            fs = s.get(FixSuggestionModel, suggestion_id)
+            if fs is not None:
+                fs.selected = selected
+                s.commit()
+
+    def update_prompt_md(self, suggestion_id: int, prompt_md: str) -> None:
+        with self._sessions() as s:
+            fs = s.get(FixSuggestionModel, suggestion_id)
+            if fs is not None:
+                fs.prompt_md = prompt_md
+                s.commit()
+
+    def slow_sql_by_id(self, slow_sql_id: int) -> SlowSqlModel | None:
+        with self._sessions() as s:
+            return s.get(SlowSqlModel, slow_sql_id)
 
     # ------------------------------------------------------------ 读路径
 

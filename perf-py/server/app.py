@@ -33,7 +33,15 @@ from server.datagen_plan_service import DatagenPlanService
 from server.datagen_repo import DatagenRepository
 from server.datagen_service import DatagenWriteService
 from server.db import database_url, make_session_factory
+from server.db_explain import DbExplainService
+from server.endpoint_scanner import EndpointScanner
 from server.errors import handle_exception, handle_validation
+from server.issue_service import (
+    FixPromptGenerator,
+    IssueAssociator,
+    PerformanceAnalyzer,
+    SourceIssueService,
+)
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
 from server.source_api import router as source_router
 from server.source_index import SourceFileIndexer
@@ -71,6 +79,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                source_repo: SourceRepository | None = None,
                source_storage_dir: str | None = None,
                data_cleanup: DataCleanupService | None = None,
+               db_explain: DbExplainService | None = None,
                db_url: str | None = None,
                auth: AuthProperties | None = None,
                auth_enabled: bool | None = None,
@@ -129,6 +138,21 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         inline_import=":memory:" in resolved_db_url)
     app.state.data_cleanup_service = data_cleanup if data_cleanup is not None \
         else DataCleanupService(session_factory, app.state.knowledge.store)
+    app.state.db_explain = db_explain if db_explain is not None else DbExplainService()
+    app.state.endpoint_scanner = EndpointScanner(
+        app.state.source_repo, app.state.source_write_service,
+        app.state.source_file_indexer)
+    app.state.llm = llm
+    issue_associator = IssueAssociator(
+        app.state.source_repo, app.state.source_file_indexer, app.state.source_write_service)
+    issue_analyzer = PerformanceAnalyzer(
+        app.state.source_repo, llm, app.state.source_file_indexer,
+        app.state.source_write_service, app.state.collector_repo, app.state.db_explain)
+    issue_prompts = FixPromptGenerator(
+        app.state.source_repo, app.state.source_file_indexer, app.state.source_write_service)
+    app.state.issue_service = SourceIssueService(
+        app.state.source_repo, app.state.source_write_service, issue_associator,
+        issue_analyzer, issue_prompts, app.state.stress_repo)
     app.state.auth_props = auth if auth is not None \
         else AuthProperties(enabled=auth_enabled)
     app.state.jwt_service = JwtService(app.state.auth_props)
