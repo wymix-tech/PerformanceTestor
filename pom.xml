@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- PerformanceTestor 父 POM：聚合 perf-agent / perf-server / perf-demo 三个 Maven 模块 -->
+<!-- PerformanceTestor 父 POM：聚合 perf-agent / perf-demo 两个 Maven 模块
+     （perf-server 服务端与 perf-datagen 引擎已由 Python perf-py 重构取代，
+       原 Java 代码归档于 tag v-java-final） -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -13,9 +15,7 @@
     <description>Java 性能检测智能体平台：压测 / JVM 监控 / 调用链耗时 / 慢 SQL / 灌数据 / 容量建议 / AI 修复闭环</description>
 
     <modules>
-        <module>perf-datagen</module>
         <module>perf-agent</module>
-        <module>perf-server</module>
         <module>perf-demo</module>
     </modules>
 

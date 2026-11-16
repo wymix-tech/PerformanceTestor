@@ -21,7 +21,7 @@ public class UserController {
 
     private static final Logger log = LoggerFactory.getLogger(UserController.class);
 
-    /** 平台压测流量标记头（与 perf-server HttpStressEngine/JmeterStressEngine 注入一致） */
+    /** 平台压测流量标记头（与 perf-py 压测引擎注入一致（原 perf-server 引擎已由 Python 重构取代）） */
     static final String TRAFFIC_MARK_HEADER = "X-Perf-Test";
 
     private final UserService userService;
