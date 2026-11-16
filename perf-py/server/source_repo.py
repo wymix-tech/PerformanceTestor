@@ -288,6 +288,18 @@ class SourceRepository:
                 issue.evidence_json = evidence_json
                 s.commit()
 
+    def update_issue_verify(self, issue_id: int, verify_json: str,
+                            verify_time, status: str | None) -> None:
+        """对齐 IssueVerifyMapper.updateVerify：写 verify_json/verify_time，达标时置 resolved。"""
+        with self._sessions() as s:
+            issue = s.get(PerformanceIssueModel, issue_id)
+            if issue is not None:
+                issue.verify_json = verify_json
+                issue.verify_time = verify_time
+                if status is not None:
+                    issue.status = status
+                s.commit()
+
     def insert_suggestions(self, suggestions: list[FixSuggestionModel]) -> int:
         """对齐 batchInsert（一次性多值插入）。"""
         now = datetime.now()

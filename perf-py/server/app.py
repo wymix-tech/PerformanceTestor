@@ -16,6 +16,7 @@ LlmClient 由调用方注入（测试注入脚本化假客户端；生产 client
 from __future__ import annotations
 
 import hmac
+import os
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -42,6 +43,7 @@ from server.issue_service import (
     PerformanceAnalyzer,
     SourceIssueService,
 )
+from server.issue_verify_service import IssueVerifyService
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
 from server.source_api import router as source_router
 from server.source_index import SourceFileIndexer
@@ -80,6 +82,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                source_storage_dir: str | None = None,
                data_cleanup: DataCleanupService | None = None,
                db_explain: DbExplainService | None = None,
+               issue_verify: IssueVerifyService | None = None,
                db_url: str | None = None,
                auth: AuthProperties | None = None,
                auth_enabled: bool | None = None,
@@ -128,7 +131,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.datagen_plan_service = DatagenPlanService(
         app.state.datagen_repo, app.state.stress_repo,
         task_service=app.state.datagen_service,
-        inline_analyze=":memory:" in resolved_db_url)
+        inline_analyze=":memory:" in resolved_db_url, llm=llm)
     app.state.source_repo = source_repo if source_repo is not None \
         else SourceRepository(session_factory)
     app.state.source_file_indexer = SourceFileIndexer(app.state.source_repo)
@@ -153,6 +156,11 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.issue_service = SourceIssueService(
         app.state.source_repo, app.state.source_write_service, issue_associator,
         issue_analyzer, issue_prompts, app.state.stress_repo)
+    app.state.issue_verify_service = issue_verify if issue_verify is not None \
+        else IssueVerifyService(
+            app.state.source_repo, app.state.stress_repo, app.state.stress_service,
+            timeout_sec=int(os.environ.get("PERF_VERIFY_TIMEOUT_SEC", "300")),
+            inline=":memory:" in resolved_db_url)
     app.state.auth_props = auth if auth is not None \
         else AuthProperties(enabled=auth_enabled)
     app.state.jwt_service = JwtService(app.state.auth_props)

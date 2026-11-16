@@ -203,9 +203,10 @@ class DatagenPlanService:
     """plans 写路径门面（对齐 EndpointDataPlanService + runFromPlan）。"""
 
     def __init__(self, repo: DatagenRepository, stress_repo, task_service=None,
-                 inline_analyze: bool = False):
+                 inline_analyze: bool = False, llm=None):
         self._repo = repo
         self._stress_repo = stress_repo
+        self._llm = llm
         # task_service：DatagenWriteService（execute 复用 create_and_run，含引擎桩注入）
         self._task_service = task_service
         self._inline = inline_analyze
@@ -374,7 +375,8 @@ class DatagenPlanService:
         warnings.extend(est.warnings)
 
         # LLM 可选增强（无 Key 静默降级）
-        enhancement = llm_enhance(list(facts_by_table.values()), request.llmEnhance)
+        enhancement = llm_enhance(list(facts_by_table.values()), request.llmEnhance,
+                                  self._llm)
         if not enhancement.applied and request.llmEnhance:
             warnings.append(enhancement.reason)
         warnings.extend(enhancement.warnings)

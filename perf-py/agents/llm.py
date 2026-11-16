@@ -68,6 +68,10 @@ class OpenAiCompatClient(LlmClient):
         self.temperature = temperature
         self._client = None
 
+    def available(self) -> bool:
+        """API Key 已配置才可用（对齐 Java LlmClient.available() 语义）。"""
+        return bool(self.api_key)
+
     def _ensure_client(self):
         if self._client is None:
             try:

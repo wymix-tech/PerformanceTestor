@@ -27,7 +27,8 @@ code=1 原样文案；IllegalStateException（RuntimeError）→ "服务器内�
 - POST /issues/{issueId}/analyze                           大模型分析（规则降级）
 - POST /issues/{issueId}/suggestions/{sid}/select          选定方案生成修复提示词
 - GET  /repos/{repoId}/endpoints                           接口扫描（压测中心自动出接口）
-一键验证（IssueVerifyService 重放压测）仍由 Java 承担，随后续步骤收编。
+- POST /issues/{issueId}/verify                            一键验证（异步重放压测，毫秒级返回）
+- GET  /issues/{issueId}/verify                            验证结论轮询（前端据 verifyJson 取终态）
 """
 
 from __future__ import annotations
@@ -328,3 +329,21 @@ def select_suggestion(issue_id: int, suggestion_id: int, request: Request) -> di
     """选定方案并生成修复提示词。"""
     return _run(request, lambda: {"promptMd": _issue_service(request).select_suggestion(
         issue_id, suggestion_id)})
+
+
+# ---------------------------------------------------------------- 一键验证（步骤 11）
+
+
+@router.post("/issues/{issue_id}/verify")
+def verify_issue(issue_id: int, request: Request) -> dict:
+    """一键验证修复效果（异步）：校验快照 → 发起重放压测 → 立即返回进行中结论。
+
+    结论由验证线程池落库（verify_json），前端凭 GET /issues/{id}/verify 轮询终态。
+    """
+    return _run(request, lambda: request.app.state.issue_verify_service.verify(issue_id))
+
+
+@router.get("/issues/{issue_id}/verify")
+def verify_status(issue_id: int, request: Request) -> dict:
+    """读取最近一次验证结论（含进行中状态）；尚无结论返回 data=null。"""
+    return _run(request, lambda: request.app.state.issue_verify_service.verify_status(issue_id))
