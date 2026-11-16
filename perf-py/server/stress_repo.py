@@ -18,11 +18,12 @@ import json
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, Double, Integer, String, Text, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from server.db import Base
 
-class Base(DeclarativeBase):
-    pass
+# sqlite 的 INTEGER PRIMARY KEY 才走 rowid 自增；MySQL 用 BIGINT（方言 variant 统一两侧）
+BigIntPk = BigInteger().with_variant(Integer, "sqlite")
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -35,7 +36,7 @@ class StressTaskModel(Base):
 
     __tablename__ = "stress_task"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     task_name: Mapped[str] = mapped_column(String(128), nullable=False)
     engine_type: Mapped[str] = mapped_column(String(32), nullable=False, default="http")
     target_url: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -77,7 +78,7 @@ class StressSampleModel(Base):
 
     __tablename__ = "stress_sample"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     task_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     sample_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -11,12 +11,16 @@ LlmClient 由调用方注入（测试注入脚本化假客户端；生产 client
 
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
 from agents.llm import LlmClient
 from server.ai_api import router as ai_router
 from server.ai_service import AiAgentService
+from server.collector_api import router as collector_router
+from server.collector_repo import CollectorRepository
 from server.db import database_url, make_session_factory
 from server.errors import handle_exception, handle_validation
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
@@ -28,13 +32,18 @@ from tools.registry import build_registry
 def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None = None,
                registry=None, include_knowledge_tool: bool = True,
                stress_repo: StressRepository | None = None,
-               db_url: str | None = None) -> FastAPI:
+               collector_repo: CollectorRepository | None = None,
+               db_url: str | None = None,
+               agent_token: str | None = None,
+               agent_auth_enabled: bool | None = None) -> FastAPI:
     """构建 FastAPI 应用。
 
     include_knowledge_tool：把 knowledge_search 挂入工具注册表（AI 可检索知识库）；
     registry 由外部注入时需自行保证包含所需工具。
-    stress_repo：注入既有的 StressRepository（契约测试用种子库）；
+    stress_repo / collector_repo：注入既有仓储（契约测试用种子库）；
     否则按 db_url/环境变量建库（默认 sqlite 内存库）。
+    agent_token / agent_auth_enabled：探针令牌配置，缺省读环境变量
+    （PERF_AGENT_TOKEN / PERF_AUTH_ENABLED），令牌为空时上报通道保持开放。
     """
     if registry is None:
         registry = build_registry()
@@ -50,10 +59,19 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.knowledge = knowledge if knowledge is not None \
         else KnowledgeService(SqliteKnowledgeStore())
     app.state.ai_service = AiAgentService(llm, registry, app.state.knowledge)
+    session_factory = make_session_factory(db_url or database_url())
     app.state.stress_repo = stress_repo if stress_repo is not None \
-        else StressRepository(make_session_factory(db_url or database_url()))
+        else StressRepository(session_factory)
+    app.state.collector_repo = collector_repo if collector_repo is not None \
+        else CollectorRepository(session_factory)
+    app.state.agent_token = (os.environ.get("PERF_AGENT_TOKEN", "")
+                             if agent_token is None else agent_token)
+    app.state.agent_auth_enabled = (
+        os.environ.get("PERF_AUTH_ENABLED", "true").lower() != "false"
+        if agent_auth_enabled is None else agent_auth_enabled)
     app.include_router(ai_router)
     app.include_router(stress_router)
+    app.include_router(collector_router)
     # 全局异常处理对齐 Java GlobalExceptionHandler：任何异常 → 200 + code=1 错误包装
     app.add_exception_handler(RequestValidationError, handle_validation)
     app.add_exception_handler(Exception, handle_exception)
