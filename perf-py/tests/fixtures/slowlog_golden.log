@@ -1,0 +1,19 @@
+# Time: 2026-08-27T13:00:00.123456Z
+# User@Host: root[root] @ localhost [127.0.0.1]  Id:    11
+# Query_time: 1.283376  Lock_time: 0.000145  Rows_sent: 10  Rows_examined: 1000
+use perfdb;
+SET TIMESTAMP=1794572783;
+SELECT o.id, u.name
+  FROM perf_order o
+  JOIN perf_user u ON u.id = o.user_id
+ WHERE o.status = 'SHIPPED';
+# Time: 2026-08-27T13:00:05Z
+# User@Host: perf[perf] @  [10.0.0.8]
+# Query_time: 0.5  Lock_time: 0  Rows_sent: 1  Rows_examined: 50000
+SET TIMESTAMP=1794572785;
+SELECT count(*) FROM perf_order WHERE status = 'SHIPPED';
+# Time: 2026-08-27T13:01:10Z
+# User@Host: app[app] @  [10.0.0.9]
+# Query_time: 2.5  Lock_time: 0.000100  Rows_sent: 0  Rows_examined: 50000
+SET TIMESTAMP=1794572870;
+SELECT * FROM perf_order WHERE user_id = 42 ORDER BY create_time DESC;

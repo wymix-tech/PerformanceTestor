@@ -34,7 +34,10 @@ ENDPOINTS = [
     {"name": "auth_me", "method": "GET", "path": "/api/auth/me"},
     {"name": "stress_tasks", "method": "GET", "path": "/api/stress/tasks?limit=5"},
     {"name": "stress_task_detail", "method": "GET", "path": "/api/stress/tasks/1"},
-    {"name": "stress_trend", "method": "GET", "path": "/api/stress/trend?limit=5"},
+    # trend 首次捕获缺 appName/url 必填参数，拿到的是错误包装；改为带参重捕得真实契约
+    {"name": "stress_trend", "method": "GET",
+     "path": "/api/stress/trend?appName=demo-app"
+             "&url=http%3A%2F%2Flocalhost%3A8081%2Fapi%2Fuser%2Flist%3Flimit%3D2000&limit=5"},
     {"name": "datagen_tasks", "method": "GET", "path": "/api/datagen/tasks?limit=5"},
     {"name": "ai_tools", "method": "GET", "path": "/api/ai/tools"},
     {"name": "ai_knowledge", "method": "GET", "path": "/api/ai/knowledge?limit=5"},
