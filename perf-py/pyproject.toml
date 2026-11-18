@@ -61,7 +61,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # 阶段 1：perf_cli + scenario；阶段 2 增加 engine；阶段 3 增加 datagen；阶段 4 增加 tools/agents/server
-packages = ["perf_cli", "scenario", "engine", "datagen", "tools", "agents", "server"]
+# R0（PTDE B0）：增加 ptde + ptde_common
+packages = ["perf_cli", "scenario", "engine", "datagen", "tools", "agents", "server", "ptde", "ptde_common"]
 
 [tool.ruff]
 line-length = 100

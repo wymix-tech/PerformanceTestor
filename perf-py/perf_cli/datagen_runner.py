@@ -136,6 +136,15 @@ def spec_from_request(req: dict, source_files: list[SourceFile] | None = None) -
     spec.orphan_rate = req.get("orphanRate")
     spec.dry_run = bool(req.get("dryRun"))
     spec.source_files = source_files
+    # QW1：seed 可选字段（缺省不出现，不破坏契约）；非法值显式报错
+    seed = req.get("seed")
+    if seed is None or (isinstance(seed, str) and not seed.strip()):
+        spec.seed = None
+    else:
+        try:
+            spec.seed = int(seed)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"seed 必须是整数: {seed!r}") from exc
 
     tables: list[TableSpec] = []
     req_tables = req.get("tables")

@@ -154,6 +154,39 @@ def detail(task_id: int, request: Request) -> dict:
     return _ok(task.to_camel() if task is not None else None)
 
 
+# ---------------------------------------------------------------- QW2 按任务清理（非契约内）
+
+
+@router.post("/tasks/{task_id}/cleanup")
+async def cleanup_task(task_id: int, request: Request,
+                       mode: str = Query("task_rows"),
+                       confirm: bool = Query(False),
+                       exclusive: bool = Query(False)) -> dict:
+    """按任务清理灌入数据（QW2 最小版；非契约内新端点）。
+
+    档位 rebuild=整库/Schema 重建（逐表 TRUNCATE，仅限独占目标 exclusive=true）；
+    档位 task_rows=按任务所有权范围标记删除。无所有权标记的共享表拒绝并报告；
+    清理动作（含拒绝/失败）落 data_gen_cleanup_audit 审计。
+    请求体可选：dbUser/dbPassword 手填凭据或 connId 复用连接配置。
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — 允许空体
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        return _ok(_service(request).cleanup_task(task_id, mode, confirm, exclusive, body))
+    except ValueError as exc:
+        return _err(str(exc))
+
+
+@router.get("/cleanup-audits")
+def cleanup_audits(request: Request, limit: int = 50) -> dict:
+    """清理审计查询（create_time,id 倒序，1..200 截断）。"""
+    return _ok([a.to_camel() for a in _repo(request).cleanup_audits(limit)])
+
+
 @router.get("/suggestions")
 def suggestions(request: Request,
                 repo_id: int | None = Query(None, alias="repoId"),

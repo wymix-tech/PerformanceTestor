@@ -5,6 +5,9 @@
 
 数值语义对齐 Java：Math.round 为 floor(x+0.5)（非 Python 银行家舍入）；
 nextInt(a,b) 为 [a,b)（Python 用 randint(a, b-1) 等价表达）。
+
+QW1 Seed 可复现：生成函数均支持可选 rng（random.Random 实例）注入；
+rng=None 时沿用模块级 random，行为与历史版本完全一致（兼容保证）。
 """
 
 from __future__ import annotations
@@ -24,25 +27,31 @@ def _java_round(x: float) -> int:
     return math.floor(x + 0.5)
 
 
-def generate_default(col: ColumnMeta):
+def _pick(rng=None):
+    """随机源：注入 rng 优先，否则模块级 random（现行为）。"""
+    return rng if rng is not None else random
+
+
+def generate_default(col: ColumnMeta, rng=None):
     """列类型默认生成器（承接原 DataGenService.generateDefault 行为）。"""
+    r = _pick(rng)
     type_name = col.type_name if col.type_name is not None else "VARCHAR"
     base = base_type(type_name)
     if base == "INT":
-        return random.randint(1, 99999)
+        return r.randint(1, 99999)
     if base == "BIGINT":
-        return random.randint(0, 2**63 - 1)
+        return r.randint(0, 2**63 - 1)
     if base in ("FLOAT", "DOUBLE"):
-        return _java_round(random.random() * 10000) / 100.0
+        return _java_round(r.random() * 10000) / 100.0
     if base == "DECIMAL":
-        return _java_round(random.random() * 100000) / 100.0
+        return _java_round(r.random() * 100000) / 100.0
     if base in ("DATE", "DATETIME"):
-        return (datetime.now() - timedelta(days=random.randint(0, 364))).replace(microsecond=0)
+        return (datetime.now() - timedelta(days=r.randint(0, 364))).replace(microsecond=0)
     if base == "BIT":
-        return random.randint(0, 1)
+        return r.randint(0, 1)
     if base == "TEXT":
-        return random_text(min(max(col.size, 1), 200))
-    return random_text(max(1, min(col.size, 64)))
+        return random_text(min(max(col.size, 1), 200), r)
+    return random_text(max(1, min(col.size, 64)), r)
 
 
 def base_type(type_name: str) -> str:
@@ -77,11 +86,12 @@ def is_integer_family(type_name: str) -> bool:
     return base == "INT" or base == "BIGINT"
 
 
-def apply_rule(rule: FieldRule, col: ColumnMeta, row_index: int = 0):
+def apply_rule(rule: FieldRule, col: ColumnMeta, row_index: int = 0, rng=None):
     """按规则生成一行该列的值（ref/refSkew 由引擎从 ID 池采样后直接覆盖）。
 
     row_index 从 0 起，仅供 seq 规则生成单调递增序号使用。
     """
+    r = _pick(rng)
     type_ = rule.type if rule.type is not None else ""
     if type_ == FieldRule.TYPE_FIXED:
         return normalize_scalar(rule.value, col)
@@ -91,29 +101,29 @@ def apply_rule(rule: FieldRule, col: ColumnMeta, row_index: int = 0):
         if mx < mn:
             mn, mx = mx, mn
         ot = rule.over_threshold
-        if ot is not None and random.random() * 100 < ot.share:
+        if ot is not None and r.random() * 100 < ot.share:
             # 越过阈值区间：(value, max]（op=">"）或 [value, max]（op=">="）
             low = ot.value if ot.op == ">=" else math.nextafter(ot.value, math.inf)
-            picked = low + random.random() * max(0.0, mx - low)
+            picked = low + r.random() * max(0.0, mx - low)
         else:
             # 未越阈区间：[min, threshold]（阈值低于 min 时回退 [min, max]）
             high = ot.value if (ot is not None and ot.value > mn) else mx
-            picked = mn + random.random() * (high - mn)
+            picked = mn + r.random() * (high - mn)
         return scale_to_column_type(picked, col)
     if type_ == FieldRule.TYPE_ENUM:
         values = rule.values
         if not values:
-            return generate_default(col)
+            return generate_default(col, r)
         weights = rule.weights
         if (weights is not None and len(weights) == len(values)
                 and sum(weights) > 0):
-            idx = weighted_index(weights)
+            idx = weighted_index(weights, r)
         else:
-            idx = random.randrange(len(values))
+            idx = r.randrange(len(values))
         return normalize_scalar(values[idx], col)
     if type_ == FieldRule.TYPE_SEQ:
         return normalize_scalar(seq_value(rule, row_index), col)
-    return generate_default(col)
+    return generate_default(col, r)
 
 
 def seq_value(rule: FieldRule, row_index: int) -> str:
@@ -126,10 +136,11 @@ def seq_value(rule: FieldRule, row_index: int) -> str:
     return prefix + str(start + row_index)
 
 
-def weighted_index(weights: list[float]) -> int:
+def weighted_index(weights: list[float], rng=None) -> int:
     """权重采样：累计分布 + 线性扫描（候选值通常 ≤ 32 个，无需二分）。"""
+    r = _pick(rng)
     total = sum(weights)
-    pick = random.random() * total
+    pick = r.random() * total
     acc = 0.0
     for i, w in enumerate(weights):
         acc += w
@@ -186,5 +197,6 @@ def scale_to_column_type(picked: float, col: ColumnMeta):
     return Decimal(str(picked)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def random_text(length: int) -> str:
-    return "".join(random.choice(_TEXT_CHARS) for _ in range(length))
+def random_text(length: int, rng=None) -> str:
+    r = _pick(rng)
+    return "".join(r.choice(_TEXT_CHARS) for _ in range(length))

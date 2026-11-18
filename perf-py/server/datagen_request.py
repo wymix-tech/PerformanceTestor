@@ -74,4 +74,6 @@ def parse_datagen_request(payload: dict) -> dict:
         "orphanRate": _opt_float(payload, "orphanRate"),
         "dryRun": _opt_bool(payload, "dryRun"),
         "repoId": payload.get("repoId"),
+        # QW1：可选 seed（缺省不出现；非契约字段，spec 侧仅新增可选字段）
+        "seed": payload.get("seed"),
     }

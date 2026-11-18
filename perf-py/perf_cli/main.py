@@ -131,6 +131,7 @@ def gate(
 def datagen_run(
     spec_file: Path = typer.Argument(..., exists=True, readable=True, help="灌数规格 JSON 文件"),
     dry_run: bool = typer.Option(False, "--dry-run", help="强制试运行（覆盖 spec 内 dryRun 字段）"),
+    seed: int = typer.Option(None, "--seed", help="随机种子（QW1 可复现；覆盖 spec 内 seed 字段）"),
     source_dir: Path = typer.Option(
         None, "--source-dir", exists=True, file_okay=False, help="源码目录（.java/.xml，供语义扫描与 ORM 解析）"
     ),
@@ -157,6 +158,8 @@ def datagen_run(
         raise typer.Exit(EXIT_INVOCATION_ERROR) from None
     if dry_run:
         spec.dry_run = True
+    if seed is not None:
+        spec.seed = seed
 
     engine = build_default_engine()
     listener = ConsoleListener()

@@ -395,6 +395,8 @@ class DataGenSpec:
     """灌数规格：宿主 → 引擎的唯一入参模型。
 
     source_files 为可选源码输入，为空时引擎降级为纯数据库元数据模式。
+    QW1：seed 为可选随机种子（int）；None 时引擎走模块级随机源，行为与
+    历史版本完全一致；非 None 时生成/采样全程使用 random.Random(seed)。
     """
 
     jdbc_url: str | None = None
@@ -405,3 +407,4 @@ class DataGenSpec:
     max_rows: int = 1_000_000
     dry_run: bool = False
     source_files: list[SourceFile] | None = None
+    seed: int | None = None

@@ -34,6 +34,12 @@ TABLE_NAME_REGEX = re.compile(r"^[A-Za-z0-9_]+$")
 SELF_CHECK_ENDPOINTS = 3
 # SourceFileProvider.GEN_SCAN_LIMIT：灌数扫描的文件上限
 GEN_SCAN_LIMIT = 200
+# QW2 清理档位（落地方案 §6.1 / 总方案 §12.5）
+CLEANUP_MODE_REBUILD = "rebuild"
+CLEANUP_MODE_TASK_ROWS = "task_rows"
+CLEANUP_MODES = (CLEANUP_MODE_REBUILD, CLEANUP_MODE_TASK_ROWS)
+# 总方案 §13.1：URL 含生产标识的库一律拒绝清理
+PROD_URL_MARKERS = ("prod", "production")
 
 
 def _nvl(s: str | None) -> str:
@@ -74,6 +80,46 @@ def _connect(db_url: str, db_user: str | None, db_password: str | None):
                 raise _ConnectError(str(exc)) from exc
             return conn, dialect
     raise ValueError("JDBC URL 仅支持 jdbc:mysql:// 或 jdbc:postgresql:// 前缀")
+
+
+def _max_pk(conn, dialect, table: str, pk_column: str) -> int | None:
+    """表主键当前最大值（空表返回 None）。"""
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT MAX({dialect.quote_identifier(pk_column)}) "
+                    f"FROM {dialect.quote_identifier(table)}")
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    finally:
+        cur.close()
+
+
+def _int_pk_watermark(conn, dialect, table: str | None) -> tuple[str, int] | None:
+    """单自增整型主键表返回 (主键列, 当前 MAX(pk))；否则 None（无法标记所有权）。"""
+    if not table:
+        return None
+    from datagen.rule_engine import base_type
+
+    meta = dialect.fetch_metadata(conn, table)
+    if not meta.columns or len(meta.primary_keys) != 1:
+        return None
+    pk = next(iter(meta.primary_keys))
+    col = meta.find_column(pk)
+    if col is None or base_type(col.type_name or "") not in ("INT", "BIGINT"):
+        return None
+    max_val = _max_pk(conn, dialect, table, pk)
+    return pk, max_val if max_val is not None else 0
+
+
+def _table_count(conn, dialect, table: str) -> int:
+    """表当前行数（审计口径：rebuild 清理前行数合计）。"""
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) FROM {dialect.quote_identifier(table)}")
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    finally:
+        cur.close()
 
 
 def _load_source_files(repo, files_index: list, limit: int = GEN_SCAN_LIMIT) -> list:
@@ -222,20 +268,31 @@ class DatagenWriteService:
     # ------------------------------------------------------------ 引擎执行
 
     def _run_task(self, task_id: int, payload: dict) -> None:
-        """对齐 DATAGEN_EXECUTOR 提交体：pending→running→finished/failed。"""
+        """对齐 DATAGEN_EXECUTOR 提交体：pending→running→finished/failed。
+
+        QW2：非 dryRun 成功后按灌数前后主键水位落 data_gen_task_scope
+        （所有权范围，档位 2 按任务清理依据）；失败仅日志，不影响任务状态。
+        """
         import time
 
         start = time.monotonic()
         request = parse_datagen_request(payload)
         try:
             self._repo.update_task_status(task_id, "running")
+            watermarks = self._capture_watermarks(request)
             result = self._run_engine(request, task_id)
             cost_ms = int((time.monotonic() - start) * 1000)
             if result["success"]:
-                self._repo.update_task_finished(task_id, "finished",
+                if not request.get("dryRun"):
+                    self._record_scope(task_id, request, watermarks)
+                # QW3：验证失败显式标注任务状态（数据已灌入，不伪装成功/失败）
+                status = ("finished_verify_failed"
+                          if result.get("verifyPassed") is False else "finished")
+                self._repo.update_task_finished(task_id, status,
                                                 int(result["insertedRows"]), cost_ms, None)
-                log.info("datagen finished, taskId=%s, dryRun=%s, rows=%s",
-                         task_id, request.get("dryRun"), result["insertedRows"])
+                log.info("datagen finished, taskId=%s, dryRun=%s, rows=%s, verify=%s",
+                         task_id, request.get("dryRun"), result["insertedRows"],
+                         result.get("verifyPassed"))
             else:
                 self._repo.update_task_finished(task_id, "failed", 0, cost_ms,
                                                 result.get("errorMsg"))
@@ -243,6 +300,81 @@ class DatagenWriteService:
             cost_ms = int((time.monotonic() - start) * 1000)
             log.error("datagen failed, taskId=%s", task_id, exc_info=exc)
             self._repo.update_task_finished(task_id, "failed", 0, cost_ms, str(exc))
+
+    # ------------------------------------------------------------ QW2 所有权范围
+
+    @staticmethod
+    def _task_tables(request: dict) -> list[str]:
+        """任务灌数范围表清单（表组形态或旧单表形态）。"""
+        tables = request.get("tables")
+        if tables:
+            return [t.get("tableName") for t in tables if t.get("tableName")]
+        name = request.get("tableName")
+        return [name] if name else []
+
+    def _capture_watermarks(self, request: dict) -> dict[str, tuple[str, int]]:
+        """灌数前逐表捕获自增主键水位（表名 → (主键列, 灌数前 MAX(pk))）。
+
+        尽力而为：无单自增整型主键的表不标记（档位 2 清理时将拒绝）；
+        任何失败仅日志告警，不阻断灌数任务。
+        """
+        out: dict[str, tuple[str, int]] = {}
+        db_url = request.get("dbUrl")
+        if request.get("dryRun") or not db_url:
+            return out
+        try:
+            conn, dialect = _connect(db_url, request.get("dbUser"),
+                                     request.get("dbPassword"))
+        except Exception as exc:  # noqa: BLE001 — 尽力而为
+            log.warning("capture watermarks failed: %s", exc)
+            return out
+        try:
+            for table in self._task_tables(request):
+                info = _int_pk_watermark(conn, dialect, table)
+                if info is not None:
+                    out[table.lower()] = info
+        except Exception as exc:  # noqa: BLE001 — 尽力而为
+            log.warning("capture watermarks failed: %s", exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
+    def _record_scope(self, task_id: int, request: dict,
+                      watermarks: dict[str, tuple[str, int]]) -> None:
+        """灌数成功后逐表复测 MAX(pk)，落所有权范围 (from, to]（幂等替换）。"""
+        if not watermarks:
+            return
+        db_url = request.get("dbUrl")
+        rows = []
+        try:
+            conn, dialect = _connect(db_url, request.get("dbUser"),
+                                     request.get("dbPassword"))
+        except Exception as exc:  # noqa: BLE001 — 尽力而为
+            log.warning("record task scope failed: %s", exc)
+            return
+        try:
+            for table, (pk_col, old_max) in watermarks.items():
+                new_max = _max_pk(conn, dialect, table, pk_col)
+                if new_max is None or new_max <= old_max:
+                    continue
+                rows.append({"table_name": table, "pk_column": pk_col,
+                             "watermark_from": old_max, "watermark_to": new_max,
+                             "row_count": int(new_max - old_max)})
+        except Exception as exc:  # noqa: BLE001 — 尽力而为
+            log.warning("record task scope failed: %s", exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if rows:
+            try:
+                self._repo.replace_scope(task_id, rows)
+            except Exception as exc:  # noqa: BLE001 — 尽力而为
+                log.warning("persist task scope failed: %s", exc)
 
     def _run_engine(self, request: dict, task_id: int) -> dict:
         """对齐 runEngine：spec 装配 → listener → 环依赖降级重试 → detailJson。"""
@@ -317,11 +449,56 @@ class DatagenWriteService:
             sc = self._self_check(request, repo)
             if sc is not None:
                 detail["selfCheck"] = sc
+            # QW3：生成后验证最小集（报告落 detailJson；失败显式标注，不伪装成功）
+            verify = self._verify_after_gen(request)
+            if verify is not None:
+                detail["verifyMin"] = verify
 
         self._repo.update_detail(task_id, json.dumps(detail, ensure_ascii=False),
                                  int(result.total_rows))
+        verify = detail.get("verifyMin")
         return {"success": result.success, "insertedRows": result.inserted_rows,
-                "errorMsg": result.error_msg}
+                "errorMsg": result.error_msg,
+                "verifyPassed": verify["passed"] if verify else None}
+
+    def _verify_after_gen(self, request: dict) -> dict | None:
+        """灌数成功后的最小验证（QW3）：行数核对 + 外键孤儿抽检 + 枚举合法率。
+
+        连接失败/执行异常仅日志（目标库此刻不可达等），不影响任务结果；
+        dryRun 由调用方保证不进入本路径。
+        """
+        from datagen.verify_min import verify_min
+
+        tables = [{"table": t, "expected": row_count}
+                  for t, row_count in self._expected_rows(request)]
+        if not tables:
+            return None
+        try:
+            conn, dialect = _connect(request.get("dbUrl"), request.get("dbUser"),
+                                     request.get("dbPassword"))
+        except Exception as exc:  # noqa: BLE001 — 验证尽力而为
+            log.warning("verify after gen skipped (connect failed): %s", exc)
+            return None
+        try:
+            return verify_min(conn, dialect, tables)
+        except Exception as exc:  # noqa: BLE001 — 验证尽力而为
+            log.warning("verify after gen failed: %s", exc)
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _expected_rows(request: dict) -> list[tuple[str, int]]:
+        """验证目标行数（与任务灌数范围一致：表组形态或旧单表形态）。"""
+        tables = request.get("tables")
+        if tables:
+            return [(t.get("tableName"), int(t.get("rowCount") or 0))
+                    for t in tables if t.get("tableName")]
+        name = request.get("tableName")
+        return [(name, int(request.get("rowCount") or 0))] if name else []
 
     def _persist_hints(self, repo_id, magic_hints, relation_hints) -> None:
         """对齐 persistHints：value → pending；relation → naming 系 pending、
@@ -497,6 +674,155 @@ class DatagenWriteService:
         if hint is None:
             raise ValueError(f"建议不存在: {hint_id}")
         self._repo.hint_update_status(hint_id, "adopted" if adopt else "dismissed")
+
+    # ------------------------------------------------------------ QW2 按任务清理
+
+    def cleanup_task(self, task_id: int, mode: str = CLEANUP_MODE_TASK_ROWS,
+                     confirm: bool = False, exclusive: bool = False,
+                     body: dict | None = None) -> dict:
+        """按任务清理（QW2 最小版，非契约内新端点；总方案 §12.5 清理策略）。
+
+        档位 rebuild：整库/Schema 重建（逐表 TRUNCATE，仅限独占目标 exclusive=true
+        门禁确认）；档位 task_rows：按所有权范围 (watermark_from, watermark_to]
+        标记删除。无所有权标记的共享表拒绝并报告；拒绝/失败/成功均落审计。
+        """
+        task = self._repo.task_by_id(task_id)
+        if task is None:
+            raise ValueError(f"任务不存在: {task_id}")
+        mode = (mode or "").strip().lower()
+        if mode not in CLEANUP_MODES:
+            raise ValueError("清理档位仅支持 rebuild（整库/Schema 重建）"
+                             "或 task_rows（按任务标记删除）")
+        if task.status != "finished":
+            raise ValueError(f"任务未完成，无法清理（当前状态: {task.status}）")
+        db_url = task.db_url or ""
+        if any(m in db_url.lower() for m in PROD_URL_MARKERS):
+            self._audit_cleanup(task_id, mode, db_url, None, 0, "rejected",
+                                "目标库 URL 含生产标识，禁止清理")
+            raise ValueError("目标库 URL 含生产标识，禁止清理")
+        if not confirm:
+            self._audit_cleanup(task_id, mode, db_url, None, 0, "rejected",
+                                "破坏性操作需显式确认（confirm=true）")
+            raise ValueError("破坏性操作需显式确认（confirm=true）")
+        if mode == CLEANUP_MODE_REBUILD and not exclusive:
+            self._audit_cleanup(task_id, mode, db_url, None, 0, "rejected",
+                                "整库重建仅限独占目标，需显式确认独占（exclusive=true）")
+            raise ValueError("整库重建仅限独占目标，需显式确认独占（exclusive=true）")
+        tables = self._task_scope_tables(task)
+        if not tables:
+            raise ValueError("任务灌数范围为空，无可清理目标")
+
+        scope_by_table: dict = {}
+        if mode == CLEANUP_MODE_TASK_ROWS:
+            for r in self._repo.scope_for_task(task_id):
+                scope_by_table[r.table_name.lower()] = r
+            missing = [t for t in tables if t.lower() not in scope_by_table]
+            if missing:
+                msg = "以下表无所有权标记，拒绝清理: " + ", ".join(missing)
+                self._audit_cleanup(task_id, mode, db_url, tables, 0, "rejected", msg)
+                raise ValueError(msg)
+
+        creds = self._resolve_cleanup_creds(body)
+        try:
+            conn, dialect = _connect(db_url, creds.get("dbUser"), creds.get("dbPassword"))
+        except Exception as exc:
+            self._audit_cleanup(task_id, mode, db_url, tables, 0, "failed",
+                                f"连接目标库失败: {exc}")
+            raise ValueError(f"连接目标库失败: {exc}") from exc
+
+        results: list[dict] = []
+        deleted = 0
+        try:
+            cur = conn.cursor()
+            try:
+                if mode == CLEANUP_MODE_REBUILD:
+                    for t in tables:
+                        count = _table_count(conn, dialect, t)
+                        cur.execute("TRUNCATE TABLE " + dialect.quote_identifier(t))
+                        results.append({"table": t, "action": "truncate", "rows": count})
+                        deleted += count
+                else:
+                    for t in tables:
+                        r = scope_by_table[t.lower()]
+                        ph = getattr(dialect, "param", "?")
+                        q = dialect.quote_identifier
+                        cur.execute(
+                            f"DELETE FROM {q(r.table_name)} WHERE {q(r.pk_column)} > {ph} "
+                            f"AND {q(r.pk_column)} <= {ph}",
+                            (r.watermark_from, r.watermark_to))
+                        n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                        results.append({"table": r.table_name, "action": "delete_range",
+                                        "rows": n, "from": r.watermark_from,
+                                        "to": r.watermark_to})
+                        deleted += n
+                conn.commit()
+            finally:
+                cur.close()
+        except ValueError:
+            self._safe_rollback(conn)
+            self._audit_cleanup(task_id, mode, db_url, tables, deleted, "failed",
+                                "清理执行失败（范围校验）")
+            raise
+        except Exception as exc:  # noqa: BLE001 — 失败留审计后包装上抛
+            self._safe_rollback(conn)
+            self._audit_cleanup(task_id, mode, db_url, tables, deleted, "failed",
+                                f"清理执行失败: {exc}")
+            raise ValueError(f"清理执行失败: {exc}") from exc
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        audit_id = self._audit_cleanup(task_id, mode, db_url, tables, deleted,
+                                       "success", f"清理完成（{mode}，{len(results)} 张表）")
+        return {"taskId": task_id, "mode": mode, "deletedRows": deleted,
+                "tables": results, "auditId": audit_id}
+
+    def _audit_cleanup(self, task_id: int, mode: str, db_url: str,
+                       tables: list[str] | None, deleted_rows: int,
+                       status: str, message: str) -> int:
+        """清理审计（拒绝/失败/成功均留痕；审计失败仅日志，不掩盖原错误）。"""
+        try:
+            return self._repo.insert_cleanup_audit(
+                task_id=task_id, mode=mode, db_url=db_url,
+                tables_json=json.dumps(tables, ensure_ascii=False) if tables else None,
+                deleted_rows=deleted_rows, status=status, message=message)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("persist cleanup audit failed: %s", exc)
+            return 0
+
+    def _task_scope_tables(self, task) -> list[str]:
+        """任务灌数范围表清单（tablesJson 表组形态优先，回退单表 table_name）。"""
+        if task.tables_json:
+            try:
+                rows = json.loads(task.tables_json)
+                names = [t.get("tableName") for t in rows
+                         if isinstance(t, dict) and t.get("tableName")]
+                if names:
+                    return names
+            except (TypeError, ValueError):
+                pass
+        return [task.table_name] if task.table_name else []
+
+    def _resolve_cleanup_creds(self, body: dict | None) -> dict:
+        """清理凭据：body 手填 dbUser/dbPassword，或 connId 命中时覆盖（对齐 applyConn）。"""
+        body = body or {}
+        creds = {"dbUser": body.get("dbUser"), "dbPassword": body.get("dbPassword")}
+        conn_id = self._parse_conn_id(body.get("connId"))
+        if conn_id is not None:
+            conn = self._repo.find_db_conn(conn_id)
+            if conn is not None:
+                creds = {"dbUser": conn.username,
+                         "dbPassword": crypto.decrypt(conn.password)}
+        return creds
+
+    @staticmethod
+    def _safe_rollback(conn) -> None:
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class _Listener:

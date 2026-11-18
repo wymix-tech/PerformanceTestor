@@ -614,3 +614,162 @@ VALUES (2, '', '压测预热与阶梯加压的必要性',
         '做法：warmupSec 默认 10s 且预热期不计入正式统计；rampUpSec 阶梯升并发，让服务端预热与连接池填充平滑完成。\n'
         '判读：容量评估应取预热后的稳定段数据，否则拟合出的拐点并发会偏保守。',
         'stress,warmup,capacity', 'manual');
+
+-- =====================================================================
+-- 13. PTDE：智能测试数据引擎新表（实施方案 §12.1，R0 批次 B0）
+-- 原则：新表一律追加，幂等 CREATE TABLE IF NOT EXISTS；不改既有表结构。
+-- =====================================================================
+
+-- 13.1 ptde_dataset_definition：数据集定义（可复用，def_key+version 唯一）
+CREATE TABLE IF NOT EXISTS ptde_dataset_definition (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  def_key VARCHAR(128) NOT NULL COMMENT '逻辑名',
+  version VARCHAR(32) NOT NULL DEFAULT '1',
+  name VARCHAR(128) NOT NULL,
+  spec_json MEDIUMTEXT NOT NULL COMMENT 'DatasetSpec 落库形态（A6：pydantic 规范 JSON）',
+  spec_fingerprint CHAR(64) NOT NULL,
+  profile_fingerprint CHAR(64) NULL COMMENT '关联统计画像指纹',
+  seed BIGINT NULL,
+  created_by VARCHAR(64) NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_def_version (def_key, version),
+  KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='PTDE 数据集定义';
+
+-- 13.2 ptde_dataset_instance：数据集实例（状态机宿主；含 A4a 存量迁移映射字段）
+CREATE TABLE IF NOT EXISTS ptde_dataset_instance (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  definition_id BIGINT UNSIGNED NOT NULL,
+  definition_version VARCHAR(32) NOT NULL,
+  plan_id BIGINT UNSIGNED NULL COMMENT 'GenerationPlan 引用',
+  environment_label VARCHAR(128) NOT NULL COMMENT '目标环境标识（product/version/environment_id）',
+  schema_fingerprint CHAR(64) NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PLANNED' COMMENT '状态机：PLANNED/GENERATING/LOADING/VERIFYING/READY/PARTIAL/FAILED/CLEANING/CLEANED/CANCELLED',
+  transition_log MEDIUMTEXT NULL COMMENT '转换记录 JSON 数组：from/to/operator/reason/occurred_at',
+  actual_rows BIGINT NULL,
+  actual_storage_bytes BIGINT NULL,
+  owner_token CHAR(64) NULL COMMENT '清理所有权标记（总方案 §12.5）',
+  validation_summary MEDIUMTEXT NULL,
+  error_msg TEXT NULL,
+  legacy_plan_id BIGINT UNSIGNED NULL COMMENT 'A4a 迁移映射：来源 data_gen_plan.id',
+  legacy_task_ids TEXT NULL COMMENT 'A4a 迁移映射：来源 data_gen_task.id JSON 数组',
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_definition (definition_id),
+  KEY idx_status (status),
+  KEY idx_legacy_plan (legacy_plan_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='PTDE 数据集实例';
+
+-- 13.3 ptde_execution_manifest：执行清单（可复现要素汇总，总方案 §12.4）
+CREATE TABLE IF NOT EXISTS ptde_execution_manifest (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  instance_id BIGINT UNSIGNED NOT NULL,
+  seed BIGINT NULL,
+  generator_version VARCHAR(32) NOT NULL,
+  partition_algorithm_version VARCHAR(16) NOT NULL,
+  spec_fingerprint CHAR(64) NOT NULL,
+  plan_fingerprint CHAR(64) NULL,
+  profile_fingerprint CHAR(64) NULL,
+  schema_fingerprint CHAR(64) NULL,
+  adapter_capability_json MEDIUMTEXT NULL COMMENT 'Capability Probe 快照',
+  adapter_version VARCHAR(32) NULL,
+  time_inputs_json TEXT NULL COMMENT '时间输入固定值',
+  actual_id_ranges_json MEDIUMTEXT NULL COMMENT '各实体实际 ID 区间',
+  shard_summary_json MEDIUMTEXT NULL COMMENT '分片摘要',
+  start_time DATETIME NULL,
+  end_time DATETIME NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_instance (instance_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='PTDE 执行清单';
+
+-- 13.4 ptde_validation_report：验证报告（五层）
+CREATE TABLE IF NOT EXISTS ptde_validation_report (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  instance_id BIGINT UNSIGNED NOT NULL,
+  layer VARCHAR(16) NOT NULL COMMENT 'count/relationship/distribution/business/db_ready',
+  status VARCHAR(8) NOT NULL COMMENT 'PASS/WARN/FAIL',
+  metrics_json MEDIUMTEXT NULL,
+  tolerance_json TEXT NULL,
+  evidence_json MEDIUMTEXT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_instance_layer (instance_id, layer)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='PTDE 验证报告';
+
+-- 13.5 ptde_finding：分析发现与采纳流（R1，实施方案 §12.2）
+-- 复用 semantic_hint 的 pending/adopted/dismissed 工作流；uk_finding 幂等 upsert
+CREATE TABLE IF NOT EXISTS ptde_finding (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  repo_id BIGINT UNSIGNED NULL,
+  finding_type VARCHAR(32) NOT NULL COMMENT 'relation/access_pattern/enum/business_rule/tech_stack/...',
+  value_json TEXT NOT NULL COMMENT '发现内容（结构化）',
+  status_three VARCHAR(16) NOT NULL COMMENT '证据三态：CONFIRMED/INFERRED/UNKNOWN',
+  source_object VARCHAR(255) NULL COMMENT 'source_file 或 database_object',
+  evidence_json TEXT NULL,
+  confidence DOUBLE NULL,
+  analyzer_version VARCHAR(32) NOT NULL,
+  adopt_status VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending/adopted/dismissed（复用 semantic_hint 工作流）',
+  legacy_hint_id BIGINT UNSIGNED NULL COMMENT 'A4a 迁移映射：来源 semantic_hint.id',
+  value_fingerprint CHAR(64) NOT NULL COMMENT 'value_json 规范哈希（幂等 upsert 键）',
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_finding (repo_id, finding_type, source_object, value_fingerprint),
+  KEY idx_type_status (finding_type, adopt_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='PTDE 分析发现与采纳流';
+
+-- ---------------------------------------------------------------------
+-- 12.2 QW2 按任务清理最小版（落地方案 §6.1；总方案 §12.5 清理策略）
+-- ---------------------------------------------------------------------
+-- 灌数任务所有权范围：任务执行成功后逐表记录自增主键灌数区间
+-- (watermark_from, watermark_to]，是档位 2「按任务 ID 标记删除」的唯一清理依据；
+-- 无范围记录的表视为无所有权标记 → 拒绝清理并报告（总方案 §12.5）。
+CREATE TABLE IF NOT EXISTS data_gen_task_scope (
+  id             BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+  task_id        BIGINT UNSIGNED NOT NULL COMMENT '灌数任务 ID',
+  table_name     VARCHAR(128)   NOT NULL COMMENT '表名',
+  pk_column      VARCHAR(128)   NOT NULL COMMENT '自增主键列名（所有权标记列）',
+  watermark_from BIGINT         NOT NULL DEFAULT 0 COMMENT '灌数前主键水位（区间开）',
+  watermark_to   BIGINT         NOT NULL DEFAULT 0 COMMENT '灌数后主键水位（区间闭）',
+  row_count      INT            NOT NULL DEFAULT 0 COMMENT '本任务灌入行数（watermark_to - watermark_from）',
+  create_time    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_task_table (task_id, table_name),
+  KEY idx_task (task_id)
+) ENGINE = InnoDB COMMENT = '灌数任务所有权范围（按任务清理依据）';
+
+-- 清理审计：所有破坏性动作（rebuild/task_rows 两档）逐次留痕，拒绝亦留痕。
+CREATE TABLE IF NOT EXISTS data_gen_cleanup_audit (
+  id          BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+  task_id     BIGINT UNSIGNED NOT NULL COMMENT '灌数任务 ID',
+  mode        VARCHAR(16)    NOT NULL COMMENT '清理档位：rebuild 整库重建 / task_rows 按任务标记删除',
+  db_url      VARCHAR(255)   NOT NULL COMMENT '目标库 JDBC URL',
+  tables_json MEDIUMTEXT     NULL COMMENT '清理范围表清单 JSON',
+  deleted_rows INT           NOT NULL DEFAULT 0 COMMENT '删除行数（rebuild 为清理前行数合计）',
+  status      VARCHAR(16)    NOT NULL COMMENT '结果：success/failed/rejected',
+  message     TEXT           NULL COMMENT '结果说明或拒绝/失败原因',
+  create_time DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (id),
+  KEY idx_task (task_id)
+) ENGINE = InnoDB COMMENT = '数据清理审计（QW2）';
+
+-- ---------------------------------------------------------------------
+-- 13.6 ptde_statistics_profile：统计画像（R2，实施方案 §12.3 原文 DDL）
+-- ---------------------------------------------------------------------
+-- 画像落库供复用（StatisticsProfile 落库形态 + 指纹）；A5 脱敏 credential_label
+-- 记录所用凭据身份（不含密码）；uk_profile_version 幂等 upsert 键。
+CREATE TABLE IF NOT EXISTS ptde_statistics_profile (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  profile_key VARCHAR(128) NOT NULL,
+  version VARCHAR(32) NOT NULL DEFAULT '1',
+  source_type VARCHAR(32) NOT NULL COMMENT 'db_readonly/file_upload/test_db_self',
+  database_type VARCHAR(32) NULL,
+  collected_at DATETIME NOT NULL,
+  sampling_rate DOUBLE NULL,
+  accuracy VARCHAR(16) NOT NULL DEFAULT 'estimated' COMMENT 'exact/approximate/estimated',
+  credential_label VARCHAR(64) NULL COMMENT '所用凭据身份（脱敏标识，A5）',
+  profile_json MEDIUMTEXT NOT NULL COMMENT 'StatisticsProfile 落库形态',
+  fingerprint CHAR(64) NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_profile_version (profile_key, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='PTDE 统计画像';
+

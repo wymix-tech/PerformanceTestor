@@ -46,6 +46,11 @@ HOT_ROW_SHARE_WARN = 50.0
 _TABLE_NAME_OK = re.compile(r"[A-Za-z0-9_]+")
 
 
+def _rand(rng):
+    """QW1 随机源：seed 路径为注入的 random.Random；None 时模块级 random（现行为）。"""
+    return rng if rng is not None else random
+
+
 class DefaultDataGenEngine:
     """灌数引擎（方言按 JDBC URL 路由；ORM 解析器按源码特征路由）。"""
 
@@ -140,8 +145,12 @@ class DefaultDataGenEngine:
                         result.table_stats.append(TableStat(ts.table_name, ts.row_count))
                     result.success = True
                     return result
+                # QW1：seed 注入的可复现随机源（每 execute 独立实例，保证无状态契约）；
+                # seed=None 时为 None，全部采样回落模块级 random，行为不变
+                rng = random.Random(spec.seed) if spec.seed is not None else None
                 result.inserted_rows = self._insert_all(
-                    spec, conn, metas, rel, order, listener, result, dialect, enum_values)
+                    spec, conn, metas, rel, order, listener, result, dialect,
+                    enum_values, rng)
                 result.success = True
                 return result
             finally:
@@ -155,7 +164,8 @@ class DefaultDataGenEngine:
 
     def _insert_all(self, spec: DataGenSpec, conn, metas, rel, order,
                     listener: EngineListener, result: EngineResult,
-                    dialect: DatabaseDialect, enum_values: dict[str, list]) -> int:
+                    dialect: DatabaseDialect, enum_values: dict[str, list],
+                    rng=None) -> int:
         total_inserted = 0
         total_rows = result.total_rows
 
@@ -176,26 +186,29 @@ class DefaultDataGenEngine:
             # 先填充依赖父表的 ID 池
             for edge in table_edges.values():
                 self._ensure_pool(spec, conn, metas, pools,
-                                  edge.parent_table or "", edge.parent_column or "", dialect)
+                                  edge.parent_table or "", edge.parent_column or "",
+                                  dialect, rng)
 
             inserted = self._insert_table(spec, conn, meta, ts, table_edges, pools, listener,
-                                          total_inserted, total_rows, dialect, enum_values)
+                                          total_inserted, total_rows, dialect, enum_values,
+                                          rng)
             total_inserted += inserted
             result.table_stats.append(TableStat(table_name, inserted))
 
             # 自引用表：本表主键也进入池（后续行引用已插行）
             if any(e.parent_table == table_name for e in table_edges.values()):
                 pk = next(iter(meta.primary_keys)) if meta.primary_keys else "id"
-                self._ensure_pool(spec, conn, metas, pools, table_name, pk, dialect)
+                self._ensure_pool(spec, conn, metas, pools, table_name, pk, dialect, rng)
         return total_inserted
 
     def _ensure_pool(self, spec: DataGenSpec, conn, metas, pools,
-                     table: str, column: str, dialect: DatabaseDialect) -> None:
+                     table: str, column: str, dialect: DatabaseDialect,
+                     rng=None) -> None:
         """确保父表主键池已填充（分段游标拉取，上限 50 万；幂等）。"""
         by_col = pools.setdefault(table, {})
         if column in by_col:
             return
-        pool = IdPool()
+        pool = IdPool(rng)
         meta = metas.get(table)
         col = meta.find_column(column) if meta is not None else None
         auto_increment_pk = col is not None and col.auto_increment
@@ -240,7 +253,7 @@ class DefaultDataGenEngine:
     def _insert_table(self, spec: DataGenSpec, conn, meta: SchemaMetadata, ts: TableSpec,
                       table_edges, pools, listener: EngineListener, inserted_before: int,
                       total_rows: int, dialect: DatabaseDialect,
-                      enum_values: dict[str, list]) -> int:
+                      enum_values: dict[str, list], rng=None) -> int:
         """单表生成与批量插入（每表独立事务；ref/refSkew 采样 + orphanRate 独立池后置替换）。"""
         insert_columns: list[str] = []
         cols = []
@@ -281,7 +294,7 @@ class DefaultDataGenEngine:
             for row in range(ts.row_count):
                 batch.append(self._build_row(meta, ts, insert_columns, cols, table_edges,
                                              pools, pk, self_ref, orphan_rate,
-                                             enum_values, row))
+                                             enum_values, row, rng))
                 if len(batch) >= batch_size:
                     self.executor.execute_batch(conn, sql, batch)
                     inserted += len(batch)
@@ -301,10 +314,11 @@ class DefaultDataGenEngine:
 
     def _build_row(self, meta: SchemaMetadata, ts: TableSpec, insert_columns, cols,
                    table_edges, pools, pk: str, self_ref: bool, orphan_rate: float,
-                   enum_values: dict[str, list], row_index: int) -> list:
+                   enum_values: dict[str, list], row_index: int, rng=None) -> list:
         """构造一行参数值：规则引擎 + DB 枚举发现 + ref/refSkew 池采样 + orphanRate 后置替换。"""
+        r = _rand(rng)
         row: list = []
-        orphan = random.random() < orphan_rate
+        orphan = r.random() < orphan_rate
 
         for i, col_name in enumerate(insert_columns):
             col = cols[i]
@@ -318,17 +332,17 @@ class DefaultDataGenEngine:
                 parent_column = (edge.parent_column if edge is not None
                                  else (fr.column if fr.column is not None else "id"))
                 pool = (pools.get(parent_table) or {}).get(parent_column)
-                value = self._sample_ref(pool, fr, orphan, col)
+                value = self._sample_ref(pool, fr, orphan, col, rng)
             elif fr is not None:
-                value = apply_rule(fr, col, row_index)
+                value = apply_rule(fr, col, row_index, rng)
             else:
                 # 未配置规则：优先用 DB 发现的枚举值（PG 原生枚举 / MySQL ENUM / CHECK 约束），
                 # 否则随机生成——否则枚举列会被填入随机长串，直接触发类型/约束错误。
                 discovered = enum_values.get(enum_key(meta.table_name, col_name))
                 if discovered:
-                    value = discovered[random.randrange(len(discovered))]
+                    value = discovered[r.randrange(len(discovered))]
                 else:
-                    value = generate_default(col)
+                    value = generate_default(col, rng)
                 if (orphan and col_name.endswith("_" + pk)
                         and not col.nullable):
                     # 不可空列的孤儿策略由池采样无效 ID 处理（见 _sample_ref），此处仅可空列置 NULL
@@ -337,16 +351,17 @@ class DefaultDataGenEngine:
         return row
 
     def _sample_ref(self, pool: IdPool | None, fr: FieldRule | None,
-                    orphan: bool, col: SchemaMetadata.ColumnMeta):
+                    orphan: bool, col: SchemaMetadata.ColumnMeta, rng=None):
         """ref/refSkew 采样；orphan=true 时按可空性置 NULL 或无效 ID（独立于倾斜池，后置替换）。"""
+        r = _rand(rng)
         skewed = fr is not None and fr.type == FieldRule.TYPE_REF_SKEW
         if orphan:
-            if col.nullable and random.random() < 0.5:
+            if col.nullable and r.random() < 0.5:
                 return None
             return 0 if pool is None else pool.sample_invalid_id()
         if pool is None or pool.is_empty():
             # 无池可用（父表组外/空表兜底未采纳）：退化随机数，交由 dry-run 警告提示
-            return generate_default(col)
+            return generate_default(col, rng)
         return pool.sample_skewed() if skewed else pool.sample_uniform()
 
     def _validate(self, spec: DataGenSpec) -> None:

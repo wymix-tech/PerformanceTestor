@@ -135,6 +135,62 @@ class DataGenPlanModel(Base):
         }
 
 
+class DataGenTaskScopeModel(Base):
+    """data_gen_task_scope：灌数任务所有权范围（QW2 按任务清理依据）。"""
+
+    __tablename__ = "data_gen_task_scope"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    table_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    pk_column: Mapped[str] = mapped_column(String(128), nullable=False)
+    watermark_from: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    watermark_to: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    def to_camel(self) -> dict:
+        return {
+            "id": self.id,
+            "taskId": self.task_id,
+            "tableName": self.table_name,
+            "pkColumn": self.pk_column,
+            "watermarkFrom": self.watermark_from,
+            "watermarkTo": self.watermark_to,
+            "rowCount": self.row_count,
+            "createTime": self.create_time.isoformat(timespec="seconds"),
+        }
+
+
+class DataGenCleanupAuditModel(Base):
+    """data_gen_cleanup_audit：清理审计（QW2，拒绝/失败亦留痕）。"""
+
+    __tablename__ = "data_gen_cleanup_audit"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    db_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    tables_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deleted_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    def to_camel(self) -> dict:
+        return {
+            "id": self.id,
+            "taskId": self.task_id,
+            "mode": self.mode,
+            "dbUrl": self.db_url,
+            "tablesJson": self.tables_json,
+            "deletedRows": self.deleted_rows,
+            "status": self.status,
+            "message": self.message,
+            "createTime": self.create_time.isoformat(timespec="seconds"),
+        }
+
+
 class DatagenRepository:
     """datagen 读写集合（查询与写入语义逐条对齐 Mapper XML）。"""
 
@@ -385,3 +441,45 @@ class DatagenRepository:
             if row is not None:
                 s.delete(row)
                 s.commit()
+
+    # -------------------------------------------------------- QW2 清理路径
+
+    def replace_scope(self, task_id: int, rows: list[dict]) -> None:
+        """整批替换任务所有权范围（重跑幂等：先删后插）。"""
+        with self._sessions() as s:
+            for existing in s.scalars(select(DataGenTaskScopeModel)
+                                      .where(DataGenTaskScopeModel.task_id == task_id)):
+                s.delete(existing)
+            for r in rows:
+                s.add(DataGenTaskScopeModel(
+                    task_id=task_id, table_name=r["table_name"],
+                    pk_column=r["pk_column"], watermark_from=r["watermark_from"],
+                    watermark_to=r["watermark_to"], row_count=r["row_count"],
+                    create_time=datetime.now()))
+            s.commit()
+
+    def scope_for_task(self, task_id: int) -> list[DataGenTaskScopeModel]:
+        with self._sessions() as s:
+            return list(s.scalars(select(DataGenTaskScopeModel)
+                                  .where(DataGenTaskScopeModel.task_id == task_id)
+                                  .order_by(DataGenTaskScopeModel.table_name.asc())))
+
+    def insert_cleanup_audit(self, *, task_id: int, mode: str, db_url: str,
+                             tables_json: str | None, deleted_rows: int,
+                             status: str, message: str | None) -> int:
+        row = DataGenCleanupAuditModel(
+            task_id=task_id, mode=mode, db_url=db_url or "",
+            tables_json=tables_json, deleted_rows=deleted_rows,
+            status=status, message=message, create_time=datetime.now())
+        with self._sessions() as s:
+            s.add(row)
+            s.commit()
+            return row.id
+
+    def cleanup_audits(self, limit: int = 50) -> list[DataGenCleanupAuditModel]:
+        stmt = (select(DataGenCleanupAuditModel)
+                .order_by(DataGenCleanupAuditModel.create_time.desc(),
+                          DataGenCleanupAuditModel.id.desc())
+                .limit(max(1, min(limit, 200))))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
