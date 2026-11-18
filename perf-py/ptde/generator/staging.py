@@ -125,6 +125,23 @@ class StagingArea:
         record.loaded_rows = loaded_rows
         return record
 
+    def reset_to_generated(self, shard_id: str) -> ShardRecord:
+        """loaded → generated：§9.6 提交丢失重装场景（DB 实测 0 行但 staging
+        已 loaded）——恢复编排前把分片退回可装载状态（状态机显式失败）。
+
+        仅允许 loaded → generated 单向重置（行数/校验和保留，重装后仍以
+        原锚点复核——不重复不遗漏）；其余状态重置显式失败。
+        """
+        record = self._require(shard_id)
+        if record.status != ShardStatus.LOADED.value:
+            raise ValueError(
+                f"分片 {shard_id} 状态为 {record.status}，不能重置为 generated"
+                "（仅提交丢失（loaded→generated）可重置，状态机显式失败）"
+            )
+        record.status = ShardStatus.GENERATED.value
+        record.loaded_rows = None
+        return record
+
     # -------------------------------------------------------------- 查询
 
     def records(self) -> list[ShardRecord]:
