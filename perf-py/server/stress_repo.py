@@ -46,6 +46,9 @@ class StressTaskModel(Base):
     qps_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # P0-4 修复验证重放：创建时持久化完整压测请求快照（body/headers/scenario/
+    # warmupSec/stages/dataset 等），重放 100% 同构（列经 init.sql 幂等 ALTER 补齐）
+    request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
     # T7.3 数据集绑定（实施方案 §12.6 加列；旧库经 init.sql 幂等 ALTER 补齐）
     dataset_instance_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -70,6 +73,8 @@ class StressTaskModel(Base):
             "qpsLimit": self.qps_limit,
             "status": self.status,
             "resultJson": self.result_json,
+            # requestJson 仅库内持久化（P0-4 重放快照）：Java 实体无此字段，
+            # 不进 wire 契约（tests/contract golden 键集合对齐绞杀者纪律）
             "errorMsg": self.error_msg,
             "createTime": _dt(self.create_time),
             "finishTime": _dt(self.finish_time),
@@ -117,6 +122,7 @@ class StressRepository:
     def insert_task(self, *, task_name: str, engine_type: str | None, target_url: str,
                     app_name: str, app_version: str, method: str | None,
                     concurrency: int, duration_sec: int, qps_limit: int,
+                    request_json: str | None = None,
                     dataset_instance_id: int | None = None,
                     dataset_definition_version: str | None = None,
                     dataset_schema_fingerprint: str | None = None,
@@ -131,6 +137,7 @@ class StressRepository:
             task_name=task_name, engine_type=engine_type or "http", target_url=target_url,
             app_name=app_name, app_version=app_version, method=method or "GET",
             concurrency=concurrency, duration_sec=duration_sec, qps_limit=qps_limit,
+            request_json=request_json,
             dataset_instance_id=dataset_instance_id,
             dataset_definition_version=dataset_definition_version,
             dataset_schema_fingerprint=dataset_schema_fingerprint,
@@ -162,6 +169,14 @@ class StressRepository:
             row = s.get(StressTaskModel, task_id)
             if row is not None:
                 row.status = status
+                s.commit()
+
+    def update_result_json(self, task_id: int, result_json: str) -> None:
+        """仅更新 result_json 列（容量评估回写用），不改动 status/finish_time。"""
+        with self._sessions() as s:
+            row = s.get(StressTaskModel, task_id)
+            if row is not None:
+                row.result_json = result_json
                 s.commit()
 
     def update_finished(self, task_id: int, result_json: str,

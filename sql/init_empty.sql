@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS jvm_metric (
     cpu_usage        DOUBLE        NOT NULL DEFAULT 0 COMMENT '进程 CPU 使用率 %',
     system_cpu       DOUBLE        NOT NULL DEFAULT 0 COMMENT '系统 CPU 使用率 %',
     PRIMARY KEY (id, collect_time),
-    KEY idx_app_time (app_name, collect_time)
+    KEY idx_app_time (app_name, collect_time, id)
 ) ENGINE = InnoDB COMMENT = 'JVM 指标时序数据'
 PARTITION BY RANGE COLUMNS (collect_time) (
     PARTITION p20260801 VALUES LESS THAN ('2026-08-02 00:00:00'),
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS trace_chain (
     start_time   DATETIME      NOT NULL COMMENT '链路开始时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_trace (trace_id),
-    KEY idx_app_time (app_name, start_time)
+    KEY idx_app_time (app_name, start_time, id)
 ) ENGINE = InnoDB COMMENT = '业务方法调用链';
 
 -- ---------------------------------------------------------------------
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS slow_sql (
     method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶，如 Controller → Service → Mapper）',
     execute_time  DATETIME      NOT NULL COMMENT '执行时间',
     PRIMARY KEY (id),
-    KEY idx_app_time (app_name, execute_time),
+    KEY idx_app_time (app_name, execute_time, id),
     KEY idx_cost (cost_ms)
 ) ENGINE = InnoDB COMMENT = '慢 SQL 记录';
 
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS slow_command (
     method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶）',
     execute_time  DATETIME      NOT NULL COMMENT '执行时间',
     PRIMARY KEY (id),
-    KEY idx_app_time (app_name, execute_time),
+    KEY idx_app_time (app_name, execute_time, id),
     KEY idx_type (type, execute_time),
     KEY idx_trace (trace_id),
     KEY idx_cost (cost_ms)
@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS stress_task (
     qps_limit     INT           NOT NULL DEFAULT 0 COMMENT 'QPS 上限（0 不限制）',
     status        VARCHAR(32)   NOT NULL DEFAULT 'pending' COMMENT '状态：pending/running/finished/failed',
     result_json   MEDIUMTEXT    NULL COMMENT '结果 JSON（含统计、容量评估、扩容建议）',
+    request_json  MEDIUMTEXT    NULL COMMENT '创建时的完整压测请求快照（修复验证重放还原用）',
     error_msg     TEXT          NULL COMMENT '失败信息',
     create_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     finish_time   DATETIME      NULL COMMENT '完成时间',

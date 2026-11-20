@@ -26,7 +26,8 @@ from sqlalchemy.orm import sessionmaker
 
 from server.collector_repo import DbConnModel
 from server.crypto import encrypt
-from server.db_explain import _parse_jdbc_url, validate as validate_explain
+from server.db_explain import _parse_jdbc_url
+from server.db_explain import validate as validate_explain
 
 ALLOWED_URL_PREFIXES = ("jdbc:mysql://", "jdbc:mariadb://")
 CONNECT_TIMEOUT_S = 3

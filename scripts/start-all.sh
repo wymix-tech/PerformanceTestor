@@ -22,7 +22,8 @@ MYSQL_PASSWORD=${MYSQL_PASSWORD:-root123}
 # Agent 上报地址（单机演示指向本机 Python server 的 /api/agent/report）
 AGENT_REPORT_URL=${AGENT_REPORT_URL:-"http://127.0.0.1:${SERVER_PORT}/api/agent/report"}
 # Python server 数据库（SQLAlchemy URL，生产口径 mysql+pymysql）
-PERF_PY_DATABASE_URL=${PERF_PY_DATABASE_URL:-"mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT}/performance_testor?charset=utf8mb4"}
+# 必须 export：perf serve 为子进程启动，未导出时继承不到会静默退化 sqlite:///:memory:
+export PERF_PY_DATABASE_URL=${PERF_PY_DATABASE_URL:-"mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT}/performance_testor?charset=utf8mb4"}
 # 建库脚本：默认 init_empty.sql（纯净空表，无演示数据）
 # 需要首屏演示数据时改用：SQL_FILE=sql/init.sql bash scripts/start-all.sh
 SQL_FILE=${SQL_FILE:-sql/init_empty.sql}
@@ -43,6 +44,7 @@ fi
 
 # ---------- 2. 启动 Python server（perf-py） ----------
 echo "==> [2/5] 启动 Python server perf-py（端口 ${SERVER_PORT}）"
+echo "    数据库: ${PERF_PY_DATABASE_URL//:*@/:***@}（未生效请检查 export）"
 if [ ! -d perf-py/.venv ] && ! command -v uv >/dev/null 2>&1; then
   echo "    [WARN] 未安装 uv 且无 perf-py/.venv，请先执行 scripts/build.sh --skip-frontend --skip-backend"
 fi

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -433,12 +434,15 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址"),
     port: int = typer.Option(8000, "--port", help="监听端口"),
     knowledge_db: str = typer.Option(None, "--knowledge-db",
-                                     help="知识库 SQLite 文件路径（缺省内存库）"),
+                                     help="知识库 SQLite 文件路径"
+                                          "（缺省 ~/.perftestor/knowledge.sqlite）"),
 ) -> None:
     """启动 Python server（FastAPI，AI 域 /api/ai）。
 
     LLM 配置读 PERF_LLM_MODEL / PERF_LLM_BASE_URL / PERF_LLM_API_KEY；
     未配置时可启动（对话端点将返回 LLM 客户端异常的 error 事件）。
+    数据库读 PERF_PY_DATABASE_URL（生产 mysql+pymysql://…；缺省内存库仅测试用）；
+    PTDE_REALDB_URL 配置后数据集构建/验证按目标库动态接线真库执行体。
     """
     import uvicorn
 
@@ -450,7 +454,16 @@ def serve(
     if llm is None:
         err_console.print("[yellow]PERF_LLM_MODEL 未配置：server 可启动，"
                           "但 AI 对话端点会返回 LLM 配置错误[/yellow]")
-    knowledge = KnowledgeService(SqliteKnowledgeStore(knowledge_db or ":memory:"))
+    # P0-3：知识库缺省持久化（内存态重启即清空，评审 P0-3 断点）
+    resolved_kb = knowledge_db or os.environ.get("PERF_KNOWLEDGE_DB") \
+        or str(Path.home() / ".perftestor" / "knowledge.sqlite")
+    Path(resolved_kb).parent.mkdir(parents=True, exist_ok=True)
+    knowledge = KnowledgeService(SqliteKnowledgeStore(resolved_kb))
+    db_url = os.environ.get("PERF_PY_DATABASE_URL") or ":memory:"
+    dialect = "mysql" if "mysql" in db_url else ("postgres" if "postgres" in db_url
+                                                else "sqlite")
+    err_console.print(f"[cyan]数据库方言: {dialect}（PERF_PY_DATABASE_URL"
+                      f"{'未设置，退化为内存库' if 'PERF_PY_DATABASE_URL' not in os.environ else ' 已生效'}）[/cyan]")
     app = create_app(llm=llm, knowledge=knowledge)
     uvicorn.run(app, host=host, port=port, log_level="info")
 

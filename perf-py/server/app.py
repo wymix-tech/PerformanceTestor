@@ -27,6 +27,7 @@ from server.ai_api import router as ai_router
 from server.ai_service import AiAgentService
 from server.auth_api import router as auth_router
 from server.auth_service import AUTH_FAIL_BODY, AuthProperties, JwtService
+from server.capacity_api import router as capacity_router
 from server.collector_api import router as collector_router
 from server.collector_repo import CollectorRepository
 from server.datagen_api import router as datagen_router
@@ -39,6 +40,9 @@ from server.db import database_url, make_session_factory
 from server.db_explain import DbExplainService
 from server.dbconn_api import router as dbconn_router
 from server.dbconn_service import DbConnService
+from server.deploy_api import router as deploy_router
+from server.deploy_repo import DeployConnRepository
+from server.deploy_service import DeployService
 from server.endpoint_scanner import EndpointScanner
 from server.errors import handle_exception, handle_validation
 from server.issue_service import (
@@ -48,8 +52,16 @@ from server.issue_service import (
     SourceIssueService,
 )
 from server.issue_verify_service import IssueVerifyService
+from server.jvm_alert_api import router as jvm_alert_router
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
+from server.metrics_api import router as metrics_router
 from server.ptde_repo import PtdeDatasetRepository
+from server.report_api import router as report_router
+from server.schedule_api import router as schedule_router
+from server.schedule_service import (
+    StressScheduleRepository,
+    StressScheduleService,
+)
 from server.source_api import router as source_router
 from server.source_index import SourceFileIndexer
 from server.source_repo import SourceRepository
@@ -94,7 +106,11 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                auth_enabled: bool | None = None,
                stress_runner=None,
     dataset_repo: PtdeDatasetRepository | None = None,
-    dataset_pipeline=None) -> FastAPI:
+    dataset_pipeline=None,
+    dataset_pipeline_factory=None,
+    schedule_service=None,
+    deploy_conn_repo=None,
+    deploy_service=None) -> FastAPI:
     """构建 FastAPI 应用。
 
     include_knowledge_tool：把 knowledge_search 挂入工具注册表（AI 可检索知识库）。
@@ -122,10 +138,19 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     resolved_db_url = db_url or database_url()
     app.state.dataset_repo = dataset_repo if dataset_repo is not None \
         else PtdeDatasetRepository(session_factory)
-    # dataset_pipeline：数据集执行体注入缝（generate/load/verify 三段）；
-    # 真库端到端执行体随 A2 真库环境批次接线（B6 §7F 口径），缺省显式失败。
+    # dataset_pipeline：数据集执行体注入缝（generate/load/verify 三段）。
+    # P0-2 真库接线：未显式注入 pipeline/工厂且 PTDE_REALDB_URL 已配置时，
+    # 按数据集实例目标库动态装配 build_realdb_pipeline（db_conn 默认连接兜底）；
+    # 两者皆缺省保持 UnwiredPipeline 显式失败（不伪装可用）。
+    resolved_pipeline_factory = dataset_pipeline_factory
+    if resolved_pipeline_factory is None and dataset_pipeline is None \
+            and os.environ.get("PTDE_REALDB_URL"):
+        from server.dataset_pipeline_factory import realdb_pipeline_factory
+
+        resolved_pipeline_factory = realdb_pipeline_factory(app.state.dataset_repo)
     app.state.dataset_service = DatasetLifecycleService(
-        app.state.dataset_repo, pipeline=dataset_pipeline)
+        app.state.dataset_repo, pipeline=dataset_pipeline,
+        pipeline_factory=resolved_pipeline_factory)
     app.state.stress_repo = stress_repo if stress_repo is not None \
         else StressRepository(session_factory)
     if stress_runner is not None:
@@ -173,6 +198,19 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.data_cleanup_service = data_cleanup if data_cleanup is not None \
         else DataCleanupService(session_factory, app.state.knowledge.store)
     app.state.db_explain = db_explain if db_explain is not None else DbExplainService()
+    # P0-1b/1d：定时调度与 deploy 域（deploy SSH 执行体缺省 paramiko 懒加载）。
+    # 仓储与 stress 域同源 session_factory（测试注入内存库时同库可查）。
+    app.state.schedule_service = schedule_service if schedule_service is not None \
+        else StressScheduleService(
+            StressScheduleRepository(session_factory), app.state.stress_service)
+    # 调度守护线程仅持久库启动（内存库为测试/冒烟形态，避免空库扫描噪音；
+    # 测试经注入 schedule_service 或直接调 run_due 验证触发语义）
+    if ":memory:" not in resolved_db_url:
+        app.state.schedule_service.start()
+    app.state.deploy_conn_repo = deploy_conn_repo if deploy_conn_repo is not None \
+        else DeployConnRepository(session_factory)
+    app.state.deploy_service = deploy_service if deploy_service is not None \
+        else DeployService(app.state.deploy_conn_repo, app.state.source_repo)
     app.state.endpoint_scanner = EndpointScanner(
         app.state.source_repo, app.state.source_write_service,
         app.state.source_file_indexer)
@@ -219,6 +257,12 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.include_router(dataset_router)
     app.include_router(source_router)
     app.include_router(dbconn_router)
+    app.include_router(metrics_router)
+    app.include_router(capacity_router)
+    app.include_router(jvm_alert_router)
+    app.include_router(schedule_router)
+    app.include_router(report_router)
+    app.include_router(deploy_router)
     # 全局异常处理对齐 Java GlobalExceptionHandler：任何异常 → 200 + code=1 错误包装
     app.add_exception_handler(RequestValidationError, handle_validation)
     app.add_exception_handler(Exception, handle_exception)

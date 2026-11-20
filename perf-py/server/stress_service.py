@@ -272,6 +272,9 @@ class StressTaskService:
             concurrency=request.concurrency,
             duration_sec=request.duration_sec,
             qps_limit=request.qps_limit,
+            # P0-4：持久化完整请求快照（含 body/headers/scenario/warmupSec/stages/
+            # dataset），修复验证重放按原样还原，保证与基线压测 100% 同构
+            request_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             dataset_instance_id=binding.get("instanceId") if binding else None,
             dataset_definition_version=binding.get("definitionVersion") if binding else None,
             dataset_schema_fingerprint=binding.get("schemaFingerprint") if binding else None,

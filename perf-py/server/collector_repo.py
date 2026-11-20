@@ -16,7 +16,19 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Double, Integer, String, Text, or_, select
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Double,
+    Integer,
+    String,
+    Text,
+    and_,
+    desc,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
 from server.db import Base
@@ -27,6 +39,11 @@ BigIntPk = BigInteger().with_variant(Integer, "sqlite")
 PROJECT_CACHE_TTL_S = 30.0
 INSERT_CHUNK = 200
 TRACE_INSERT_CHUNK = 50
+
+
+def _fmt_dt(dt: datetime | None) -> str | None:
+    """LocalDateTime → Jackson ISO 形态（秒级），与 stress_repo._dt 口径一致。"""
+    return dt.isoformat(timespec="seconds") if dt is not None else None
 
 
 class AppInstanceModel(Base):
@@ -160,6 +177,24 @@ class HotspotMethodModel(Base):
     sample_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class JvmAlertRuleModel(Base):
+    """jvm_alert_rule：JVM 阈值告警规则（app_name + metric_key 唯一）。"""
+
+    __tablename__ = "jvm_alert_rule"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    app_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    threshold: Mapped[float] = mapped_column(Double, nullable=False, default=0)
+    window_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    quiet_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=900)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    webhook: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_alert_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False,
+                                                  default=datetime.now)
+
+
 class DbConnModel(Base):
     """db_conn：数据库连接配置（慢 SQL 携带库地址时自动注册）。"""
 
@@ -278,6 +313,149 @@ class CollectorRepository:
             s.add_all(rows)
             s.commit()
         return len(rows)
+
+    # ---------------------------------------------------------- 观测查询读路径
+
+    def list_apps(self) -> list[dict]:
+        """对齐 AppInstanceMapper.findAll：status DESC, last_report_time DESC。"""
+        with self._sessions() as s:
+            rows = list(s.scalars(
+                select(AppInstanceModel)
+                .order_by(desc(AppInstanceModel.status),
+                          desc(AppInstanceModel.last_report_time))))
+        return [{
+            "id": r.id,
+            "appName": r.app_name,
+            "appHost": r.app_host,
+            "appPort": r.app_port,
+            "appVersion": r.app_version,
+            "agentVersion": r.agent_version,
+            "status": r.status,
+            "lastReportTime": _fmt_dt(r.last_report_time),
+            "createTime": _fmt_dt(r.create_time),
+        } for r in rows]
+
+    def _apply_cursor(self, stmt, time_col, id_col,
+                      cursor_pair: tuple[datetime, int] | None):
+        """游标条件：防同秒跳批必须 (time < ct) OR (time = ct AND id < cid)。"""
+        if cursor_pair is None:
+            return stmt
+        ct, cid = cursor_pair
+        return stmt.where(or_(time_col < ct, and_(time_col == ct, id_col < cid)))
+
+    def query_jvm_metrics(
+        self, app: str | None, start: datetime | None, end: datetime | None,
+        cursor_pair: tuple[datetime, int] | None, limit_plus_one: int,
+    ) -> list[JvmMetricModel]:
+        stmt = select(JvmMetricModel)
+        if app:
+            stmt = stmt.where(JvmMetricModel.app_name == app)
+        if start:
+            stmt = stmt.where(JvmMetricModel.collect_time >= start)
+        if end:
+            stmt = stmt.where(JvmMetricModel.collect_time <= end)
+        stmt = self._apply_cursor(stmt, JvmMetricModel.collect_time, JvmMetricModel.id,
+                                  cursor_pair)
+        stmt = (stmt.order_by(desc(JvmMetricModel.collect_time), desc(JvmMetricModel.id))
+                .limit(limit_plus_one))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
+    def query_traces(
+        self, app: str | None, method: str | None, min_cost_ms: float | None,
+        start: datetime | None, end: datetime | None,
+        cursor_pair: tuple[datetime, int] | None, limit_plus_one: int,
+    ) -> list[TraceChainModel]:
+        stmt = select(TraceChainModel)
+        if app:
+            stmt = stmt.where(TraceChainModel.app_name == app)
+        if method:
+            stmt = stmt.where(TraceChainModel.root_method.contains(method))
+        if min_cost_ms is not None and min_cost_ms > 0:
+            stmt = stmt.where(TraceChainModel.total_ms >= min_cost_ms)
+        if start:
+            stmt = stmt.where(TraceChainModel.start_time >= start)
+        if end:
+            stmt = stmt.where(TraceChainModel.start_time <= end)
+        stmt = self._apply_cursor(stmt, TraceChainModel.start_time, TraceChainModel.id,
+                                  cursor_pair)
+        stmt = (stmt.order_by(desc(TraceChainModel.start_time), desc(TraceChainModel.id))
+                .limit(limit_plus_one))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
+    def get_trace_by_id(self, trace_id: str) -> TraceChainModel | None:
+        with self._sessions() as s:
+            return s.scalars(
+                select(TraceChainModel)
+                .where(TraceChainModel.trace_id == trace_id)
+                .limit(1)
+            ).first()
+
+    def query_slow_sqls(
+        self, app: str | None, min_cost_ms: float | None,
+        start: datetime | None, end: datetime | None,
+        cursor_pair: tuple[datetime, int] | None, limit_plus_one: int,
+    ) -> list[SlowSqlModel]:
+        stmt = select(SlowSqlModel)
+        if app:
+            stmt = stmt.where(SlowSqlModel.app_name == app)
+        if min_cost_ms is not None and min_cost_ms > 0:
+            stmt = stmt.where(SlowSqlModel.cost_ms >= min_cost_ms)
+        if start:
+            stmt = stmt.where(SlowSqlModel.execute_time >= start)
+        if end:
+            stmt = stmt.where(SlowSqlModel.execute_time <= end)
+        stmt = self._apply_cursor(stmt, SlowSqlModel.execute_time, SlowSqlModel.id,
+                                  cursor_pair)
+        stmt = (stmt.order_by(desc(SlowSqlModel.execute_time), desc(SlowSqlModel.id))
+                .limit(limit_plus_one))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
+    def query_slow_commands(
+        self, app: str | None, cmd_type: str | None, min_cost_ms: float | None,
+        start: datetime | None, end: datetime | None,
+        cursor_pair: tuple[datetime, int] | None, limit_plus_one: int,
+    ) -> list[SlowCommandModel]:
+        stmt = select(SlowCommandModel)
+        if app:
+            stmt = stmt.where(SlowCommandModel.app_name == app)
+        if cmd_type:
+            stmt = stmt.where(SlowCommandModel.type == cmd_type.lower())
+        if min_cost_ms is not None and min_cost_ms > 0:
+            stmt = stmt.where(SlowCommandModel.cost_ms >= min_cost_ms)
+        if start:
+            stmt = stmt.where(SlowCommandModel.execute_time >= start)
+        if end:
+            stmt = stmt.where(SlowCommandModel.execute_time <= end)
+        stmt = self._apply_cursor(stmt, SlowCommandModel.execute_time, SlowCommandModel.id,
+                                  cursor_pair)
+        stmt = (stmt.order_by(desc(SlowCommandModel.execute_time), desc(SlowCommandModel.id))
+                .limit(limit_plus_one))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
+
+    def query_hotspots(
+        self, app: str | None, start: datetime, end: datetime, limit: int = 30,
+    ) -> list[dict]:
+        """对齐 HotspotMapper.aggregateByMethod：SUM(samples) DESC，limit ∈ [1, 200]。"""
+        total_samples = func.sum(HotspotMethodModel.samples).label("total_samples")
+        stmt = (
+            select(HotspotMethodModel.method_name, total_samples)
+            .where(HotspotMethodModel.sample_time >= start)
+            .where(HotspotMethodModel.sample_time <= end)
+        )
+        if app:
+            stmt = stmt.where(HotspotMethodModel.app_name == app)
+        stmt = (
+            stmt.group_by(HotspotMethodModel.method_name)
+            .order_by(desc(total_samples))
+            .limit(max(1, min(200, limit)))
+        )
+        with self._sessions() as s:
+            return [{"methodName": m, "samples": int(cnt or 0)}
+                    for m, cnt in s.execute(stmt).all()]
 
     # ---------------------------------------------------------- db_conn 自动注册
 

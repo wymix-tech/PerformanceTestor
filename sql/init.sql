@@ -230,6 +230,14 @@ SET @ddl := IF(@col_exists = 0,
     'SELECT 1');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- P0-4 修复验证重放：stress_task.request_json 完整请求快照列（幂等）
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stress_task' AND COLUMN_NAME = 'request_json');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE stress_task ADD COLUMN request_json MEDIUMTEXT NULL COMMENT ''创建时的完整压测请求快照（修复验证重放还原用）'' AFTER result_json',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- ---------------------------------------------------------------------
 -- 6. stress_sample：压测周期采样（按天分区）
 -- ---------------------------------------------------------------------

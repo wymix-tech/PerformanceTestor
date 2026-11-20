@@ -28,6 +28,7 @@ import base64
 import json
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
@@ -100,10 +101,14 @@ class DatasetLifecycleService:
     """数据集生命周期门面（定义/实例/构建/验证/清理；全落库可追溯）。"""
 
     def __init__(self, repo: PtdeDatasetRepository, *, pipeline: Any | None = None,
+                 pipeline_factory: Callable[[dict], Any] | None = None,
                  max_workers: int = 2, operator: str = "api",
                  degradable_layers: frozenset | None = None):
         self._repo = repo
         self._pipeline = pipeline if pipeline is not None else UnwiredPipeline()
+        # P0-2：动态工厂（ctx → pipeline）优先于静态注入——真库执行体按
+        # 数据集实例目标库按需装配；factory 抛错走 _record_failure 显式落库。
+        self._pipeline_factory = pipeline_factory
         self._operator = operator
         # 可降级层集（§9.4：WARN 是否放行由装配方显式配置；缺省走 ptde
         # 默认集 = 仅 DISTRIBUTION。离线通道 db_ready 的 [未执行] WARN 项
@@ -301,6 +306,12 @@ class DatasetLifecycleService:
         self._tasks[row.id] = future
         return {"taskId": str(row.id), "accepted": True, "state": "running"}
 
+    def _pipeline_for(self, ctx: dict) -> Any:
+        """段落执行体解析：动态工厂优先（按实例目标库装配），缺省静态注入。"""
+        if self._pipeline_factory is not None:
+            return self._pipeline_factory(ctx)
+        return self._pipeline
+
     def _run_build(self, row_id: int, params: dict, operator: str,
                    cancel_event: threading.Event | None = None) -> None:
         """工作线程：三段执行体编排 + 状态机推进 + 门禁终局（不占 HTTP 线程）。
@@ -318,12 +329,13 @@ class DatasetLifecycleService:
                 f"数据集构建启动（{reason_suffix}）",
                 manifest_id=params.get("manifest_id"))
             ctx["instance"] = model.model_dump()
-            gen_summary = self._pipeline.generate(ctx)
+            pipeline = self._pipeline_for(ctx)
+            gen_summary = pipeline.generate(ctx)
             self._check_cancelled(row_id, cancel_event, "装载前")
             model = self._transition(
                 row_id, DatasetState.LOADING, operator,
                 f"生成完成（{self._summary_hint(gen_summary)}），进入装载")
-            load_summary = self._pipeline.load(ctx)
+            load_summary = pipeline.load(ctx)
             self._check_cancelled(row_id, cancel_event, "验证前")
             model = self._transition(
                 row_id, DatasetState.VERIFYING, operator,
@@ -369,7 +381,7 @@ class DatasetLifecycleService:
     def _finalize_verification(self, row_id: int, ctx: dict, model, operator: str) -> None:
         """验证终局：报告落库 → manifest 落库 → READY 八项程序化判定 →
         READY/FAILED（经状态机）。"""
-        result = self._pipeline.verify(ctx) or {}
+        result = self._pipeline_for(ctx).verify(ctx) or {}
         report = ValidationReport.model_validate(result["report"])
         if report.instance_id != model.id:
             raise DatasetServiceError(
@@ -450,7 +462,8 @@ class DatasetLifecycleService:
             row.id, transitioned.status.value,
             self._repo.transition_log_to_json(transitioned))
         gate = SecurityGate()
-        executor = executor if executor is not None else self._pipeline.cleanup_executor()
+        executor = executor if executor is not None else self._pipeline_for(
+            {"instance": model.model_dump(), "params": {}}).cleanup_executor()
         result = execute_cleanup(
             decision, gate, env_class=env_class,
             approvals=[self._to_approval(a) for a in (approvals or ())],

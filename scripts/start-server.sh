@@ -17,7 +17,8 @@ MYSQL_PORT=${MYSQL_PORT:-3306}
 MYSQL_USER=${MYSQL_USER:-root}
 MYSQL_PASSWORD=${MYSQL_PASSWORD:-root123}
 # Python server 数据库（SQLAlchemy URL，生产口径 mysql+pymysql）
-PERF_PY_DATABASE_URL=${PERF_PY_DATABASE_URL:-"mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT}/performance_testor?charset=utf8mb4"}
+# 必须 export：perf serve 为子进程启动，未导出时继承不到会静默退化 sqlite:///:memory:
+export PERF_PY_DATABASE_URL=${PERF_PY_DATABASE_URL:-"mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT}/performance_testor?charset=utf8mb4"}
 # 建库脚本：默认 init_empty.sql（纯净空表，无演示数据）
 # 需要演示数据时改用：SQL_FILE=sql/init.sql bash scripts/start-server.sh
 SQL_FILE=${SQL_FILE:-sql/init_empty.sql}
@@ -31,6 +32,7 @@ else
 fi
 
 echo "==> [2/3] 启动 Python server perf-py（端口 ${SERVER_PORT}，上报接口 /api/agent/report）"
+echo "    数据库: ${PERF_PY_DATABASE_URL//:*@/:***@}（未生效请检查 export）"
 if [ ! -d perf-py/.venv ] && ! command -v uv >/dev/null 2>&1; then
   echo "    [WARN] 未安装 uv 且无 perf-py/.venv，请先执行 scripts/build.sh --skip-frontend --skip-backend"
 fi

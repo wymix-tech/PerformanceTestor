@@ -302,7 +302,23 @@ class IssueVerifyService:
 
     @staticmethod
     def _to_request(snapshot) -> dict:
-        """快照任务 → 重放请求（同场景：URL/方法/并发/时长/限流/应用一致）。"""
+        """快照任务 → 重放请求（P0-4：优先还原创建时的完整请求快照）。
+
+        request_json 持久化了建任务时的完整请求（body/headers/scenario/warmupSec/
+        rampUpSec/stages/csv/dataset 等），重放直接反序列化原快照并覆盖 taskName，
+        保证验证压测与基线压测 100% 同构；快照缺失（旧任务/坏 JSON）回退到
+        既有字段重建（URL/方法/并发/时长/限流/应用一致）。
+        """
+        if snapshot.request_json:
+            try:
+                replay = json.loads(snapshot.request_json)
+                if isinstance(replay, dict):
+                    replay = dict(replay)
+                    replay["taskName"] = f"修复验证重放 #{snapshot.id}"
+                    return replay
+            except (ValueError, TypeError):
+                log.warning("verify replay: task #%s request_json 损坏，回退字段重建",
+                            snapshot.id)
         return {
             "taskName": f"修复验证重放 #{snapshot.id}",
             "engineType": snapshot.engine_type or "http",

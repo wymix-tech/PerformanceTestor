@@ -31,6 +31,8 @@ datagen-drivers = [
 ]
 # Agent 编排（阶段 4 步骤 2）：OpenAI 兼容 API 客户端，仅真实 LLM 调用需要
 agents = ["openai>=1.40,<2"]
+# deploy 域（P0-1d）：SSH 部署通道（paramiko 懒加载，未装时 deploy/start 显式报错）
+deploy = ["paramiko>=3,<4"]
 # datagen 写路径（阶段 5 步骤 7）：db_conn 凭据 AES-GCM 解密（对齐 Java CryptoService）
 security = ["cryptography>=42"]
 # server 骨架（阶段 4 步骤 3）：FastAPI + uvicorn（SSE 用标准 StreamingResponse，无 sse-starlette 依赖）

@@ -197,6 +197,7 @@ perf agent run "对 demo 场景压测并归因 P95 恶化根因" -r pipeline
 | [handoff/](handoff/) | 交接文档（Java 时代为主，历史归档） |
 | [plans/](plans/) | 迭代计划与优化方案（PTDE R0–R7 / B4~B7 系列交接等，历史过程文档） |
 | [reports/](reports/) | 性能检测报告归档 |
+| [review/](review/) | 架构/闭环评审报告（如 closed-loop-audit：main 分支性能测试闭环诊断与改进方案） |
 | [issues/](issues/) / [artifacts/](artifacts/) | 性能问题分析 / 其他中间产物 |
 
 > Java 时代历史文档（含 perf-server / perf-datagen 相关 design、handoff、plans）按原样保留供追溯；理解当前架构以本 README 与 `perf-py/README.md` 为准。
