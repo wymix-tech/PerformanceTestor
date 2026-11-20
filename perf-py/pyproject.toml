@@ -18,7 +18,7 @@ perf = "perf_cli.main:app"
 perf-engine = "perf_cli.engine_entry:main"
 
 [project.optional-dependencies]
-# 本地引擎（阶段 2）：locust 带 gevent，仅 perf-engine 需要
+# 本地引擎（阶段 2）：locust 带 gevent，仅 perf-engine 需要（gevent 是其硬依赖，未装则 perf-engine 无法启动）
 locust = ["locust>=2.29,<3"]
 datagen-parsers = [
     "tree-sitter>=0.23,<0.26",
@@ -49,10 +49,11 @@ server = [
 
 [dependency-groups]
 dev = [
-    "cryptography>=50.0.2",
+    # 与 security extra 同口径（AES-GCM 解密测试用）
+    "cryptography>=42",
     "pytest>=8,<9",
     "ruff>=0.6",
-    # datagen 源码解析层（阶段 3 步骤 4d）测试需要
+    # datagen 源码解析层（阶段 3 步骤 4d）测试需要；与 datagen-parsers extra 同一组依赖
     "tree-sitter>=0.23,<0.26",
     "tree-sitter-java>=0.23,<0.26",
 ]
@@ -62,9 +63,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# 阶段 1：perf_cli + scenario；阶段 2 增加 engine；阶段 3 增加 datagen；阶段 4 增加 tools/agents/server
-# R0（PTDE B0）：增加 ptde + ptde_common
-packages = ["perf_cli", "scenario", "engine", "datagen", "tools", "agents", "server", "ptde", "ptde_common"]
+# 阶段 1：perf_cli + scenario；阶段 2 增加 engine；阶段 3 灌数并入 perf_cli.datagen_runner + ptde；
+# 阶段 4 增加 tools/agents/server；R0（PTDE B0）：增加 ptde + ptde_common
+packages = ["perf_cli", "scenario", "engine", "tools", "agents", "server", "ptde", "ptde_common"]
 
 [tool.ruff]
 line-length = 100

@@ -32,9 +32,15 @@ uv run ruff check .         # lint
 | `perf gate [--scenario x.yaml]` | 替代 `scripts/perf-gate.sh`，退出码 0/1/2 语义对齐 |
 | `perf scenario validate <file>` | 场景 YAML 校验 |
 | `perf datagen run <spec.json> [--dry-run] [--source-dir DIR]` | 灌数引擎直连执行（Dry-Run 优先/拓扑排序/批量写入），结果 camelCase JSON |
+| `perf ptde analyze <dir>` | 项目源码证据快照分析（SnapshotBuilder） |
+| `perf ptde profile [--collect --config c.json] [profile.json]` | 统计画像（缺省 inspect；--collect 只读采集） |
+| `perf ptde plan <spec.json> [--preview / --def-key K]` | 数据集规划（离线预览 / 注册 Definition） |
+| `perf ptde dataset <create/build/status/verify/list/cleanup> ...` | 数据集生命周期（READY 门禁；生产环境无构建/清理入口） |
+| `perf ptde migrate-legacy` | legacy 三表 → ptde_* 存量迁移（幂等 + 行数核对报告） |
 | `perf tools list` / `perf tools call <name> -a '<json>'` | Agent 工具直接调用（7 个，见下） |
 | `perf mcp` | MCP server（stdio JSON-RPC 2.0），IDE / Agent 子进程接入 |
 | `perf agent run <task> [-r pipeline]` | ReAct Agent / 三角色流水线（压测→分析→修复建议） |
+| `perf serve [--port 8000]` | Python server（FastAPI，逐域承接 /api 契约） |
 | `perf-engine <scenario.yaml> -e locust [-o result.json]` | 本地引擎发压（不经平台），产出对齐 StressTaskResult 契约的工件 |
 | `perf version` | 版本号 |
 
@@ -49,9 +55,9 @@ via `tools.registry.openai_tools_schema` / MCP server via `perf mcp`）：
 | `stress_run` | engine/（perf-engine 子进程） | 发起本地压测（阻塞执行，非只读） |
 | `capacity_analyze` | capacity/ | 目标 P95 下最大并发/QPS、RT 拐点、R²、CI |
 | `slowlog_analyze` | slowlog/ | 慢日志 Top N + 聚合（扫描行数/耗时分布） |
-| `source_scan` | datagen 源码解析层 | ORM 关联 + SQL 字面量/枚举/范围谓词提示 |
-| `datagen_dry_run` | datagen/ | 灌数试运行（校验 + 估算，不写库） |
-| `datagen_run` | datagen/ | 灌数正式执行（写库，标非只读） |
+| `source_scan` | ptde 源码解析层 | ORM 关联 + SQL 字面量/枚举/范围谓词提示 |
+| `datagen_dry_run` | ptde/（经 perf_cli.datagen_runner） | 灌数试运行（校验 + 估算，不写库） |
+| `datagen_run` | ptde/（经 perf_cli.datagen_runner） | 灌数正式执行（写库，标非只读） |
 
 约定：handler 入参 dict、出参 JSON 可序列化 dict；异常一律转为
 `{"error": ...}`，不向 Agent 抛栈。典型链路：`datagen_dry_run` 造数 →
@@ -173,11 +179,21 @@ fields 为规则 JSON，兼容旧单表 ruleJson 形式）；退出码：0 成�
 ```
 perf-py/
 ├── pyproject.toml
-├── perf_cli/       # CLI 入口 + 配置 + 平台 HTTP 客户端
+├── perf_cli/       # CLI 入口 + 配置 + 平台 HTTP 客户端 + MCP + PTDE/灌数 runner
 ├── scenario/       # 场景即代码：模型 + YAML 加载 + 场景文件
 ├── profiles/       # 环境配置（TOML）
-└── tests/          # 单测
+├── engine/         # 本地压测引擎（locust/jmeter）+ 统一统计层
+├── stress/         # 压测辅助（模板渲染、断言、变量提取、CSV 参数化）
+├── slowlog/        # MySQL 慢日志解析
+├── capacity/       # 容量分析 + 曲线拟合
+├── ptde/           # 智能测试数据引擎（分析/规划/生成/装载/校验/生命周期/适配器）
+├── ptde_common/    # PTDE 公共层（模型基类、ID 池、枚举发现）
+├── tools/          # AI Agent 工具层（7 工具 + registry + OpenAI/MCP 双形态 schema）
+├── agents/         # ReAct 循环 + 三角色流水线 + LLM 客户端
+├── server/         # FastAPI 平台（逐域承接 /api 契约：auth/agent/stress/datagen/datasets/source/dbconns/ai）
+├── benchmarks/     # 基准脚本
+└── tests/          # 单测 + contract 契约测试
 ```
 
 > 注意：默认压测目标为 perf-demo 真实端点（`http://localhost:8081/api/order/list`），
-> `scripts/perf-gate.sh` 注释中的 `18080/api/orders` 是过时默认值。
+> `scripts/perf-gate.sh` 默认值已同步修正。

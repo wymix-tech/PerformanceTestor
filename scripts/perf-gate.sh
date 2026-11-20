@@ -8,16 +8,14 @@
 # 环境变量与退出码语义完全一致，CI 可直接替换：
 #   cd perf-py && uv run perf gate            # 参数走 GATE_* 环境变量
 #   cd perf-py && uv run perf gate --scenario scenario/scenarios/demo_nplus1.yaml
-# 注意：本脚本默认 GATE_URL（18080/api/orders）已过时——perf-demo 实际
-# 监听 8081，标准场景见 perf-py/scenario/scenarios/。
 #
 # 用法：
 #   PERF_API_TOKEN=xxx ./scripts/perf-gate.sh [参数覆盖]
 #
 # 环境变量（均可在命令行覆盖）：
-#   PERF_SERVER        平台地址         默认 http://localhost:8080
+#   PERF_SERVER        平台地址         默认 http://localhost:8000（Python perf-py server）
 #   PERF_API_TOKEN     CI 静态令牌      需与平台 perf.auth.api-token 一致
-#   GATE_URL           压测目标 URL     默认 http://localhost:18080/api/orders
+#   GATE_URL           压测目标 URL     默认 http://localhost:8081/api/order/list（perf-demo 慢 SQL 热点）
 #   GATE_APP           应用名           默认 demo-app（同时用于基线匹配）
 #   GATE_METHOD        请求方法         默认 GET
 #   GATE_BODY          请求体           默认空
@@ -35,9 +33,9 @@
 # =====================================================================
 set -uo pipefail
 
-PERF_SERVER="${PERF_SERVER:-http://localhost:8080}"
+PERF_SERVER="${PERF_SERVER:-http://localhost:8000}"
 PERF_API_TOKEN="${PERF_API_TOKEN:-}"
-GATE_URL="${GATE_URL:-http://localhost:18080/api/orders}"
+GATE_URL="${GATE_URL:-http://localhost:8081/api/order/list}"
 GATE_APP="${GATE_APP:-demo-app}"
 GATE_METHOD="${GATE_METHOD:-GET}"
 GATE_BODY="${GATE_BODY:-}"

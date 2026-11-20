@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# perf-datagen MySQL 端到端验收脚本（前置：perf-server 8080 启动、MySQL 可达）
+# perf-datagen MySQL 端到端验收脚本（前置：平台 8000/8080 启动、MySQL 可达）
+# 注：原针对 Java perf-server（已归档 tag v-java-final）；现平台为 Python perf-py
+#     server（同 /api 契约，契约测试保证结构兼容），行为差异以 perf-py 为准。
+#     直连数据库（不经 REST）的等价验收见 verify-datagen-py-mysql.sh。
 # 用法：BASE=... DEMO_DB=jdbc:mysql://127.0.0.1:3306/demo DB_USER=root DB_PASS=root ./verify-datagen-mysql.sh
 set -euo pipefail
 
-BASE="${BASE:-http://127.0.0.1:8080}"
+BASE="${BASE:-http://127.0.0.1:8000}"
 DEMO_DB="${DEMO_DB:-jdbc:mysql://127.0.0.1:3306/demo}"
 DB_USER="${DB_USER:-root}"
 DB_PASS="${DB_PASS:-root}"

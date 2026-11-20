@@ -23,24 +23,11 @@
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <!-- 统一版本管理 -->
+        <!-- 统一版本管理（perf-server / perf-datagen 相关依赖已随模块移除） -->
         <spring-boot.version>3.2.5</spring-boot.version>
         <mybatis-spring-boot.version>3.0.3</mybatis-spring-boot.version>
         <mysql-connector.version>8.3.0</mysql-connector.version>
         <byte-buddy.version>1.14.15</byte-buddy.version>
-        <!-- perf-datagen：Java 源码 AST 解析（MyBatis 魔法值/关联语义扫描） -->
-        <javaparser.version>3.26.2</javaparser.version>
-        <!-- 远程部署：SSH/SFTP 客户端（AI 编排编译部署启动） -->
-        <jsch.version>0.2.17</jsch.version>
-        <!-- JWT 鉴权（jjwt 0.12.x 新 API：parser().verifyWith()） -->
-        <jjwt.version>0.12.5</jjwt.version>
-        <!-- PIT 突变测试（perf-datagen 质量门禁；1.15.3+ 支持 JDK 21） -->
-        <pitest.version>1.17.4</pitest.version>
-        <pitest-junit5.version>1.2.2</pitest-junit5.version>
-        <!-- 报告导出：openhtmltopdf（HTML+CSS 渲染 PDF，Word 走 HTML 兼容 .doc，零额外依赖） -->
-        <openhtmltopdf.version>1.0.10</openhtmltopdf.version>
-        <!-- PostgreSQL 驱动：配合 perf-datagen 的 PostgreSQLDialect（灌数目标库支持 PG） -->
-        <postgresql.version>42.7.3</postgresql.version>
     </properties>
 
     <dependencyManagement>
@@ -76,51 +63,6 @@
                 <artifactId>byte-buddy-agent</artifactId>
                 <version>${byte-buddy.version}</version>
             </dependency>
-            <!-- JavaParser：perf-datagen 源码 AST 解析 -->
-            <dependency>
-                <groupId>com.github.javaparser</groupId>
-                <artifactId>javaparser-core</artifactId>
-                <version>${javaparser.version}</version>
-            </dependency>
-            <!-- SSH/SFTP：AI 编排远程编译部署 -->
-            <dependency>
-                <groupId>com.github.mwiede</groupId>
-                <artifactId>jsch</artifactId>
-                <version>${jsch.version}</version>
-            </dependency>
-            <!-- JWT：轻量鉴权（perf-server 使用） -->
-            <dependency>
-                <groupId>io.jsonwebtoken</groupId>
-                <artifactId>jjwt-api</artifactId>
-                <version>${jjwt.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.jsonwebtoken</groupId>
-                <artifactId>jjwt-impl</artifactId>
-                <version>${jjwt.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.jsonwebtoken</groupId>
-                <artifactId>jjwt-jackson</artifactId>
-                <version>${jjwt.version}</version>
-            </dependency>
-            <!-- 报告导出：openhtmltopdf（core + pdfbox 后端） -->
-            <dependency>
-                <groupId>com.openhtmltopdf</groupId>
-                <artifactId>openhtmltopdf-core</artifactId>
-                <version>${openhtmltopdf.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.openhtmltopdf</groupId>
-                <artifactId>openhtmltopdf-pdfbox</artifactId>
-                <version>${openhtmltopdf.version}</version>
-            </dependency>
-            <!-- PostgreSQL 驱动：PostgreSQLDialect 运行时连接 PG 目标库 -->
-            <dependency>
-                <groupId>org.postgresql</groupId>
-                <artifactId>postgresql</artifactId>
-                <version>${postgresql.version}</version>
-            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -150,20 +92,6 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>3.2.5</version>
-                </plugin>
-                <!-- PIT 突变测试插件 -->
-                <plugin>
-                    <groupId>org.pitest</groupId>
-                    <artifactId>pitest-maven</artifactId>
-                    <version>${pitest.version}</version>
-                    <dependencies>
-                        <!-- JUnit 5 平台支持 -->
-                        <dependency>
-                            <groupId>org.pitest</groupId>
-                            <artifactId>pitest-junit5-plugin</artifactId>
-                            <version>${pitest-junit5.version}</version>
-                        </dependency>
-                    </dependencies>
                 </plugin>
             </plugins>
         </pluginManagement>

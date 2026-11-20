@@ -8,7 +8,14 @@ gevent monkey-patch 必须发生在进程最早时刻（任何 socket/ssl 模块
 
 from __future__ import annotations
 
-from gevent import monkey
+try:
+    from gevent import monkey
+except ImportError as _exc:
+    raise SystemExit(
+        "perf-engine 需要 gevent（随 locust 引擎安装）。请执行：\n"
+        "  uv sync --extra locust        # uv 用户\n"
+        "  pip install -e 'perf-py[locust]'   # pip 用户"
+    ) from _exc
 
 monkey.patch_all()
 

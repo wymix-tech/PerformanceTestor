@@ -3,7 +3,7 @@
 # perf-datagen PostgreSQL 方言端到端验收脚本
 #
 # 前置条件：
-#   1) perf-server 已启动（默认 8080）
+#   1) 平台已启动（Python perf-py server 默认 8000；原 Java perf-server 8080 已归档 tag v-java-final）
 #   2) PostgreSQL 可达，且已建好 perf_user / perf_order 两张表（见下方建表语句）
 #
 # 用法：
@@ -35,7 +35,7 @@
 # =====================================================================
 set -euo pipefail
 
-BASE="${BASE:-http://127.0.0.1:8080}"
+BASE="${BASE:-http://127.0.0.1:8000}"
 DEMO_DB="${DEMO_DB:-jdbc:postgresql://127.0.0.1:5432/demo}"
 DB_USER="${DB_USER:-postgres}"
 DB_PASS="${DB_PASS:-postgres}"
