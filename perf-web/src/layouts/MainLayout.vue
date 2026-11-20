@@ -98,7 +98,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Database, Bot, Server, LogOut, CornerUpLeft
+  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Database, HardDrive, Bot, Server, LogOut, CornerUpLeft
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { hasQuickStart, quickStartStepTitle, syncQuickStartFlag } from '@/stores/quickStartNav'
@@ -118,6 +118,7 @@ function handleLogout() {
 const menus = [
   { path: '/dashboard', title: '总览', icon: LayoutDashboard },
   { path: '/projects', title: '项目管理', icon: FolderGit },
+  { path: '/dbconns', title: '数据库连接', icon: HardDrive },
   { path: '/deploy', title: '部署管理', icon: Server },
   { path: '/stress', title: '压测中心', icon: Gauge },
   { path: '/datasets', title: '数据管理', icon: Database },

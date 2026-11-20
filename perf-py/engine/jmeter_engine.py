@@ -9,7 +9,10 @@ JTL：CSV 模式（默认列：timeStamp,elapsed,label,responseCode,success,...�
 边界：
 - 断言映射为 JMeter ResponseAssertion 仅支持 status eq / body eq|contains|regex；
   其余断言（header/json/gt/lt/ne/notContains）降级为 warnings（不在 JMeter 侧判定）
-- steps 混合场景暂不支持（JMeter 多 Controller 编排留待需要时扩展），报错提示
+- steps 混合场景暂不支持执行（JMeter 侧无权重编排/变量上下文，报错提示）；
+  generate_jmx(steps_mode=True) 仅供导出：步骤按顺序全部执行，
+  权重配比与变量提取（pN 上下文引用）不生效
+- 变量提取（extract）不写入 JMX
 """
 
 from __future__ import annotations
@@ -43,19 +46,18 @@ def _prop(parent: ET.Element, name: str, value: str) -> ET.Element:
     return p
 
 
-def generate_jmx(scenario: Scenario) -> str:
-    """场景 → JMX 测试计划（仅单接口模式；duration + ramp_up + 永久循环）。"""
-    if scenario.steps:
+def generate_jmx(scenario: Scenario, *, steps_mode: bool = False) -> str:
+    """场景 → JMX 测试计划（duration + ramp_up + 永久循环）。
+
+    默认仅单接口模式（引擎执行口径）；steps_mode=True 供导出：混合场景步骤
+    按顺序全部写入（顺序执行，权重配比与变量提取不生效），每步独立
+    HeaderManager 与 ResponseAssertion。请求头经 HeaderManager 写入
+    （此前缺失，顺带修复引擎执行丢失请求头的问题）。
+    """
+    if scenario.steps and not steps_mode:
         raise ValueError("jmeter 引擎暂不支持 steps 混合场景（多 Controller 编排待扩展）")
-    if not scenario.request:
-        raise ValueError("场景缺少 request 定义")
 
-    req = scenario.request
-    from urllib.parse import urlsplit
-
-    parts = urlsplit(req.url)
     load = scenario.load
-
     root = _xml("jmeterTestPlan", version="1.2", properties="5.0", jmeter="5.6")
     plan = _xml("TestPlan", guiclass="TestPlanGui", testclass="TestPlan", testname=scenario.name)
     root.append(plan)
@@ -76,50 +78,78 @@ def generate_jmx(scenario: Scenario) -> str:
     _prop(sched, "LoopController.continue_forever", "true")
     _prop(sched, "LoopController.loops", "-1")
 
-    sampler = _xml(
-        "HTTPSamplerProxy",
-        guiclass="HttpTestSampleGui",
-        testclass="HTTPSamplerProxy",
-        testname=req.url,
-    )
-    plan.append(sampler)
-    _prop(sampler, "HTTPSampler.domain", parts.hostname or "")
-    _prop(sampler, "HTTPSampler.port", str(parts.port or (443 if parts.scheme == "https" else 80)))
-    _prop(sampler, "HTTPSampler.path", parts.path + (("?" + parts.query) if parts.query else ""))
-    _prop(sampler, "HTTPSampler.method", req.method)
-    _prop(sampler, "HTTPSampler.follow_redirects", "true")
-    if req.body:
-        _prop(sampler, "HTTPSampler.postBodyRaw", "true")
-        body = _xml("elementProp", name="HTTPsampler.Arguments", elementType="Arguments")
-        sampler.append(body)
-        arg = _xml("elementProp", name="", elementType="Argument")
-        body.append(arg)
-        _prop(arg, "Argument.value", req.body)
+    # 采样器序列：单接口 1 条；steps_mode 下按步骤顺序（JMeter 顺序执行）
+    requests = (list(scenario.steps) if scenario.steps
+                else [scenario.request] if scenario.request else [])
+    for req in requests:
+        from urllib.parse import urlsplit
 
-    # 断言映射（有限支持，其余降级 warnings 由 run() 记录）
-    for a in req.assertions:
-        ra = _xml("ResponseAssertion", guiclass="AssertionGui", testclass="ResponseAssertion", testname="assert")
-        plan.append(ra)
-        supported = (a.source == "status" and a.op == "eq") or (
-            a.source == "body" and a.op in ("eq", "contains", "regex")
+        parts = urlsplit(req.url)
+        sampler = _xml(
+            "HTTPSamplerProxy",
+            guiclass="HttpTestSampleGui",
+            testclass="HTTPSamplerProxy",
+            testname=(req.name if hasattr(req, "name") and req.name else req.url),
         )
-        if not supported:
-            continue
-        if a.source == "status":
-            _prop(ra, "Assertion.test_field", "Assertion.response_code")
-            _prop(ra, "Assertion.test_type", "8")  # equals
-        else:
-            _prop(ra, "Assertion.test_field", "Assertion.response_data")
-            _prop(ra, "Assertion.test_type", {"eq": "8", "contains": "2", "regex": "16"}[a.op])
-        patterns = _xml("collectionProp", name="Asserts.test_strings")
-        ra.append(patterns)
-        entry = _xml("stringProp", name="")
-        entry.text = a.expected
-        patterns.append(entry)
-        _prop(ra, "Assertion.assume_success", "false")
+        tg.append(sampler)
+        _prop(sampler, "HTTPSampler.domain", parts.hostname or "")
+        _prop(sampler, "HTTPSampler.port",
+              str(parts.port or (443 if parts.scheme == "https" else 80)))
+        _prop(sampler, "HTTPSampler.path",
+              parts.path + (("?" + parts.query) if parts.query else ""))
+        _prop(sampler, "HTTPSampler.method", req.method)
+        _prop(sampler, "HTTPSampler.follow_redirects", "true")
+        if req.body:
+            _prop(sampler, "HTTPSampler.postBodyRaw", "true")
+            body = _xml("elementProp", name="HTTPsampler.Arguments", elementType="Arguments")
+            sampler.append(body)
+            arg = _xml("elementProp", name="", elementType="Argument")
+            body.append(arg)
+            _prop(arg, "Argument.value", req.body)
+        _append_headers(sampler, dict(req.headers or {}))
+
+        # 断言映射（有限支持，其余降级 warnings 由 run() 记录）；
+        # 挂在采样器下作为子节点（per-sampler 作用域，标准 JMX 结构）
+        for a in req.assertions:
+            supported = (a.source == "status" and a.op == "eq") or (
+                a.source == "body" and a.op in ("eq", "contains", "regex")
+            )
+            if not supported:
+                continue
+            ra = _xml("ResponseAssertion", guiclass="AssertionGui",
+                      testclass="ResponseAssertion", testname="assert")
+            sampler.append(ra)
+            if a.source == "status":
+                _prop(ra, "Assertion.test_field", "Assertion.response_code")
+                _prop(ra, "Assertion.test_type", "8")  # equals
+            else:
+                _prop(ra, "Assertion.test_field", "Assertion.response_data")
+                _prop(ra, "Assertion.test_type", {"eq": "8", "contains": "2", "regex": "16"}[a.op])
+            patterns = _xml("collectionProp", name="Asserts.test_strings")
+            ra.append(patterns)
+            entry = _xml("stringProp", name="")
+            entry.text = a.expected
+            patterns.append(entry)
+            _prop(ra, "Assertion.assume_success", "false")
 
     ET.indent(root)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+
+
+def _append_headers(sampler: ET.Element, headers: dict[str, str]) -> None:
+    """请求头 → HeaderManager（与 jmx_import 解析侧结构互逆）。"""
+    if not headers:
+        return
+    hm = _xml("HeaderManager", guiclass="HeaderPanel", testclass="HeaderManager",
+              testname="HTTP Header Manager")
+    sampler.append(hm)
+    collection = _xml("collectionProp", name="HeaderManager.headers")
+    hm.append(collection)
+    for k, v in headers.items():
+        header = _xml("elementProp", name="", elementType="Header")
+        collection.append(header)
+        _prop(header, "Header.name", str(k))
+        _prop(header, "Header.value", str(v))
 
 
 def unsupported_assertion_warnings(scenario: Scenario) -> list[str]:

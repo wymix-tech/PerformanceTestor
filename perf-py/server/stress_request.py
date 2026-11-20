@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from scenario.model import (
     AssertionSpec,
+    CsvSpec,
     GateSpec,
     LoadSpec,
     RequestSpec,
@@ -23,6 +24,7 @@ from scenario.model import (
     StepSpec,
     VarExtractSpec,
 )
+from stress.csv_provider import CSV_MODES, parse_csv
 
 # 引擎类型映射：Python 侧无手写线程发压引擎（Issue #23 风险表决策），
 # 平台 http 引擎由 locust 引擎等价承担；jmeter 引擎保持同名。
@@ -60,6 +62,7 @@ class StressTaskRequestData:
     sample_interval_sec: int = 5
     scenario: list[dict] | None = None
     variables: dict[str, str] = field(default_factory=dict)
+    csv: dict | None = None
 
     @property
     def is_scenario_mode(self) -> bool:
@@ -134,6 +137,7 @@ def parse_stress_request(payload: dict) -> StressTaskRequestData:
         scenario=[s for s in scenario if isinstance(s, dict)]
         if isinstance(scenario, list) and scenario else None,
         variables=_str_map(payload, "variables"),
+        csv=payload.get("csv") if isinstance(payload.get("csv"), dict) else None,
     )
 
 
@@ -144,12 +148,30 @@ def validate_stress_request(request: StressTaskRequestData) -> None:
     """对齐 StressTaskService.validate：场景校验 → URL 校验（非场景）→ 公共参数校验。"""
     _validate_scenario(request)
     if request.is_scenario_mode:
+        for _i, step in enumerate(request.scenario or []):
+            _validate_csv(step.get("csv"), f"场景步骤「{step.get('name')}」")
         _validate_common(request)
         return
     url = request.target_url
     if not url or not (url.startswith("http://") or url.startswith("https://")):
         raise ValueError("压测目标 URL 必须以 http:// 或 https:// 开头")
+    _validate_csv(request.csv, "压测请求")
     _validate_common(request)
+
+
+def _validate_csv(raw, label: str) -> None:
+    """CSV 参数化校验：mode 白名单 + 完整解析（列名/行数/大小限制即建数据集口径）。"""
+    if not isinstance(raw, dict) or not str(raw.get("text") or "").strip():
+        return
+    mode = str(raw.get("mode") or "sequential")
+    if mode not in CSV_MODES:
+        raise ValueError(f"{label}的 CSV 取值模式不合法（允许 sequential / random）: {mode}")
+    try:
+        parse_csv(str(raw.get("text") or ""))
+    except ValueError as exc:
+        raise ValueError(f"{label}的 {exc}") from exc
+    if not str(raw.get("text") or "").strip().count("\n"):
+        raise ValueError(f"{label}的 CSV 没有数据行（首行列名之后至少 1 行数据）")
 
 
 def _validate_common(request: StressTaskRequestData) -> None:
@@ -218,6 +240,15 @@ def _assertion_specs(raw: list[dict] | None) -> list[AssertionSpec]:
     return specs
 
 
+def _csv_spec(raw) -> CsvSpec | None:
+    """步骤/单接口的 csv dict → CsvSpec（空缺/空文本返回 None）。"""
+    if not isinstance(raw, dict) or not str(raw.get("text") or "").strip():
+        return None
+    mode = str(raw.get("mode") or "sequential")
+    return CsvSpec.model_construct(
+        mode=mode if mode in CSV_MODES else "sequential", text=str(raw.get("text")))
+
+
 def _step_spec(step: dict) -> StepSpec:
     extract = [VarExtractSpec.model_construct(
         var=e.get("var"), source=e.get("source") or "body", path=e.get("path"))
@@ -233,6 +264,7 @@ def _step_spec(step: dict) -> StepSpec:
         weight=1 if "weight" not in step else int(step.get("weight") or 0),
         extract=extract,
         assertions=_assertion_specs(step.get("assertions")),
+        csv=_csv_spec(step.get("csv")),
     )
 
 
@@ -255,6 +287,7 @@ def _request_spec(request: StressTaskRequestData) -> RequestSpec:
         headers=request.headers,
         body=request.body,
         assertions=_assertion_specs(request.assertions),
+        csv=_csv_spec(request.csv),
     )
 
 

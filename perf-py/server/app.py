@@ -37,6 +37,8 @@ from server.dataset_api import router as dataset_router
 from server.dataset_service import DatasetLifecycleService
 from server.db import database_url, make_session_factory
 from server.db_explain import DbExplainService
+from server.dbconn_api import router as dbconn_router
+from server.dbconn_service import DbConnService
 from server.endpoint_scanner import EndpointScanner
 from server.errors import handle_exception, handle_validation
 from server.issue_service import (
@@ -85,6 +87,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                source_storage_dir: str | None = None,
                data_cleanup: DataCleanupService | None = None,
                db_explain: DbExplainService | None = None,
+               dbconn_service: DbConnService | None = None,
                issue_verify: IssueVerifyService | None = None,
                db_url: str | None = None,
                auth: AuthProperties | None = None,
@@ -151,6 +154,8 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         app.state.stress_repo, runner, dataset_lookup=_dataset_lookup)
     app.state.collector_repo = collector_repo if collector_repo is not None \
         else CollectorRepository(session_factory)
+    app.state.dbconn_service = dbconn_service if dbconn_service is not None \
+        else DbConnService(session_factory)
     app.state.datagen_repo = datagen_repo if datagen_repo is not None \
         else DatagenRepository(session_factory)
     app.state.datagen_service = DatagenWriteService(app.state.datagen_repo)
@@ -213,6 +218,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.include_router(datagen_router)
     app.include_router(dataset_router)
     app.include_router(source_router)
+    app.include_router(dbconn_router)
     # 全局异常处理对齐 Java GlobalExceptionHandler：任何异常 → 200 + code=1 错误包装
     app.add_exception_handler(RequestValidationError, handle_validation)
     app.add_exception_handler(Exception, handle_exception)

@@ -37,6 +37,21 @@ def secret_configured() -> bool:
     return bool(os.environ.get(SECRET_ENV, ""))
 
 
+def encrypt(plain: str | None) -> str:
+    """加密入库值（AES-256-GCM，格式与 decrypt 读取侧一致）。
+
+    未配置 PERF_CRYPTO_SECRET / 空值 → 原样返回（与 Java encrypt 同语义）。
+    """
+    if not plain:
+        return plain
+    secret = os.environ.get(SECRET_ENV, "")
+    if not secret:
+        return plain
+    iv = os.urandom(IV_LENGTH)
+    ciphertext = _aesgcm(secret).encrypt(iv, plain.encode("utf-8"), None)
+    return PREFIX + base64.b64encode(iv + ciphertext).decode("utf-8")
+
+
 def decrypt(stored: str | None) -> str | None:
     """解密库中存储值（密文或存量明文；任何失败降级原值）。"""
     if not stored or not stored.startswith(PREFIX):

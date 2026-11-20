@@ -102,6 +102,15 @@ export const stressApi = {
   // 性能回归门禁（CI 用）：同步等待压测完成并比对基线，返回 { passed, summary, ... }
   gate: (data: Record<string, unknown>, params?: { baselineTaskId?: number; timeoutSec?: number; failOnNoBaseline?: boolean; webhook?: string }) =>
     http.post('/stress/gate', data, { params }),
+  // 导入 JMeter 脚本：解析为场景步骤 + 负载参数（只解析不落库，回填表单后可编辑再发起）
+  importJmx: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return http.post('/stress/jmx/import', fd)
+  },
+  // 导出压测方案为 JMX 文件（请求体同创建任务；成功返回 XML Blob，失败为 JSON Blob）
+  exportJmx: (data: Record<string, unknown>) =>
+    http.post('/stress/jmx/export', data, { responseType: 'blob' }),
   // 绑定数据集反查（绑定快照 + dataset 域全链；未绑定返回 data=null 非错误）
   dataset: (id: number) => http.get(`/stress/tasks/${id}/dataset`)
 }
@@ -326,15 +335,13 @@ export const aiApi = {
 }
 
 export const dbConnApi = {
-  // 数据库连接配置列表（慢 SQL 分析 EXPLAIN 用）
+  // 数据库连接配置列表（慢 SQL 分析 EXPLAIN / 灌数 connId 复用；密码不回显）
   list: () => http.get('/dbconns'),
-  // 保存连接
-  save: (data: { connName: string; host?: string; appName?: string; dbUrl: string; username: string; password: string; isDefault?: number }) =>
+  // 保存连接（id 提供 = 编辑；密码留空 = 沿用已存凭据；匹配只看主机标识与项目绑定）
+  save: (data: { id?: number; connName: string; host?: string; appName?: string; dbUrl: string; username: string; password: string }) =>
     http.post('/dbconns', data),
   // 删除连接
   remove: (id: number) => http.delete(`/dbconns/${id}`),
-  // 设为默认
-  setDefault: (id: number) => http.post(`/dbconns/${id}/default`),
   // 测试连接（可选携带 SQL 试跑 EXPLAIN）
   test: (data: { dbUrl: string; username: string; password: string; sqlText?: string }) =>
     http.post('/dbconns/test', data)

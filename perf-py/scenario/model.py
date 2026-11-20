@@ -63,6 +63,18 @@ class VarExtractSpec(StrictModel):
         return {"var": self.var, "source": self.source, "path": self.path}
 
 
+class CsvSpec(StrictModel):
+    """步骤/单接口的 CSV 参数化数据集（首行为列名，列名即变量名）。
+
+    mode：sequential（游标循环）/ random（每次迭代随机取行）；
+    text：CSV 文本（首行列名）。模板中经 {{列名}} 引用，CSV 值优先于
+    全局 variables（每次迭代按行合并进渲染池）。
+    """
+
+    mode: Literal["sequential", "random"] = "sequential"
+    text: str = ""
+
+
 class StepSpec(StrictModel):
     """对齐 StressTaskRequest.ScenarioStep。"""
 
@@ -75,6 +87,7 @@ class StepSpec(StrictModel):
     weight: int = Field(default=1, ge=1)
     extract: list[VarExtractSpec] = Field(default_factory=list)
     assertions: list[AssertionSpec] = Field(default_factory=list)
+    csv: CsvSpec | None = None
 
     @field_validator("method")
     @classmethod
@@ -101,6 +114,8 @@ class StepSpec(StrictModel):
             data["extract"] = [e.to_payload() for e in self.extract]
         if self.assertions:
             data["assertions"] = [a.to_payload() for a in self.assertions]
+        if self.csv is not None:
+            data["csv"] = {"mode": self.csv.mode, "text": self.csv.text}
         return data
 
 
@@ -119,6 +134,7 @@ class RequestSpec(StrictModel):
     headers: dict[str, str] = Field(default_factory=dict)
     body: str | None = None
     assertions: list[AssertionSpec] = Field(default_factory=list)
+    csv: CsvSpec | None = None
 
     @field_validator("method")
     @classmethod

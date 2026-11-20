@@ -31,6 +31,12 @@ const routes = [
         meta: { title: '项目管理' }
       },
       {
+        path: 'dbconns',
+        name: 'DbConnManage',
+        component: () => import('@/views/DbConnManageView.vue'),
+        meta: { title: '数据库连接' }
+      },
+      {
         path: 'deploy',
         name: 'DeployManage',
         component: () => import('@/views/DeployManageView.vue'),

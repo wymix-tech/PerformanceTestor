@@ -6,7 +6,7 @@
     </div>
 
     <!-- 压测模式：单接口 / 多接口混合（两种模式均支持从源码接口清单直接选用地址） -->
-    <div v-if="scenarioEnabled" class="flex gap-1">
+    <div v-if="scenarioEnabled" class="flex items-center gap-1">
       <button
         v-for="m in modes" :key="m.key"
         type="button"
@@ -16,7 +16,26 @@
           : 'text-fg-sub border border-white/10 hover:text-fg-main'"
         @click="switchMode(m.key)"
       >{{ m.label }}</button>
+      <div class="flex-1"></div>
+      <!-- JMX 导入/导出：导入解析为多接口步骤回填表单；导出把当前方案下载为 .jmx -->
+      <input ref="jmxInput" type="file" accept=".jmx,.xml" class="hidden" @change="onJmxFile" />
+      <button
+        type="button"
+        class="px-3 py-1.5 rounded-lg text-xs text-neon-blue border border-neon-blue/30 hover:bg-neon-blue/10 transition-all cursor-pointer"
+        title="导入 JMeter 测试计划（.jmx），解析为多接口步骤后可编辑"
+        @click="jmxInput?.click()"
+      >{{ jmxImporting ? '解析中…' : '导入 JMX' }}</button>
+      <button
+        type="button"
+        class="px-3 py-1.5 rounded-lg text-xs text-neon-blue border border-neon-blue/30 hover:bg-neon-blue/10 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        :disabled="!canSubmit"
+        :title="isScenario
+          ? '导出当前方案为 JMX（多接口按顺序执行，权重与变量提取不生效）'
+          : '导出当前压测方案为 JMeter 测试计划（.jmx）'"
+        @click="exportJmx"
+      >导出 JMX</button>
     </div>
+    <div v-if="jmxMsg" class="text-[11px]" :class="jmxMsg.ok ? 'text-neon-green' : 'text-red-400'">{{ jmxMsg.text }}</div>
 
     <!-- ===== 单接口模式 ===== -->
     <template v-if="!isScenario">
@@ -42,8 +61,8 @@
           <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
         </select>
       </div>
-      <div v-if="method !== 'GET'">
-        <label class="text-xs text-fg-sub">请求体 Body（JSON，可选）</label>
+      <div>
+        <label class="text-xs text-fg-sub">请求体 Body（JSON，可选）<span class="ml-1 font-normal">GET 请求也可携带 body</span></label>
         <textarea v-model="body" class="input-text w-full font-mono" rows="3" placeholder='{"key": "value"}'></textarea>
       </div>
       <div>
@@ -51,6 +70,30 @@
         <textarea v-model="headersText" rows="2" class="input-text w-full font-mono text-xs"
           placeholder="Authorization: Bearer xxx&#10;X-Tenant-Id: 1"></textarea>
       </div>
+      <!-- CSV 参数化：首行列名即变量名，URL/请求头/请求体中经 {{列名}} 引用 -->
+      <details class="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+        <summary class="text-[11px] text-fg-sub cursor-pointer select-none">
+          参数化数据（CSV，可选）<span class="ml-1 text-[10px]">顺序/随机逐行取值，{{ VAR_PH }} 引用列名</span>
+        </summary>
+        <div class="mt-2 space-y-2">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] text-fg-sub shrink-0">取值模式</span>
+            <select v-model="csvMode" class="input-select !w-32 text-xs">
+              <option value="sequential">顺序（游标循环）</option>
+              <option value="random">随机（每迭代取行）</option>
+            </select>
+            <input ref="csvFileInput" type="file" accept=".csv,.txt" class="hidden" @change="onCsvFile" />
+            <button type="button" class="text-[10px] text-neon-blue hover:underline" @click="csvFileInput?.click()">上传 CSV</button>
+            <span v-if="csvText" class="text-[10px] text-fg-sub">{{ csvLineCount }} 行数据</span>
+          </div>
+          <textarea v-model="csvText" rows="3" class="input-text w-full text-xs font-mono"
+            placeholder="username,password&#10;u1,p1&#10;u2,p2"></textarea>
+          <div class="text-[10px] text-fg-sub leading-relaxed">
+            首行为列名（即变量名），URL / 请求头 / 请求体中用 <span class="font-mono">{{ VAR_PH }}</span> 引用；
+            顺序模式所有虚拟用户共享游标逐行循环，随机模式每次迭代独立取行
+          </div>
+        </div>
+      </details>
       <div>
         <label class="text-xs text-fg-sub">结果判断（可选：不满足即计为错误）</label>
         <textarea v-model="assertText" rows="3" class="input-text w-full font-mono text-xs"
@@ -89,29 +132,29 @@
               </select>
               <button class="text-[11px] text-red-400 hover:underline shrink-0" @click="removeStep(i)">移除</button>
             </div>
-            <div class="grid grid-cols-12 gap-2">
-              <div class="col-span-2">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div>
                 <label class="text-[10px] text-fg-sub">名称</label>
                 <input v-model="s.name" class="input-text w-full text-xs" placeholder="如 登录" />
               </div>
-              <div class="col-span-2">
+              <div>
                 <label class="text-[10px] text-fg-sub">别名（可选）</label>
                 <input v-model="s.alias" class="input-text w-full text-xs" :placeholder="ALIAS_PH" />
               </div>
-              <div class="col-span-2">
+              <div>
                 <label class="text-[10px] text-fg-sub">方法</label>
                 <select v-model="s.method" class="input-select w-full text-xs">
                   <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
                 </select>
               </div>
-              <div class="col-span-2">
+              <div>
                 <label class="text-[10px] text-fg-sub">权重</label>
                 <input v-model.number="s.weight" type="number" min="0" class="input-text w-full text-xs" />
               </div>
-              <div class="col-span-4">
-                <label class="text-[10px] text-fg-sub">URL（支持 {{ VAR_PH }} / {{ CONTEXT_PH }}）</label>
-                <input v-model="s.url" class="input-text w-full text-xs" placeholder="http://host/api/xxx" />
-              </div>
+            </div>
+            <div>
+              <label class="text-[10px] text-fg-sub">URL<span class="ml-1.5 font-normal">支持 {{ VAR_PH }} 引用变量、{{ CONTEXT_PH }} 引用上一步结果</span></label>
+              <input v-model="s.url" class="input-text w-full text-xs font-mono" placeholder="http://host/api/xxx" />
             </div>
             <div v-if="stepAliasErrors[i]" class="text-[10px] text-red-400 -mt-1">{{ stepAliasErrors[i] }}</div>
             <div>
@@ -119,8 +162,8 @@
               <textarea v-model="s.headersText" rows="2" class="input-text w-full text-xs font-mono"
                 :placeholder="HEADER_PH"></textarea>
             </div>
-            <div v-if="s.method !== 'GET'">
-              <label class="text-[10px] text-fg-sub">请求体（支持 {{ VAR_PH }} / {{ CONTEXT_PH }}）</label>
+            <div>
+              <label class="text-[10px] text-fg-sub">请求体（支持 {{ VAR_PH }} / {{ CONTEXT_PH }}）<span class="ml-1 font-normal">GET 同样生效</span></label>
               <textarea v-model="s.body" rows="2" class="input-text w-full text-xs font-mono" placeholder='{"id": 1}'></textarea>
             </div>
             <!-- 响应后处理：从响应体或响应头提取变量，供后续步骤引用 -->
@@ -142,6 +185,28 @@
                   :placeholder="s.extractSource === 'header' ? 'Set-Cookie' : 'data.token'" />
               </div>
             </div>
+            <!-- 每步独立的 CSV 参数化数据集：首行列名即变量名，本步模板经 {{列名}} 引用 -->
+            <details class="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <summary class="text-[10px] text-fg-sub cursor-pointer select-none">
+                参数化数据（CSV，可选）<span class="ml-1">顺序/随机逐行取值，{{ VAR_PH }} 引用列名</span>
+              </summary>
+              <div class="mt-2 space-y-2">
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] text-fg-sub shrink-0">取值模式</span>
+                  <select v-model="s.csvMode" class="input-select !w-32 text-xs">
+                    <option value="sequential">顺序（游标循环）</option>
+                    <option value="random">随机（每迭代取行）</option>
+                  </select>
+                  <input type="file" accept=".csv,.txt" class="hidden"
+                         :data-step="i" @change="onStepCsvFile(i, $event)" />
+                  <button type="button" class="text-[10px] text-neon-blue hover:underline"
+                          @click="pickStepCsv(i, $event)">上传 CSV</button>
+                  <span v-if="s.csvText" class="text-[10px] text-fg-sub">{{ s.csvText.trim().split('\n').length - 1 }} 行数据</span>
+                </div>
+                <textarea v-model="s.csvText" rows="3" class="input-text w-full text-xs font-mono"
+                  placeholder="username,password&#10;u1,p1&#10;u2,p2"></textarea>
+              </div>
+            </details>
             <div>
               <label class="text-[10px] text-fg-sub">结果判断（可选：不满足即计为错误，每行一条）</label>
               <textarea v-model="s.assertText" rows="2" class="input-text w-full text-xs font-mono"
@@ -330,6 +395,9 @@ interface ScenarioStep {
   extractPath: string
   /** 结果判断：每行一条「来源 [键] 比较 期望值」 */
   assertText: string
+  /** CSV 参数化数据集：首行列名即变量名，请求中经 {{列名}} 引用 */
+  csvMode: 'sequential' | 'random'
+  csvText: string
   /** 关联端点：来自端点扫描，供「按接口准备数据」按 类#方法 兜底定位 */
   className?: string
   methodName?: string
@@ -504,7 +572,8 @@ const stepPick = ref<number[]>([])
 function newStep(): ScenarioStep {
   return {
     name: '', alias: '', url: '', method: 'GET', headersText: '', body: '', weight: 1,
-    extractVar: '', extractSource: 'body', extractPath: '', assertText: ''
+    extractVar: '', extractSource: 'body', extractPath: '', assertText: '',
+    csvMode: 'sequential', csvText: ''
   }
 }
 
@@ -551,6 +620,85 @@ function switchMode(next: StressMode) {
   mode.value = next
   if (next === 'scenario' && scenario.value.length === 0) {
     addStep()
+  }
+}
+
+// ---------------- JMX 导入（JMeter 测试计划 → 多接口步骤） ----------------
+
+const jmxInput = ref<HTMLInputElement | null>(null)
+const jmxImporting = ref(false)
+const jmxMsg = ref<{ ok: boolean; text: string } | null>(null)
+
+async function onJmxFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (jmxImporting.value) return
+  jmxImporting.value = true
+  jmxMsg.value = null
+  try {
+    const r: any = await stressApi.importJmx(file)
+    const d = r.data || {}
+    const steps: Array<Record<string, any>> = d.steps || []
+    if (!steps.length) {
+      jmxMsg.value = { ok: false, text: 'JMX 中未解析到 HTTP 采样器' }
+      return
+    }
+    // 回填多接口模式：解析结果与表单步骤字段一一对应，导入后可编辑再发起
+    mode.value = 'scenario'
+    scenario.value = steps.map((s) => ({
+      name: s.name || '', alias: s.alias || '', url: s.url || '',
+      method: s.method || 'GET', headersText: s.headersText || '',
+      body: s.body || '', weight: s.weight || 1,
+      extractVar: s.extractVar || '', extractSource: s.extractSource || 'body',
+      extractPath: s.extractPath || '', assertText: s.assertText || '',
+      csvMode: s.csvMode || 'sequential', csvText: s.csvText || ''
+    }))
+    stepPick.value = scenario.value.map(() => -1)
+    // 负载参数：ThreadGroup 线程数/时长/爬坡存在时才覆盖当前值
+    const load: Record<string, any> = d.load || {}
+    if (load.concurrency) concurrency.value = Number(load.concurrency)
+    if (load.durationSec) durationSec.value = Number(load.durationSec)
+    if (load.rampUpSec) warmupSec.value = Number(load.rampUpSec)
+    const warn: string[] = d.warnings || []
+    jmxMsg.value = {
+      ok: true,
+      text: `已导入 ${steps.length} 个步骤、并发 ${concurrency.value}、时长 ${durationSec}s`
+        + (warn.length ? `；${warn.length} 项降级提示：${warn.join('；')}` : '（请核对后发起压测）')
+    }
+  } catch (err: any) {
+    jmxMsg.value = { ok: false, text: '导入失败：' + (err?.response?.data?.message || err?.message || '请求异常') }
+  } finally {
+    jmxImporting.value = false
+  }
+}
+
+/** 导出当前方案为 .jmx 下载；后端校验失败时返回 JSON 包装（blob 形态），就地提示 */
+async function exportJmx() {
+  if (jmxImporting.value) return
+  jmxMsg.value = null
+  try {
+    const blob = (await stressApi.exportJmx(buildPayload())) as unknown as Blob
+    if (blob.type && blob.type.includes('json')) {
+      const j = JSON.parse(await blob.text())
+      jmxMsg.value = { ok: false, text: '导出失败：' + (j.message || '请求异常') }
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `stress-plan-${new Date().toISOString().slice(0, 10)}.jmx`
+    a.click()
+    URL.revokeObjectURL(url)
+    jmxMsg.value = {
+      ok: true,
+      text: isScenario.value
+        ? '已导出 JMX（多接口步骤按顺序执行，权重配比与跨步骤变量提取不生效）'
+        : '已导出 JMX（可在 JMeter 中直接打开执行）'
+    }
+  } catch (err: any) {
+    jmxMsg.value = { ok: false, text: '导出失败：' + (err?.response?.data?.message || err?.message || '请求异常') }
   }
 }
 
@@ -602,6 +750,8 @@ function buildScenario() {
           path: s.extractPath.trim()
         }]
       }
+      // CSV 参数化：有数据才下发（首行列名即变量名，{{列名}} 引用）
+      if (s.csvText.trim()) step.csv = { mode: s.csvMode || 'sequential', text: s.csvText }
       // 结果判断：解析失败由 canSubmit 拦截，此处规则已保证合法
       const { rules } = parseAssertions(s.assertText)
       if (rules && rules.length) step.assertions = rules
@@ -621,9 +771,42 @@ const warmupSec = ref(10)
 const qpsLimit = ref(0)
 const body = ref('')
 const stageConcurrencies = ref('10,50,100')
-/** 单接口模式的请求头（每行 k: v）与结果判断（每行一条断言） */
+/** 单接口模式的请求头（每行 k: v）、结果判断与 CSV 参数化数据集 */
 const headersText = ref('')
 const assertText = ref('')
+const csvMode = ref<'sequential' | 'random'>('sequential')
+const csvText = ref('')
+const csvFileInput = ref<HTMLInputElement | null>(null)
+const csvLineCount = computed(() => Math.max(0, csvText.value.trim().split('\n').length - 1))
+
+/** 读取 CSV 文件文本进数据框（仅本机读取，不上传原文件） */
+function readCsvFile(file: File, apply: (text: string) => void) {
+  const reader = new FileReader()
+  reader.onload = () => apply(String(reader.result || ''))
+  reader.readAsText(file)
+}
+
+function onCsvFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) readCsvFile(file, (text) => { csvText.value = text })
+}
+
+/** 步骤行内上传按钮 → 触发对应隐藏 file input（经 data-step 定位） */
+function pickStepCsv(_i: number, evt: MouseEvent) {
+  const details = (evt.currentTarget as HTMLElement).closest('details')
+  const input = details?.querySelector('input[type="file"]') as HTMLInputElement | null
+  input?.click()
+}
+
+function onStepCsvFile(i: number, e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const s = scenario.value[i]
+  if (file && s) readCsvFile(file, (text) => { s.csvText = text })
+}
 
 // ---------------- 数据集绑定（单接口与场景两模式共用） ----------------
 
@@ -749,6 +932,8 @@ function buildPayload(): Record<string, unknown> {
   }
   if (stageList.length > 1) payload.stageConcurrencies = stageList
   if (body.value.trim()) payload.body = body.value.trim()
+  // 单接口 CSV 参数化：有数据才下发
+  if (csvText.value.trim()) payload.csv = { mode: csvMode.value || 'sequential', text: csvText.value }
   // 数据集绑定：单接口与场景两模式一致携带（后端按 instanceId 解析 READY 快照落库）
   if (datasetId.value) payload.dataset = { instanceId: datasetId.value }
   // 请求头：单接口与多接口一致地按行解析（此前仅多接口支持，单接口缺失）
@@ -860,6 +1045,8 @@ defineExpose({
     stepPick.value = []
     headersText.value = ''
     assertText.value = ''
+    csvText.value = ''
+    csvMode.value = 'sequential'
     // 历史任务 wire 契约不含 dataset_*，先复位为不绑定，再经反查端点异步还原绑定
     datasetId.value = ''
     restoreBinding(task)

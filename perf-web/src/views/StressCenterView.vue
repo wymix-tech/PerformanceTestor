@@ -17,7 +17,7 @@
 
     <!-- 压测 Tab -->
     <div v-if="activeTab === 'stress'" class="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <div class="glass-card p-5">
+      <div class="glass-card p-5 xl:col-span-2">
         <div class="text-sm font-medium mb-4">新建压测任务</div>
         <div v-if="rerunFilled" class="text-xs text-neon-green bg-neon-green/10 border border-neon-green/20 rounded px-3 py-2 mb-3">
           已填入上次压测配置，可调整后点击「开始压测」重新发起

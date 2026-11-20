@@ -457,7 +457,7 @@ const evidenceExplain = computed(() => {
   }
 })
 
-// 当前问题的 EXPLAIN 连接自动切换结果：与后端 matchConn 严格同构（host 匹配 → 项目绑定 → 默认兜底）
+// 当前问题的 EXPLAIN 连接自动切换结果：与后端 matchConn 严格同构（主机标识匹配 → 项目绑定 → 列表首条兜底）
 const issueConn = computed<{ conn: Record<string, any>; reason: string } | null>(() => {
   // 连接列表由 DbConnPanel 子组件持有并维护
   const conns = dbConnPanelRef.value?.dbConns ?? []
@@ -467,19 +467,16 @@ const issueConn = computed<{ conn: Record<string, any>; reason: string } | null>
     const ev = detail.value.issue?.evidenceJson
     dbHost = ev ? (typeof ev === 'string' ? JSON.parse(ev).dbHost || '' : ev.dbHost || '') : ''
   } catch { /* 忽略解析失败 */ }
-  const sorted = [...conns].sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
   if (dbHost) {
-    const byHost = sorted.find((c) => c.host && (dbHost.includes(c.host) || c.host.includes(dbHost)))
+    const byHost = conns.find((c) => c.host && (dbHost.includes(c.host) || c.host.includes(dbHost)))
     if (byHost) return { conn: byHost, reason: '主机匹配' }
   }
   const app = detail.value.issue?.appName
   if (app) {
-    const byApp = sorted.find((c) => c.appName === app)
+    const byApp = conns.find((c) => c.appName === app)
     if (byApp) return { conn: byApp, reason: `项目绑定 ${app}（路由）` }
   }
-  const def = sorted.find((c) => Number(c.isDefault) === 1)
-  if (def) return { conn: def, reason: '默认兜底（注意核对实际库）' }
-  return { conn: sorted[0], reason: '兜底（注意核对实际库）' }
+  return { conn: conns[0], reason: '兜底（注意核对实际库）' }
 })
 
 // 慢 SQL 完整 SQL 文本（标题被截断时，在下方完整展示）

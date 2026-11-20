@@ -15,6 +15,8 @@
 - ramp-up：spawn_rate = concurrency/rampUpSec（爬坡期与预热期解耦）
 - steps 场景支持 {{var}} 渲染 / extract 变量提取 / 步骤上下文引用（复用 stress/ 移植层，
   语义对齐 TemplateRenderer + StepContextStore + ResponseVarExtractor）
+- CSV 参数化：接口/步骤维护的 csv 数据集每迭代取一行并入渲染池
+  （{{列名}} 命中 CSV 值，优先于全局 variables；sequential 游标循环 / random 随机）
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from typing import Any
 from engine.result import Sample, StressTaskResult
 from engine.stats import HistogramStatistician, percentile, round2
 from scenario.model import Scenario
+from stress.csv_provider import CsvDataset
 from stress.response_assertor import matches as assert_matches
 from stress.response_var_extractor import create_pool, extract
 from stress.template_renderer import (
@@ -75,14 +78,16 @@ def build_user_class(
     import gevent.monkey  # noqa: F401  # 确保调用方已 patch（缺失时下方 import 会警告）
     from locust import HttpUser, constant_pacing
 
-    # (url模板, method, headers模板, body模板, name, 断言, 权重, extract规则, 槽位下标)
-    plans: list[tuple[str, str, dict[str, str], str | None, str, list, int, list | None, int | None]] = []
+    # (url模板, method, headers模板, body模板, name, 断言, 权重, extract规则, 槽位下标, csv数据集)
+    plans: list[tuple[str, str, dict[str, str], str | None, str, list, int, list | None, int | None, CsvDataset | None]] = []
     host = ""
 
     if scenario.request:
         req = scenario.request
         host = _host_of(req.url)
-        plans.append((req.url, req.method, req.headers, req.body, req.url, req.assertions, 1, None, None))
+        plans.append((req.url, req.method, req.headers, req.body, req.url,
+                      req.assertions, 1, None, None,
+                      CsvDataset.from_spec(req.csv, "压测请求 CSV")))
     else:
         first = scenario.steps[0]
         host = _host_of(first.url)
@@ -98,6 +103,7 @@ def build_user_class(
                     step.weight,
                     step.extract or None,
                     i,
+                    CsvDataset.from_spec(step.csv, f"步骤「{step.name or i + 1}」CSV"),
                 )
             )
 
@@ -110,13 +116,16 @@ def build_user_class(
         assertions: list,
         extract_rules: list | None,
         slot: int | None,
+        dataset: CsvDataset | None,
     ):
         def task_fn(user) -> None:  # noqa: ANN001
+            # CSV 参数化：本迭代取一行按列名并入渲染池（优先于全局 variables）；
             # 双池渲染：上下文引用 → 扁平变量 → 保留原文（对齐 TemplateRenderer）
             miss = [0]
-            url = render(url_t, pool, ctx, miss)
-            headers = {k: render(v, pool, ctx, miss) for k, v in headers_t.items()}
-            body = render(body_t, pool, ctx, miss) if body_t is not None else None
+            iter_pool = {**pool, **dataset.next_row()} if dataset is not None else pool
+            url = render(url_t, iter_pool, ctx, miss)
+            headers = {k: render(v, iter_pool, ctx, miss) for k, v in headers_t.items()}
+            body = render(body_t, iter_pool, ctx, miss) if body_t is not None else None
             with user.client.request(
                 method=method,
                 url=url,
@@ -144,7 +153,8 @@ def build_user_class(
     # 元组原样进入任务队列导致 'tuple' object is not callable。
     # 因此必须用 type() 把 tasks 放进 class_dict 动态建类。
     class_attrs: dict = {
-        "tasks": [(_make_task(*item[:5], item[5], item[7], item[8]), item[6]) for item in plans],
+        "tasks": [(_make_task(*item[:5], item[5], item[7], item[8], item[9]), item[6])
+                  for item in plans],
         "host": host,
     }
     pacing = pacing_seconds_for(scenario)

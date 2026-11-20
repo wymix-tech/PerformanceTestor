@@ -27,9 +27,6 @@
           </div>
         </div>
         <div class="flex items-center gap-2 mt-2">
-          <label class="flex items-center gap-1.5 text-xs text-fg-sub">
-            <input v-model="connForm.isDefault" type="checkbox" /> 设为默认（host 与项目都未匹配时使用）
-          </label>
           <div class="flex-1"></div>
           <button class="btn-primary text-xs !px-3 !py-1.5" @click="saveConn">保存连接</button>
           <button class="btn-primary text-xs !px-3 !py-1.5 bg-neon-blue/80" @click="testConn">
@@ -42,13 +39,10 @@
         <div v-if="connMsg" class="text-[11px] mt-2" :class="connMsg.ok ? 'text-neon-green' : 'text-red-400'">{{ connMsg.text }}</div>
         <div v-if="dbConns.length" class="mt-3 space-y-1.5">
           <div v-for="c in dbConns" :key="c.id"
-            class="flex items-center gap-3 px-3 py-2 rounded text-xs border transition-all"
-            :class="c.isDefault === 1 ? 'bg-neon-green/10 border-neon-green/30' : 'bg-white/5 border-white/10'">
-            <span v-if="c.isDefault === 1" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-green/15 text-neon-green shrink-0">✓ 默认</span>
+            class="flex items-center gap-3 px-3 py-2 rounded text-xs border transition-all bg-white/5 border-white/10">
             <span class="text-fg-main shrink-0">{{ c.connName }}</span>
             <span v-if="c.appName" class="text-[10px] px-1.5 py-0.5 rounded bg-neon-blue/15 text-neon-blue shrink-0">项目：{{ c.appName }}</span>
             <span class="text-fg-sub font-mono truncate flex-1">{{ c.dbUrl }}</span>
-            <button class="text-neon-blue hover:underline shrink-0" @click="makeDefault(c)" v-if="c.isDefault !== 1">设默认</button>
             <button class="text-red-400 hover:underline shrink-0" @click="removeConn(c)">删除</button>
           </div>
         </div>
@@ -73,7 +67,7 @@ const props = defineProps<{ projectNames?: string[] }>()
 const connOpen = ref(false)
 const dbConns = ref<Array<Record<string, any>>>([])
 const connForm = ref({
-  connName: '', host: '', appName: '', dbUrl: '', username: '', password: '', isDefault: false
+  connName: '', host: '', appName: '', dbUrl: '', username: '', password: ''
 })
 const testing = ref(false)
 const connTestResult = ref<{ ok: boolean; error?: string } | null>(null)
@@ -93,10 +87,10 @@ async function saveConn() {
   try {
     await dbConnApi.save({
       connName: f.connName, host: f.host || undefined, appName: f.appName || undefined, dbUrl: f.dbUrl,
-      username: f.username, password: f.password, isDefault: f.isDefault ? 1 : 0
+      username: f.username, password: f.password
     })
     connMsg.value = { ok: true, text: `连接「${f.connName}」已保存${f.appName ? `（已绑定项目 ${f.appName}，该项目的问题分析将自动使用此连接）` : ''}` }
-    connForm.value = { connName: '', host: '', appName: '', dbUrl: '', username: '', password: '', isDefault: false }
+    connForm.value = { connName: '', host: '', appName: '', dbUrl: '', username: '', password: '' }
     await loadConns()
   } catch (e: any) {
     connMsg.value = { ok: false, text: '保存失败：' + (e?.response?.data?.message || e?.message || '请求异常') }
@@ -119,13 +113,6 @@ async function testConn() {
   } finally {
     testing.value = false
   }
-}
-
-async function makeDefault(c: Record<string, any>) {
-  try {
-    await dbConnApi.setDefault(c.id)
-  } catch { /* 保持静默，刷新后状态为准 */ }
-  await loadConns()
 }
 
 async function removeConn(c: Record<string, any>) {

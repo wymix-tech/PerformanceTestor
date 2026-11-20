@@ -1,5 +1,5 @@
 <template>
-  <div class="glass-card p-5 xl:col-span-2">
+  <div class="glass-card p-5">
     <div class="text-sm font-medium mb-3 flex items-center justify-between">
       <span>最近任务</span>
       <button class="text-xs text-neon-blue hover:underline cursor-pointer" @click="loadTasks">刷新</button>

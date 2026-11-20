@@ -1199,7 +1199,7 @@ provides-extras = ["locust", "datagen-parsers", "datagen-drivers", "agents", "se
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "cryptography", specifier = ">=50.0.2" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "pytest", specifier = ">=8,<9" },
     { name = "ruff", specifier = ">=0.6" },
     { name = "tree-sitter", specifier = ">=0.23,<0.26" },

@@ -7,13 +7,26 @@
 - GET /api/stress/tasks/{id}/report       压测报告 {task, result}
 - POST /api/stress/tasks                  创建并启动压测（异步执行，立即返回任务）
 - POST /api/stress/gate                   性能回归门禁（同步阻塞到完成，CI 用）
+- POST /api/stress/jmx/import             导入 JMeter 脚本：解析为场景步骤 + 负载参数（不落库）
+- POST /api/stress/jmx/export             导出压测方案为 JMX（请求体同创建任务；文件下载）
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Query, Request
+import re
+from urllib.parse import quote
 
+from fastapi import APIRouter, Body, Query, Request, Response, UploadFile
+from fastapi.responses import JSONResponse
+
+from engine.jmeter_engine import generate_jmx
+from server.jmx_import import MAX_JMX_BYTES, parse_jmx
 from server.stress_repo import StressRepository
+from server.stress_request import (
+    parse_stress_request,
+    to_scenario,
+    validate_stress_request,
+)
 
 router = APIRouter(prefix="/api/stress")
 
@@ -76,6 +89,56 @@ def gate(request: Request,
         ))
     except ValueError as exc:
         return _err(str(exc))
+
+
+@router.post("/jmx/import")
+async def import_jmx(file: UploadFile) -> dict:
+    """导入 JMeter 测试计划：解析为场景步骤 + 负载参数（只解析不落库不发起）。
+
+    与前端多接口混合表单对接：导入后回填步骤编辑再发起压测。
+    仅接受 .jmx/.xml（根元素 jmeterTestPlan），≤2MB，UTF-8。
+    """
+    suffix = (file.filename or "").lower()
+    if not suffix.endswith((".jmx", ".xml")):
+        return _err("仅支持 .jmx / .xml 文件")
+    data = await file.read()
+    if len(data) > MAX_JMX_BYTES:
+        return _err(f"JMX 文件过大（上限 {MAX_JMX_BYTES // 1048576}MB）")
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return _err(f"JMX 文件需为 UTF-8 编码：{exc}")
+    try:
+        return _ok(parse_jmx(content))
+    except ValueError as exc:
+        return _err(str(exc))
+
+
+@router.post("/jmx/export")
+def export_jmx(request: Request, payload: dict = Body(...)) -> Response:
+    """导出压测方案为 JMeter 测试计划（请求体与创建任务一致，先校验再生成）。
+
+    单接口模式直接导出；混合场景步骤按顺序写入（JMeter 顺序执行，
+    权重配比与变量提取不生效——本地断言/变量上下文语义由平台引擎承担）。
+    校验失败 → code=1 错误包装（前端按 JSON 解析）。
+    """
+    if not isinstance(payload, dict):
+        return JSONResponse(status_code=200, content=_err("请求体必须是 JSON 对象"))
+    try:
+        req = parse_stress_request(payload)
+        validate_stress_request(req)
+        jmx = generate_jmx(to_scenario(req), steps_mode=req.is_scenario_mode)
+    except ValueError as exc:
+        return JSONResponse(status_code=200, content=_err(str(exc)))
+    name = (req.task_name or "stress-plan").strip() or "stress-plan"
+    safe = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", name)[:60]
+    # 中文文件名走 RFC 5987（Content-Disposition 头仅允许 latin-1）
+    quoted = quote(f"{safe}.jmx")
+    return Response(
+        content=jmx,
+        media_type="application/xml",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+    )
 
 
 @router.get("/tasks")
