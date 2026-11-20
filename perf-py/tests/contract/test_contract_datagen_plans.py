@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-from datagen.model import EngineResult, TableStat
+from ptde.models.wire import EngineResult, TableStat
 from server.app import create_app
 from server.datagen_plan_service import DatagenPlanService, is_detail_endpoint
 from server.datagen_repo import Base, DatagenRepository

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from datagen.jpa_source_parser import JpaSourceParser
-from datagen.mybatis_source_parser import MyBatisSourceParser
 from perf_cli.datagen_runner import collect_source_files
+from ptde.analyzer.lang_java.jpa_source_parser import JpaSourceParser
+from ptde.analyzer.lang_java.mybatis_source_parser import MyBatisSourceParser
 from tools.registry import Tool
 
 SOURCE_SCAN_SCHEMA = {

@@ -3,9 +3,9 @@
 XML namespace+id 与注解（含字符串拼接）。
 """
 
-from datagen.call_graph_analyzer import MapperInvocation
-from datagen.model import SourceFile
-from datagen.mybatis_sql_resolver import MyBatisSqlResolver
+from ptde.analyzer.lang_java.call_graph_analyzer import MapperInvocation
+from ptde.analyzer.lang_java.mybatis_sql_resolver import MyBatisSqlResolver
+from ptde.models.wire import SourceFile
 
 XML = "src/main/resources/mapper/OrderMapper.xml"
 MAPPER_JAVA = "src/main/java/com/demo/mapper/OrderMapper.java"

@@ -1,8 +1,12 @@
-"""采样器分发注册表：12 类分布（总方案 §7.1）→ 模块 sample 函数。
+"""采样器分发注册表：总方案 §7.1 全部 12 类分布 → 模块 sample 函数。
 
 zipf/skewed 同族别名；weightedcategorical 为 weighted_categorical 别名；
 uniform 参数为 min_length/max_length（B3 字符列默认形态）时路由到 length
 采样器（长度语义）。未知类型显式失败。
+
+B7 续批次 9（legacy FieldRule 语义对齐）扩展 2 类：
+- ref：父主键区间采样（ref/refSkew 热行两段线性权重 + orphan_rate 故意孤儿）；
+- over_threshold：范围超阈值比例分配（legacy rule_engine 语义）。
 """
 
 from __future__ import annotations
@@ -17,7 +21,9 @@ from ptde.generator.samplers import (
     lognormal,
     normal,
     null_ratio,
+    over_threshold,
     random_discrete,
+    ref,
     sequential,
     temporal,
     uniform,
@@ -27,6 +33,7 @@ from ptde.generator.samplers import (
 from ptde.models.profile import DistributionFit
 
 # 总方案 §7.1 全部 12 类分布（zipf/skewed 同族，weightedcategorical 为别名）
+# + B7 续批次 9 legacy 语义对齐扩展（ref/over_threshold）
 SUPPORTED_TYPES: tuple[str, ...] = (
     "uniform",
     "normal",
@@ -41,6 +48,8 @@ SUPPORTED_TYPES: tuple[str, ...] = (
     "correlated",
     "null_ratio",
     "length",
+    "ref",
+    "over_threshold",
 )
 
 _DISPATCH: dict[str, Any] = {
@@ -58,6 +67,8 @@ _DISPATCH: dict[str, Any] = {
     "correlated": correlated.sample,
     "null_ratio": null_ratio.sample,
     "length": length.sample,
+    "ref": ref.sample,
+    "over_threshold": over_threshold.sample,
 }
 
 
@@ -72,7 +83,8 @@ def sample(fit: DistributionFit, rng: random.Random,
     fn = _DISPATCH.get(t)
     if fn is None:
         raise ValueError(
-            f"不支持的分布类型 {t!r}（支持总方案 §7.1 共 12 类：{', '.join(SUPPORTED_TYPES)}）"
+            f"不支持的分布类型 {t!r}（支持总方案 §7.1 共 12 类"
+            f" + ref/over_threshold 扩展：{', '.join(SUPPORTED_TYPES)}）"
         )
     return fn(fit, rng, context)
 

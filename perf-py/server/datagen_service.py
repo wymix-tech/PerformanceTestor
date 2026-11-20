@@ -12,6 +12,12 @@
 有意差异（步骤 8 已收口）：
 - 环依赖自动降级（PlanIntegrityChecker.breakWeakestCycleEdge）已接入 _run_engine；
 - selfCheck 的端点扫描复用 endpoint_index_parser（Controller AST），无扫描产物时跳过。
+
+B7 接管切换（T7.7，续批次 10）：``_build_engine`` 经
+``perf_cli.datagen_runner.build_default_engine`` 路由到 PTDE 背书引擎
+（端点/请求/响应 wire 形状不变；语义提示不再由灌数任务产生——PTDE 通道
+为 Schema 驱动，建议面板沿用存量提示）；``engine=`` 注入缝保留（契约
+测试以可编程桩注入，不受路由影响）。
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -49,8 +56,8 @@ def _nvl(s: str | None) -> str:
 
 def validate_db_url(db_url: str | None) -> None:
     """对齐 validateDbUrl：仅允许已注册方言库种。"""
-    from datagen.dialects.mysql import MysqlDialect
-    from datagen.dialects.postgres import PostgresDialect
+    from ptde.adapters.direct.dialects.mysql import MysqlDialect
+    from ptde.adapters.direct.dialects.postgres import PostgresDialect
 
     if not db_url or not db_url.strip() or not (
             MysqlDialect().supports(db_url) or PostgresDialect().supports(db_url)):
@@ -68,8 +75,8 @@ class _ConnectError(Exception):
 
 def _connect(db_url: str, db_user: str | None, db_password: str | None):
     """按方言直连（对齐 DataGenService.connect + enrichUrl）。"""
-    from datagen.dialects.mysql import MysqlDialect
-    from datagen.dialects.postgres import PostgresDialect
+    from ptde.adapters.direct.dialects.mysql import MysqlDialect
+    from ptde.adapters.direct.dialects.postgres import PostgresDialect
 
     for dialect in (MysqlDialect(), PostgresDialect()):
         if dialect.supports(db_url):
@@ -98,7 +105,7 @@ def _int_pk_watermark(conn, dialect, table: str | None) -> tuple[str, int] | Non
     """单自增整型主键表返回 (主键列, 当前 MAX(pk))；否则 None（无法标记所有权）。"""
     if not table:
         return None
-    from datagen.rule_engine import base_type
+    from ptde.generator.primitive import base_type
 
     meta = dialect.fetch_metadata(conn, table)
     if not meta.columns or len(meta.primary_keys) != 1:
@@ -125,7 +132,7 @@ def _table_count(conn, dialect, table: str) -> int:
 def _load_source_files(repo, files_index: list, limit: int = GEN_SCAN_LIMIT) -> list:
     """对齐 SourceFileProvider.loadFiles：磁盘读内容，仅 .java/.xml，
     空内容与「// 文件过大」占位跳过，单文件失败跳过；仓库/路径不可读返回空。"""
-    from datagen.model import SourceFile
+    from ptde.models.wire import SourceFile
 
     if repo is None or not repo.source_path or not repo.source_path.strip():
         return []
@@ -411,7 +418,7 @@ class DatagenWriteService:
             msg = str(exc)
             if "循环依赖" not in msg:
                 raise
-            from datagen.plan_pipeline import (
+            from ptde.planner.workload import (
                 PlanTable,
                 break_weakest_cycle_edge,
                 edge_confidence,
@@ -467,7 +474,7 @@ class DatagenWriteService:
         连接失败/执行异常仅日志（目标库此刻不可达等），不影响任务结果；
         dryRun 由调用方保证不进入本路径。
         """
-        from datagen.verify_min import verify_min
+        from ptde.validator.verify_min import verify_min
 
         tables = [{"table": t, "expected": row_count}
                   for t, row_count in self._expected_rows(request)]
@@ -532,6 +539,15 @@ class DatagenWriteService:
         endpoints = self._scan_get_endpoints(request.get("repoId"))
         if not endpoints:
             return None
+        items, non_empty = self._probe_get_endpoints(endpoints, app)
+        report = {"endpoints": items,
+                  "nonEmptyRate": non_empty / len(items) if items else 0}
+        if non_empty == 0:
+            report["warning"] = "数据未命中业务谓词或服务不可达，压测结果可能失真"
+        return report
+
+    def _probe_get_endpoints(self, endpoints: list[dict], app) -> tuple[list[dict], int]:
+        """GET 端点实调（selfCheck 尽力而为：单端点失败计未命中，不抛异常）。"""
         import httpx
 
         items = []
@@ -553,17 +569,35 @@ class DatagenWriteService:
                 item["nonEmpty"] = False
                 item["error"] = str(exc)
             items.append(item)
-        report = {"endpoints": items,
-                  "nonEmptyRate": non_empty / len(items) if items else 0}
-        if non_empty == 0:
-            report["warning"] = "数据未命中业务谓词或服务不可达，压测结果可能失真"
-        return report
+        return items, non_empty
+
+    def self_check_probe(self, repo_id) -> Callable[[], dict[str, int]]:
+        """selfCheck 端点抽检能力 → ``endpoint_probe`` 适配（B6 §7F 接线缝）。
+
+        产出 ``validate_db_ready(endpoint_probe=...)`` 协议回调
+        ``() -> {"checked": n, "nonEmpty": m}``（注入 OfflinePipeline/
+        DatasetLifecycleService 的 db_ready 验证）。语义与 legacy selfCheck
+        对齐：仓库未绑定应用/无实例信息/无 GET 端点 → checked=0（验证层
+        按「无端点可查」WARN）；抽检从不阻断（单端点失败计未命中）。
+        """
+        def probe() -> dict[str, int]:
+            repo = self._repo.find_repo(repo_id) if repo_id else None
+            if repo is None or not (repo.app_name or "").strip():
+                return {"checked": 0, "nonEmpty": 0}
+            app = self._repo.find_app_instance(repo.app_name)
+            if app is None or not app.app_host or app.app_port is None:
+                return {"checked": 0, "nonEmpty": 0}
+            endpoints = self._scan_get_endpoints(repo_id)
+            items, non_empty = self._probe_get_endpoints(endpoints, app)
+            return {"checked": len(items), "nonEmpty": non_empty}
+
+        return probe
 
     def _scan_get_endpoints(self, repo_id) -> list[dict]:
         """GET 端点抽取（EndpointScanner.scan 的 Python 等价：Controller AST 解析）。"""
         try:
-            from datagen.endpoint_index_parser import EndpointIndexParser
             from perf_cli.datagen_runner import MAX_SOURCE_FILES
+            from ptde.analyzer.lang_java.endpoint_index_parser import EndpointIndexParser
 
             repo = self._repo.find_repo(repo_id) if repo_id else None
             if repo is None:
@@ -629,7 +663,7 @@ class DatagenWriteService:
         validate_table_name(table_name)
         conn = None
         try:
-            from datagen.enum_value_discoverer import discover, suspect_enum_column
+            from ptde_common.enum_value_discoverer import discover, suspect_enum_column
 
             conn, dialect = _connect(db_url, db_user, db_password)
             meta = dialect.fetch_metadata(conn, table_name)

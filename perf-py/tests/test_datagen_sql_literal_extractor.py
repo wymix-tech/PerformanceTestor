@@ -2,8 +2,8 @@
 + SemanticParserTest 的 SQL 抽取 3 个用例。
 """
 
-from datagen.model import MagicHint, RelationHint
-from datagen.sql_literal_extractor import extract_join_relations, extract_literals
+from ptde.analyzer.lang_java.sql_literal_extractor import extract_join_relations, extract_literals
+from ptde.models.wire import MagicHint, RelationHint
 
 
 def test_sql_literals_extracted():

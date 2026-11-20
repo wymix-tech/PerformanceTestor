@@ -101,7 +101,26 @@ export const stressApi = {
     http.get('/stress/trend', { params }),
   // 性能回归门禁（CI 用）：同步等待压测完成并比对基线，返回 { passed, summary, ... }
   gate: (data: Record<string, unknown>, params?: { baselineTaskId?: number; timeoutSec?: number; failOnNoBaseline?: boolean; webhook?: string }) =>
-    http.post('/stress/gate', data, { params })
+    http.post('/stress/gate', data, { params }),
+  // 绑定数据集反查（绑定快照 + dataset 域全链；未绑定返回 data=null 非错误）
+  dataset: (id: number) => http.get(`/stress/tasks/${id}/dataset`)
+}
+
+export const datasetApi = {
+  // 数据集实例列表（游标分页 CursorPage：{items,nextCursor,hasMore}；status 过滤
+  // 可组合；cursor 传上页 nextCursor，hasMore=false 末页；limit 为兼容回退参数。
+  // 压测绑定下拉仅取 READY——后端仅 READY 可绑定）
+  list: (params?: { status?: string; size?: number; cursor?: string; limit?: number }) =>
+    http.get('/datasets', { params }).then((r) => normalizePage<Record<string, any>>(r)),
+  // 实例详情（withReports=true 附带五层验证报告；数据管理页详情面板用）
+  detail: (id: string | number, withReports = false) =>
+    http.get(`/datasets/${id}`, { params: { withReports } }),
+  // 构建进度（运行中实例轮询：running/taskId/instanceStatus/errorMsg）
+  progress: (id: string | number) => http.get(`/datasets/${id}/progress`),
+  // 运行中任务主动取消（B7 续批次 3：operator/reason 必填；
+  // 已 CANCELLED 时幂等返回 accepted=false，按成功处理不报错）
+  cancel: (id: string | number, data: { operator: string; reason: string }) =>
+    http.post(`/datasets/${id}/cancel`, data)
 }
 
 export const jvmAlertApi = {
@@ -321,4 +340,4 @@ export const dbConnApi = {
     http.post('/dbconns/test', data)
 }
 
-export default { appApi, jvmApi, jvmAlertApi, traceApi, slowSqlApi, slowCommandApi, stressApi, reportApi, scheduleApi, dataGenApi, dataGenPlanApi, capacityApi, sourceApi, aiApi, dbConnApi }
+export default { appApi, jvmApi, jvmAlertApi, traceApi, slowSqlApi, slowCommandApi, stressApi, datasetApi, reportApi, scheduleApi, dataGenApi, dataGenPlanApi, capacityApi, sourceApi, aiApi, dbConnApi }

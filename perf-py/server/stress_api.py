@@ -136,3 +136,24 @@ def report(task_id: int, request: Request) -> dict:
     if task is None:
         return _err(f"stress task not found: {task_id}")
     return _ok({"task": task.to_camel(), "result": repo.parse_result_json(task)})
+
+
+@router.get("/tasks/{task_id}/dataset")
+def dataset_binding(task_id: int, request: Request) -> dict:
+    """T7.3 反查：压测任务 → 绑定数据集（Instance → Definition 版本 + Schema
+    指纹 + 验证结果摘要全链可查；实施方案 §10.3 门禁 2）。
+
+    未绑定的任务返回 data=null（非错误）。
+    """
+    repo = _repo(request)
+    if repo.find_by_id(task_id) is None:
+        return _err(f"stress task not found: {task_id}")
+    binding = repo.dataset_binding(task_id)
+    if binding is None:
+        return _ok(None)
+    try:
+        instance = request.app.state.dataset_service.get_instance(
+            binding["datasetInstanceId"], with_reports=True)
+    except ValueError:
+        instance = None
+    return _ok({**binding, "dataset": instance})

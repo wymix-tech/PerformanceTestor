@@ -1,8 +1,7 @@
-"""T4.1 验收：Primitive 收编对照（同输入同输出；rule_engine.py 本体保留不动，A4a 终态退役）。
+"""Primitive 语义单测（原 T4.1 收编对照收编终态平移）。
 
-对照基准：datagen/rule_engine.py 与其单测 tests/test_datagen_rule_engine.py
-（RuleEngineCoverageTest + SeqRuleTest 纯逻辑部分 + 分布统计用例）。
-fixed / range（含 overThreshold）/ enum+weights / seq 语义逐一对照。
+B7 续批次 11（T7.9 退役）：legacy rule_engine 对照段随包退役，
+absolute 断言保留（fixed / range（含 overThreshold）/ enum+weights / seq）。
 """
 
 from __future__ import annotations
@@ -13,9 +12,8 @@ from decimal import Decimal
 
 import pytest
 
-from datagen import rule_engine as legacy
-from datagen.model import ColumnMeta, FieldRule, OverThreshold
 from ptde.generator import primitive as prim
+from ptde.models.wire import ColumnMeta, FieldRule, OverThreshold
 
 
 def col(name: str, type_name: str) -> ColumnMeta:
@@ -25,25 +23,31 @@ def col(name: str, type_name: str) -> ColumnMeta:
 # ---------------------------------------------------------------- 模块形状
 
 
-def test_module_shape_parity():
-    """收编副本含全部 7 个收编函数与配套辅助；legacy 本体未改动。"""
+def test_module_shape():
+    """收编终态含全部 9 个公开函数与配套辅助。"""
     for name in ("apply_rule", "weighted_index", "normalize_scalar",
                  "scale_to_column_type", "base_type", "is_integer_family",
                  "seq_value", "generate_default", "random_text"):
         assert hasattr(prim, name), name
 
 
-# ---------------------------------------------------------------- 同输入同输出对照
-
-
-@pytest.mark.parametrize("type_name", [
-    "INT", "TINYINT(1)", "BIGINT", "ENUM('A','B')", "SET('A','B')",
-    "DOUBLE PRECISION", "NUMERIC(10)", "TIMESTAMP", "CLOB", "VARCHAR(32)",
-    "FLOAT", "REAL", "DATE", "BOOLEAN", "MEDIUMTEXT",
-])
-def test_base_type_parity(type_name):
-    assert prim.base_type(type_name) == legacy.base_type(type_name)
-    assert prim.is_integer_family(type_name) == legacy.is_integer_family(type_name)
+def test_base_type_matrix():
+    """类型名 → 基础类型族（Java BaseType 对齐）。"""
+    assert prim.base_type("INT") == "INT"
+    assert prim.base_type("TINYINT(1)") == "INT"
+    assert prim.base_type("BIGINT") == "BIGINT"
+    assert prim.base_type("DECIMAL(12,2)") == "DECIMAL"
+    assert prim.base_type("NUMERIC(10)") == "DECIMAL"
+    assert prim.base_type("DOUBLE PRECISION") == "DOUBLE"
+    assert prim.base_type("VARCHAR(32)") == "VARCHAR"
+    assert prim.base_type("TIMESTAMP") == "DATETIME"
+    assert prim.base_type("DATE") == "DATE"
+    assert prim.base_type("BOOLEAN") == "BIT"
+    assert prim.base_type("CLOB") == "TEXT"
+    assert prim.base_type("ENUM('A','B')") == "TEXT"
+    assert prim.base_type("FLOAT") == "FLOAT"
+    assert prim.is_integer_family("INT") and prim.is_integer_family("BIGINT")
+    assert not prim.is_integer_family("VARCHAR(32)")
 
 
 @pytest.mark.parametrize("v,tname", [
@@ -51,75 +55,9 @@ def test_base_type_parity(type_name):
     (3.14159, "DECIMAL(12,2)"), ("txt", "VARCHAR(8)"), (True, "VARCHAR(8)"),
     (None, "INT"), ("abc", "INT"), (True, "INT"),
 ])
-def test_normalize_scalar_parity(v, tname):
-    assert prim.normalize_scalar(v, col("c", tname)) \
-        == legacy.normalize_scalar(v, col("c", tname))
-
-
-@pytest.mark.parametrize("v,tname", [
-    (5.4, "INT"), (5.4, "BIGINT"), (5.4321, "DOUBLE"),
-    (2.5, "INT"), (-2.5, "INT"), (7.777, "DECIMAL(12,2)"),
-])
-def test_scale_to_column_type_parity(v, tname):
-    assert prim.scale_to_column_type(v, col("c", tname)) \
-        == legacy.scale_to_column_type(v, col("c", tname))
-
-
-@pytest.mark.parametrize("prefix,start,idx", [("ORD_", 1, 0), ("ORD_", 1, 4),
-                                              ("ORD_", 100, 0), (None, None, 2)])
-def test_seq_value_parity(prefix, start, idx):
-    rl = FieldRule(type=FieldRule.TYPE_SEQ, seq_prefix=prefix, seq_start=start)
-    assert prim.seq_value(rl, idx) == legacy.seq_value(rl, idx)
-
-
-def _rule_cases():
-    return [
-        FieldRule.fixed("7"),
-        FieldRule.fixed("PAID"),
-        FieldRule(type=FieldRule.TYPE_RANGE, min=100.0, max=5000.0),
-        FieldRule(type=FieldRule.TYPE_RANGE, min=5000.0, max=100.0),
-        FieldRule(type=FieldRule.TYPE_RANGE, min=0.0, max=10000.0,
-                  over_threshold=OverThreshold(op=">=", value=1000, share=100)),
-        FieldRule(type=FieldRule.TYPE_RANGE, min=0.0, max=10000.0,
-                  over_threshold=OverThreshold(value=1000, share=30)),
-        FieldRule(type=FieldRule.TYPE_RANGE, min=0.0, max=10000.0,
-                  over_threshold=OverThreshold(value=100, share=0)),
-        FieldRule(type=FieldRule.TYPE_ENUM, values=["PENDING", "PAID", "DONE"],
-                  weights=[10.0, 80.0, 10.0]),
-        FieldRule(type=FieldRule.TYPE_ENUM, values=["A", "B"]),
-        FieldRule(type=FieldRule.TYPE_ENUM),
-        FieldRule(type=FieldRule.TYPE_SEQ, seq_prefix="ORD_", seq_start=1),
-        FieldRule(type="mystery"),
-    ]
-
-
-@pytest.mark.parametrize("tname", ["INT", "BIGINT", "DECIMAL(12,2)",
-                                   "VARCHAR(16)", "BIT", "DOUBLE"])
-def test_apply_rule_parity_seeded_rng(tname):
-    """同规则 + 同注入 rng：逐值一致（fixed/range/overThreshold/enum+weights/seq/兜底）。"""
-    for rule in _rule_cases():
-        ra, rb = random.Random(7), random.Random(7)
-        a = [legacy.apply_rule(rule, col("c", tname), i, ra) for i in range(200)]
-        b = [prim.apply_rule(rule, col("c", tname), i, rb) for i in range(200)]
-        assert a == b, f"规则 {rule.type} 在 {tname} 上与 legacy 不一致"
-
-
-def test_apply_rule_parity_module_random():
-    """rng=None（模块级 random）路径：同种子下两套副本调用序列一致。"""
-    for rule in _rule_cases():
-        random.seed(2026)
-        a = [legacy.apply_rule(rule, col("c", "DECIMAL(12,2)"), i) for i in range(100)]
-        random.seed(2026)
-        b = [prim.apply_rule(rule, col("c", "DECIMAL(12,2)"), i) for i in range(100)]
-        assert a == b
-
-
-def test_generate_default_parity_seeded():
-    for tname in ("INT", "BIGINT", "DOUBLE", "DECIMAL(12,2)", "BIT"):
-        ra, rb = random.Random(9), random.Random(9)
-        a = [legacy.generate_default(col("c", tname), ra) for _ in range(100)]
-        b = [prim.generate_default(col("c", tname), rb) for _ in range(100)]
-        assert a == b
+def test_normalize_scalar_wire_types(v, tname):
+    out = prim.normalize_scalar(v, col("c", tname))
+    assert out is not None or v is None
 
 
 def test_generate_default_type_and_length_matrix():
@@ -134,16 +72,7 @@ def test_generate_default_type_and_length_matrix():
     assert len(prim.generate_default(ColumnMeta(name="h", type_name="TEXT", size=0))) == 1
 
 
-def test_random_text_and_weighted_index_parity():
-    assert prim.random_text(16, random.Random(5)) == legacy.random_text(16, random.Random(5))
-    for weights in ([10.0, 0.0, 90.0], [1, 1], [50.0], [0.0, 0.0, 1.0]):
-        ra, rb = random.Random(3), random.Random(3)
-        a = [legacy.weighted_index(weights, ra) for _ in range(500)]
-        b = [prim.weighted_index(weights, rb) for _ in range(500)]
-        assert a == b
-
-
-# ---------------------------------------------------------------- 语义保留（对照 legacy 单测口径）
+# ---------------------------------------------------------------- 语义保留（原对照 legacy 单测口径）
 
 
 def test_scale_java_round_semantics():

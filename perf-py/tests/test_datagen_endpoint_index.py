@@ -3,8 +3,8 @@
 方法级定位、路径归一化、className 语义。
 """
 
-from datagen.endpoint_index_parser import EndpointIndexParser
-from datagen.model import SourceFile
+from ptde.analyzer.lang_java.endpoint_index_parser import EndpointIndexParser
+from ptde.models.wire import SourceFile
 
 CTRL = "src/main/java/com/demo/OrderController.java"
 

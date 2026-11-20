@@ -55,6 +55,12 @@ const routes = [
         meta: { title: '压测中心' }
       },
       {
+        path: 'datasets',
+        name: 'DatasetManage',
+        component: () => import('@/views/DatasetManageView.vue'),
+        meta: { title: '数据管理' }
+      },
+      {
         path: 'optimize',
         name: 'Optimize',
         component: () => import('@/views/OptimizeView.vue'),

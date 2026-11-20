@@ -37,6 +37,23 @@ export function repoStatusClass(s: string): string {
   return map[s] || FALLBACK
 }
 
+/** 数据集实例状态（ptde 状态机：总方案 §12.2 十态，取消为主动处置非失败） */
+export function datasetStatusClass(s: string): string {
+  const map: Record<string, string> = {
+    PLANNED: 'text-fg-sub bg-white/5',
+    GENERATING: 'text-neon-blue bg-neon-blue/10',
+    LOADING: 'text-neon-blue bg-neon-blue/10',
+    VERIFYING: 'text-neon-purple bg-neon-purple/10',
+    READY: 'text-neon-green bg-neon-green/10',
+    PARTIAL: 'text-amber-400 bg-amber-400/10',
+    FAILED: 'text-red-400 bg-red-400/10',
+    CLEANING: 'text-neon-blue bg-neon-blue/10',
+    CLEANED: 'text-fg-sub bg-white/5',
+    CANCELLED: 'text-fg-sub bg-white/5'
+  }
+  return map[s] || FALLBACK
+}
+
 /** 本地化时间格式化（无效值返回空串） */
 export function fmtTime(t: string | number | Date | undefined | null): string {
   if (!t && t !== 0) return ''

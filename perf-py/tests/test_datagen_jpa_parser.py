@@ -4,8 +4,8 @@ Java 测试内嵌源码即 golden 文件：@Entity/@ManyToOne/@ManyToMany 关联
 枚举常量、mappedBy 跳过、异常容错。
 """
 
-from datagen.jpa_source_parser import JpaSourceParser
-from datagen.model import RelationHint, SourceFile
+from ptde.analyzer.lang_java.jpa_source_parser import JpaSourceParser
+from ptde.models.wire import RelationHint, SourceFile
 
 ENTITIES = """
 package com.x;

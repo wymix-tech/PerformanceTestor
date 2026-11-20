@@ -43,6 +43,8 @@ server = [
     "pyjwt>=2.8,<3",
     # 阶段 5 步骤 9 source 写路径：zip 上传导入的 multipart 解析
     "python-multipart>=0.0.9,<1",
+    # A2 真库批次：PERF_PY_DATABASE_URL 生产口径 mysql+pymysql，server 侧自带驱动
+    "pymysql>=1.1,<2",
 ]
 
 [dependency-groups]

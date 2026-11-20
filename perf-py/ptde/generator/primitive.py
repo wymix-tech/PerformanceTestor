@@ -22,7 +22,7 @@ import random
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from datagen.model import ColumnMeta, FieldRule
+from ptde.models.wire import ColumnMeta, FieldRule
 
 _TEXT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 

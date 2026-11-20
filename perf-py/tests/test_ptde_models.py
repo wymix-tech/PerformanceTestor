@@ -129,8 +129,8 @@ def test_execution_manifest_reproducibility_fields():
 def test_models_no_db_or_dialect_dependency():
     """模型层不 import 任何数据库驱动/方言模块（AST 扫描 + 子进程导入检查）。
 
-    例外：compat.py 为旧→新适配层，允许 import datagen.model（legacy dataclass），
-    但同样禁止数据库驱动。
+    B7 续批次 11（T7.9 退役）：compat.py 已随 datagen 包删除，
+    ptde/models 不得依赖 legacy datagen（无例外）。
     """
     import ast
 
@@ -145,8 +145,7 @@ def test_models_no_db_or_dialect_dependency():
                 roots.add(node.module.split(".")[0])
         bad = roots & forbidden_drivers
         assert not bad, f"{py_file.name} 含数据库驱动依赖: {bad}"
-        if py_file.name != "compat.py":
-            assert "datagen" not in roots, f"{py_file.name} 不得依赖 legacy datagen"
+        assert "datagen" not in roots, f"{py_file.name} 不得依赖 legacy datagen"
 
     code = (
         "import sys; import ptde.models; "

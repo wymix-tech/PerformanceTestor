@@ -265,8 +265,8 @@ def test_legacy_dialects_untouched() -> None:
     """T1.6 约束：新适配器不修改 legacy 方言（源码扫描断言）。"""
     import inspect
 
-    from datagen.dialects.mysql import MysqlDialect
-    from datagen.dialects.postgres import PostgresDialect
+    from ptde.adapters.direct.dialects.mysql import MysqlDialect
+    from ptde.adapters.direct.dialects.postgres import PostgresDialect
 
     assert "information_schema.STATISTICS" not in inspect.getsource(MysqlDialect)
     assert "pg_partitioned_table" not in inspect.getsource(PostgresDialect)

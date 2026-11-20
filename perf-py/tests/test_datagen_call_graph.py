@@ -5,8 +5,8 @@
 
 import time
 
-from datagen.call_graph_analyzer import CallGraphAnalyzer
-from datagen.model import EndpointRef, SourceFile
+from ptde.analyzer.lang_java.call_graph_analyzer import CallGraphAnalyzer
+from ptde.models.wire import EndpointRef, SourceFile
 
 CTRL = "src/main/java/com/demo/controller/OrderController.java"
 CTRL_CTOR = "src/main/java/com/demo/controller/CartController.java"

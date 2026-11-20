@@ -234,10 +234,14 @@ class StressTaskService:
     """对齐 StressTaskService + StressGateService 的写路径门面。"""
 
     def __init__(self, repo: StressRepository, runner: Any,
-                 engine_availability: Callable[[str], bool] | None = None):
+                 engine_availability: Callable[[str], bool] | None = None,
+                 dataset_lookup: Callable[[str], dict | None] | None = None):
         self._repo = repo
         self._runner = runner
         self._availability = engine_availability or engine_available
+        # T7.3 数据集绑定反查缝：instanceId → {definitionVersion, schemaFingerprint,
+        # validationSummary, status,...}（app 工厂注入 dataset 域查询；未注入时绑定拒绝）
+        self._dataset_lookup = dataset_lookup
 
     # -------------------------------------------------------- POST /tasks
 
@@ -257,6 +261,7 @@ class StressTaskService:
         app_name = request.app_name if request.app_name and request.app_name.strip() else ""
         # 版本快照：发起压测时记录应用当前版本（agent 心跳维护），只解析一次
         app_version = self._repo.find_app_version(app_name)
+        binding = self._resolve_dataset_binding(payload)
         task_id = self._repo.insert_task(
             task_name=task_name,
             engine_type=request.engine_type,
@@ -267,6 +272,10 @@ class StressTaskService:
             concurrency=request.concurrency,
             duration_sec=request.duration_sec,
             qps_limit=request.qps_limit,
+            dataset_instance_id=binding.get("instanceId") if binding else None,
+            dataset_definition_version=binding.get("definitionVersion") if binding else None,
+            dataset_schema_fingerprint=binding.get("schemaFingerprint") if binding else None,
+            dataset_validation_json=binding.get("validationJson") if binding else None,
         )
         self._runner.submit(task_id, payload)
         return {
@@ -285,6 +294,35 @@ class StressTaskService:
             "errorMsg": None,
             "createTime": None,
             "finishTime": None,
+        }
+
+    def _resolve_dataset_binding(self, payload: dict) -> dict | None:
+        """T7.3 数据集绑定解析：payload.dataset.instanceId → READY 实例快照。
+
+        绑定仅允许 READY 实例（验证通过的数据集才可承载压测语义）；
+        未注入 dataset_lookup 时携带绑定请求显式拒绝（不静默忽略）。
+        """
+        raw = payload.get("dataset")
+        if not isinstance(raw, dict) or raw.get("instanceId") is None:
+            return None
+        instance_id = str(raw["instanceId"]).strip()
+        if not instance_id:
+            return None
+        if self._dataset_lookup is None:
+            raise ValueError("数据集绑定未装配（dataset 查询缝未注入）")
+        info = self._dataset_lookup(instance_id)
+        if info is None:
+            raise ValueError(f"绑定的数据集实例不存在：{instance_id}")
+        if info.get("status") != "READY":
+            raise ValueError(
+                f"绑定的数据集实例非 READY（当前 {info.get('status')}）——"
+                "仅验证通过（READY）的数据集可绑定压测任务")
+        return {
+            "instanceId": int(info["rowId"]),
+            "definitionVersion": info.get("definitionVersion"),
+            "schemaFingerprint": info.get("schemaFingerprint"),
+            "validationJson": (json.dumps(info.get("validationSummary"), ensure_ascii=False)
+                               if info.get("validationSummary") is not None else None),
         }
 
     def _validate(self, request: StressTaskRequestData) -> None:

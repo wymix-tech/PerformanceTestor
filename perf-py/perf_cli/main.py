@@ -34,11 +34,13 @@ scenario_app = typer.Typer(help="场景文件管理（校验/列举）。", no_a
 datagen_app = typer.Typer(help="灌数引擎（perf-datagen Python 化）。", no_args_is_help=True)
 tools_app = typer.Typer(help="AI Agent 工具（阶段 4：Function Calling / MCP 双形态）。", no_args_is_help=True)
 agent_app = typer.Typer(help="AI Agent 编排（阶段 4：ReAct 单体 / 三角色流水线）。", no_args_is_help=True)
+ptde_app = typer.Typer(help="智能测试数据引擎 PTDE（B7：分析/画像/规划/数据集生命周期）。", no_args_is_help=True)
 app.add_typer(stress_app, name="stress")
 app.add_typer(scenario_app, name="scenario")
 app.add_typer(datagen_app, name="datagen")
 app.add_typer(tools_app, name="tools")
 app.add_typer(agent_app, name="agent")
+app.add_typer(ptde_app, name="ptde")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -133,12 +135,15 @@ def datagen_run(
     dry_run: bool = typer.Option(False, "--dry-run", help="强制试运行（覆盖 spec 内 dryRun 字段）"),
     seed: int = typer.Option(None, "--seed", help="随机种子（QW1 可复现；覆盖 spec 内 seed 字段）"),
     source_dir: Path = typer.Option(
-        None, "--source-dir", exists=True, file_okay=False, help="源码目录（.java/.xml，供语义扫描与 ORM 解析）"
+        None, "--source-dir", exists=True, file_okay=False,
+        help="源码目录（.java/.xml；PTDE 路由不进行源码语义扫描，仅 legacy 路径使用）"
     ),
     output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径（默认仅 stdout）"),
 ) -> None:
     """执行灌数任务：读 spec → 引擎编排（Dry-Run 优先/拓扑排序/批量写入）→ 输出结果。
 
+    B7 接管切换（T7.6）：执行体路由到 PTDE 真库管线（宿主契约/退出码不变；
+    仅支持 jdbc:mysql:// 目标库；legacy 口径 max_rows 钳制随接管按 A1 归一移除）。
     退出码：0 = 执行成功；1 = 引擎失败（含方言路由失败/表缺失/Dry-Run 校验未过）；
     2 = 调用异常（spec 文件不存在 / JSON 解析失败）。
     """
@@ -291,6 +296,136 @@ def agent_run(
         err_console.print("[yellow]Agent 未得出结论（达到 max-steps 截断）[/yellow]")
         raise typer.Exit(EXIT_GATE_FAILED) from None
     raise typer.Exit(EXIT_OK)
+
+
+# ---------------------------------------------------------------- PTDE（B7 · T7.1）
+
+
+@ptde_app.command("analyze")
+def ptde_analyze(
+    project_dir: str = typer.Argument(..., help="项目源码目录"),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径"),
+) -> None:
+    """分析项目源码：SnapshotBuilder 纯源码证据快照（结构/关系/不变量发现输入）。"""
+    from perf_cli.ptde_runner import run_analyze
+
+    raise typer.Exit(run_analyze(project_dir, output=output))
+
+
+@ptde_app.command("profile")
+def ptde_profile(
+    profile_file: str = typer.Argument(None, help="画像 JSON 文件（inspect 模式）"),
+    collect: bool = typer.Option(False, "--collect", help="采集模式（--config 提供 PtdeConfig）"),
+    config: Path = typer.Option(None, "--config", help="PtdeConfig JSON 文件（采集模式必需）"),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径"),
+) -> None:
+    """统计画像：缺省 inspect（文件画像导入）；--collect 走只读采集（须 --config）。"""
+    from perf_cli.ptde_runner import run_profile_collect, run_profile_inspect
+
+    if collect:
+        raise typer.Exit(run_profile_collect(
+            str(config) if config else None, output=output))
+    if not profile_file:
+        err_console.print("[red]错误：[/red]inspect 模式须提供画像文件路径（采集模式用 --collect --config）")
+        raise typer.Exit(EXIT_INVOCATION_ERROR)
+    raise typer.Exit(run_profile_inspect(profile_file, output=output))
+
+
+@ptde_app.command("plan")
+def ptde_plan(
+    spec_file: Path = typer.Argument(..., exists=True, readable=True, help="DatasetSpec JSON 文件"),
+    def_key: str = typer.Option(None, "--def-key", help="规划登记逻辑名（create 模式必需）"),
+    version: str = typer.Option("1", "--version", help="Definition 版本"),
+    name: str = typer.Option(None, "--name", help="Definition 名称（缺省用 def-key）"),
+    preview: bool = typer.Option(False, "--preview", help="预览模式：规模/分布/预算离线规划（不落库）"),
+    seed: int = typer.Option(None, "--seed", help="随机种子（预览/构建透传，QW1 可复现）"),
+    db: str = typer.Option(None, "--db", help="CLI 落库地址（缺省 PTDE_CLI_DB 或本地 sqlite）"),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径"),
+) -> None:
+    """数据集规划：--preview 离线预览；否则注册 Definition（def_key+version 唯一）。"""
+    from perf_cli.ptde_runner import run_plan_create, run_plan_preview
+
+    if preview:
+        raise typer.Exit(run_plan_preview(str(spec_file), seed=seed, output=output))
+    if not def_key:
+        err_console.print("[red]错误：[/red]create 模式须提供 --def-key（或改用 --preview）")
+        raise typer.Exit(EXIT_INVOCATION_ERROR)
+    raise typer.Exit(run_plan_create(
+        str(spec_file), def_key, version=version, name=name, db_url=db, output=output))
+
+
+@ptde_app.command("dataset")
+def ptde_dataset(
+    action: str = typer.Argument(None, help="动作：create/build/status/verify/list/cleanup"),
+    dataset_id: str = typer.Argument(None, help="数据集实例 ID（status/build/verify/cleanup）"),
+    def_key: str = typer.Option(None, "--def-key", help="create：来源 Definition 逻辑名"),
+    version: str = typer.Option("1", "--version", help="create：Definition 版本"),
+    environment: str = typer.Option(None, "--environment", help="create：目标环境标识（非生产）"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="build：试运行"),
+    seed: int = typer.Option(None, "--seed", help="build：随机种子（可复现）"),
+    batch: int = typer.Option(None, "--batch", help="build：分片大小"),
+    resume: bool = typer.Option(False, "--resume", help="build：恢复 PARTIAL 实例"),
+    manifest_id: str = typer.Option(None, "--manifest-id", help="resume：恢复上下文 Manifest ID"),
+    status_filter: str = typer.Option(None, "--status", help="list：状态过滤"),
+    env_class: str = typer.Option(None, "--env-class", help="cleanup：环境类别（dedicated_test_schema/dedicated_test_db/shared_test）"),
+    approvals: Path = typer.Option(None, "--approvals", help="cleanup：授权 JSON 文件"),
+    db: str = typer.Option(None, "--db", help="CLI 落库地址（缺省 PTDE_CLI_DB 或本地 sqlite）"),
+    output: Path = typer.Option(None, "--output", "-o", help="JSON 工件输出路径"),
+) -> None:
+    """数据集生命周期：build/status/verify/cleanup 直连落库层与 READY 门禁。
+
+    生产环境不提供构建与清理入口（总方案 §15.1）；构建执行体未接线时
+    显式失败（真库环境批次落地）。
+    """
+    from perf_cli import ptde_runner
+
+    action = (action or "").strip().lower()
+    if action == "list":
+        raise typer.Exit(ptde_runner.run_dataset_list(
+            status=status_filter, db_url=db, output=output))
+    if not action:
+        err_console.print("[red]错误：[/red]须提供动作（create/build/status/verify/list/cleanup）")
+        raise typer.Exit(EXIT_INVOCATION_ERROR)
+    if action == "create":
+        if not def_key or not environment:
+            err_console.print("[red]错误：[/red]create 须提供 --def-key 与 --environment")
+            raise typer.Exit(EXIT_INVOCATION_ERROR)
+        raise typer.Exit(ptde_runner.run_dataset_create(
+            def_key, environment, version=version, db_url=db, output=output))
+    if not dataset_id:
+        err_console.print(f"[red]错误：[/red]{action} 须提供数据集实例 ID")
+        raise typer.Exit(EXIT_INVOCATION_ERROR)
+    if action == "build":
+        raise typer.Exit(ptde_runner.run_dataset_build(
+            dataset_id, dry_run=dry_run, seed=seed, batch=batch, resume=resume,
+            manifest_id=manifest_id, db_url=db, output=output))
+    if action == "status":
+        raise typer.Exit(ptde_runner.run_dataset_status(
+            dataset_id, db_url=db, output=output))
+    if action == "verify":
+        raise typer.Exit(ptde_runner.run_dataset_verify(
+            dataset_id, db_url=db, output=output))
+    if action == "cleanup":
+        if not env_class:
+            err_console.print("[red]错误：[/red]cleanup 须提供 --env-class（环境类别须明确，§13.1）")
+            raise typer.Exit(EXIT_INVOCATION_ERROR)
+        raise typer.Exit(ptde_runner.run_dataset_cleanup(
+            dataset_id, env_class=env_class,
+            approvals_file=str(approvals) if approvals else None,
+            db_url=db, output=output))
+    err_console.print(f"[red]错误：[/red]未知动作 {action!r}（可选 create/build/status/verify/list/cleanup）")
+    raise typer.Exit(EXIT_INVOCATION_ERROR)
+
+
+@ptde_app.command("migrate-legacy")
+def ptde_migrate_legacy(
+    db: str = typer.Option(None, "--db", help="legacy 与 ptde 同库 DSN（缺省 PTDE_CLI_DB 或本地 sqlite）"),
+    output: Path = typer.Option(None, "--output", "-o", help="核对报告输出路径"),
+) -> None:
+    """A4a 存量迁移（T7.8）：legacy 三表 → ptde_*，幂等可重放 + 行数核对报告。"""
+    from perf_cli.ptde_runner import run_legacy_migrate
+
+    raise typer.Exit(run_legacy_migrate(db_url=db, output=output))
 
 
 @app.command()

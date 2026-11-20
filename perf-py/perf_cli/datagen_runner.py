@@ -1,10 +1,18 @@
 """灌数宿主装配与编排：Python 侧宿主层（对齐 Java perf-server）。
 
 对应 Java 侧三个宿主组件（本文件不移植 DataGenService 全部业务，仅承接
-CLI 直连引擎所需的最小编排，阶段 5 server 域迁移时再补齐任务化/持久化）：
-- DataGenEngineConfig：方言/执行器/ORM 解析器注册（新增库种/ORM 仅在此追加）
+CLI 直连引擎所需的最小编排）：
+- 灌数引擎路由入口（``build_default_engine``）
 - DataGenSpecAdapter.toSpec：请求 JSON → DataGenSpec（字段规则解析逐键对齐）
 - DataGenService 的进度回调与结果序列化（EngineResult → camelCase JSON）
+
+B7 续批次 10（T7.6/T7.7 接管切换）：``build_default_engine`` 生产路由返回
+PTDE 背书引擎（``perf_cli.ptde_datagen_engine.PtdeDatagenEngine``——宿主
+契约 ``execute(spec, listener)`` 不变，内部经规则翻译层走 OfflinePipeline）。
+
+B7 续批次 11（T7.9 退役）：datagen 包整包删除，legacy 装配随包退役；
+本文件仅保留 wire 契约解析/序列化（``ptde.models.wire``），规则 JSON
+解析产物继续供规则翻译层（``server.rule_translator``）消费。
 """
 
 from __future__ import annotations
@@ -13,12 +21,7 @@ import json
 import sys
 from pathlib import Path
 
-from datagen.default_engine import DefaultDataGenEngine
-from datagen.dialects.mysql import MysqlDialect
-from datagen.dialects.postgres import PostgresDialect
-from datagen.executor import DbApiBatchExecutor
-from datagen.jpa_source_parser import JpaSourceParser
-from datagen.model import (
+from ptde.models.wire import (
     DataGenSpec,
     EngineListener,
     EngineResult,
@@ -27,23 +30,16 @@ from datagen.model import (
     SourceFile,
     TableSpec,
 )
-from datagen.mybatis_source_parser import MyBatisSourceParser
 
 # 源码扫描上限（防误传大目录；Java 侧 SourceFileProvider 走 DB 亦有等价约束）
 MAX_SOURCE_FILES = 5000
 
 
-def build_default_engine() -> DefaultDataGenEngine:
-    """宿主装配：对齐 Java DataGenEngineConfig。
+def build_default_engine():
+    """灌数引擎路由入口（T7.6/T7.7 切换后生产路由 = PTDE 背书引擎）。"""
+    from perf_cli.ptde_datagen_engine import PtdeDatagenEngine
 
-    多方言 + 多 ORM 解析器注册，由引擎按 supports(jdbc_url) 与
-    supports(files)+order() 运行时路由；新增库种/ORM 仅需在此追加。
-    """
-    return DefaultDataGenEngine(
-        [MysqlDialect(), PostgresDialect()],
-        DbApiBatchExecutor(),
-        [MyBatisSourceParser(), JpaSourceParser()],
-    )
+    return PtdeDatagenEngine()
 
 
 # ===== 请求 JSON → DataGenSpec（对齐 DataGenSpecAdapter） =====

@@ -14,8 +14,8 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 import server.datagen_service as dsvc
-from datagen.model import ColumnMeta, EngineResult, SchemaMetadata, TableStat
-from datagen.verify_min import ENUM_LEGAL_MIN, verify_min
+from ptde.models.wire import ColumnMeta, EngineResult, SchemaMetadata, TableStat
+from ptde.validator.verify_min import ENUM_LEGAL_MIN, verify_min
 from server.datagen_repo import Base, DatagenRepository
 from server.datagen_service import DatagenWriteService
 from server.db import make_engine
@@ -30,7 +30,7 @@ class SqliteDialect:
         return '"' + name + '"'
 
     def fetch_metadata(self, conn, table_name):
-        from datagen.model import FkMeta
+        from ptde.models.wire import FkMeta
 
         meta = SchemaMetadata(table_name=table_name)
         cur = conn.cursor()

@@ -1,0 +1,81 @@
+{
+  "gate": "2（实施方案 §13.1 双跑对照）",
+  "table": "ptde_xcheck_orders",
+  "parent_table": "ptde_xcheck_users",
+  "rows": 10000,
+  "parent_rows": 1000,
+  "tolerance": 0.03,
+  "legacy": {
+    "rows": 11000,
+    "ms": 4655,
+    "stats": {
+      "rows": 10000,
+      "status_freq": {
+        "PENDING": 2986,
+        "PAID": 6004,
+        "CANCELLED": 1010
+      },
+      "amount_min": 3.64,
+      "amount_max": 9999.43,
+      "amount_mean": 5015.461438,
+      "id_min": 1,
+      "id_max": 10000
+    },
+    "fk": {
+      "non_null_fk": 10000,
+      "orphans": 0,
+      "fk_valid_rate": 1.0,
+      "fk_min": 1,
+      "fk_max": 1000
+    }
+  },
+  "ptde": {
+    "rows": 11000,
+    "generate_ms": 50,
+    "load_ms": 198,
+    "relationship_layer": {
+      "status": "PASS",
+      "metrics": {
+        "relations_checked": 1,
+        "orphan_free_relations": 1
+      }
+    },
+    "stats": {
+      "rows": 10000,
+      "status_freq": {
+        "PENDING": 3015,
+        "PAID": 5997,
+        "CANCELLED": 988
+      },
+      "amount_min": 1.0,
+      "amount_max": 9999.0,
+      "amount_mean": 5013.8273,
+      "id_min": 1,
+      "id_max": 10000
+    },
+    "fk": {
+      "non_null_fk": 10000,
+      "orphans": 0,
+      "fk_valid_rate": 1.0,
+      "fk_min": 1,
+      "fk_max": 1000
+    }
+  },
+  "verdicts": {
+    "status_freq_within_tolerance": true,
+    "amount_uniform_domain": true,
+    "id_range_identical": true,
+    "relationship_check": {
+      "relation": "ptde_xcheck_orders.user_id -> ptde_xcheck_users.id",
+      "legacy_fk_valid_rate": 1.0,
+      "ptde_fk_valid_rate": 1.0,
+      "legacy_orphans": 0,
+      "ptde_orphans": 0,
+      "fk_domain": [
+        1,
+        1000
+      ]
+    }
+  },
+  "collected_at": "2026-11-19T15:20:02"
+}

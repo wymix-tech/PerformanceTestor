@@ -1,9 +1,14 @@
-"""legacy datagen.model 收编子集副本（A4a 过渡期，R7 随 datagen 包一起退役）。
+"""Java 解析器 / 分析链模型居所（自 datagen.model 原样收编子集，T7.9 退役后保留）。
 
 T1.2 收编的 Java 解析器与 T1.3 关联解析器依赖 datagen.model 的 dataclass 语义
 （构造时小写、priority/auto_applicable 等）。为避免 ptde 反向 import datagen
 （A4 反向依赖禁令），此处按原样复制所需子集；行为与 legacy 完全一致，
 两套并存期间以单测对照保证同输入同输出（实施方案 §4.6）。
+
+B7 续批次 11（T7.9 退役）：datagen 包已删除，本模块成为分析链
+（lang_java 解析器 / workload.compose / llm_enhance / datagen_plan_service）
+的模型唯一居所——与灌数宿主链的 ``ptde.models.wire`` 并存不合并
+（本子集含三态字段等价演进，枚举跨模块不可比）。
 
 来源：perf-py/datagen/model.py（仅复制 9 个解析器 + 关联解析所需类）。
 """

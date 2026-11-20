@@ -21,11 +21,23 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from datagen.call_graph_analyzer import TRIPPED_CONFIDENCE, CallGraphAnalyzer
-from datagen.endpoint_index_parser import EndpointIndexParser
-from datagen.model import EndpointRef, SourceFile, SqlAccess
-from datagen.mybatis_sql_resolver import MyBatisSqlResolver
-from datagen.plan_pipeline import (
+# EndpointRef/SourceFile/SqlAccess 取自 lang_java 分析链模型居所（与
+# SQL/ORM 解析器返回对象同类——SqlAccess 枚举跨模块不可比）
+from ptde.analyzer.lang_java._legacy_model import EndpointRef, SourceFile, SqlAccess
+from ptde.analyzer.lang_java.call_graph_analyzer import TRIPPED_CONFIDENCE, CallGraphAnalyzer
+from ptde.analyzer.lang_java.endpoint_index_parser import EndpointIndexParser
+from ptde.analyzer.lang_java.mybatis_sql_resolver import MyBatisSqlResolver
+from ptde.analyzer.lang_java.sql_predicate_extractor import extract as extract_predicates
+from ptde.analyzer.lang_java.sql_table_extractor import (
+    extract as extract_tables,
+)
+from ptde.analyzer.lang_java.sql_table_extractor import (
+    extract_columns_by_table,
+    extract_join_edges,
+    is_fk_column,
+)
+from ptde.planner.llm_enhance import llm_enhance
+from ptde.planner.workload import (
     MIN_MAIN_ROWS,
     EndpointTableFact,
     JoinRef,
@@ -39,17 +51,7 @@ from datagen.plan_pipeline import (
     describe_rt_source,
     edge_confidence,
     estimate,
-    llm_enhance,
     resolve_rt_baseline,
-)
-from datagen.sql_predicate_extractor import extract as extract_predicates
-from datagen.sql_table_extractor import (
-    extract as extract_tables,
-)
-from datagen.sql_table_extractor import (
-    extract_columns_by_table,
-    extract_join_edges,
-    is_fk_column,
 )
 from server import crypto
 from server.datagen_repo import DataGenPlanModel, DatagenRepository
@@ -124,7 +126,7 @@ def parse_analyze_request(payload: dict) -> AnalyzeRequest:
     stages: list = []
     for s in stress_raw.get("stages") or []:
         if isinstance(s, dict):
-            from datagen.plan_pipeline import Stage
+            from ptde.planner.workload import Stage
 
             stages.append(Stage(
                 concurrency=_opt_int(s.get("concurrency"), 1) or 1,
@@ -748,7 +750,7 @@ class DatagenPlanService:
     def _refresh_seq_starts(self, plan: DataGenPlanModel,
                             tables: list[PlanTable], warnings: list[str]) -> None:
         """刷新方案中所有 seq 规则的起始值（探测失败回退 1 并写告警）。"""
-        from datagen.plan_pipeline import refresh_seq_starts
+        from ptde.planner.workload import refresh_seq_starts
 
         resolved = self._resolve_plan_conn(plan)
         db_url, db_user, db_password = resolved

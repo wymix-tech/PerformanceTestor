@@ -1,17 +1,15 @@
-"""模型层等价单测：小写归一化 / 列查找 / RelationHint 优先级与自动生效 / 显式规则提取。
+"""wire 模型等价单测：小写归一化 / 列查找 / RelationHint 优先级与自动生效。
 
-Java 侧 model.* 被 PIT 排除（纯数据载体），本文件覆盖其中的**行为性**归一化逻辑。
+（原 datagen.model 单测收编平移；explicit_rule_hints 段随 legacy 包退役删除，
+其业务等价能力由 lang_java 显式规则证据链承担。）
 """
 
-from datagen.explicit_rule_hints import extract
-from datagen.model import (
+from ptde.models.wire import (
     ColumnMeta,
-    DataGenSpec,
     FieldRule,
     FkMeta,
     RelationHint,
     SchemaMetadata,
-    TableSpec,
 )
 
 
@@ -82,40 +80,3 @@ def test_field_rule_fixed_factory():
     r = FieldRule.fixed("PAID")
     assert r.type == FieldRule.TYPE_FIXED
     assert r.value == "PAID"
-
-
-def test_explicit_rule_hints_extract():
-    meta_map = {
-        "order": _meta("order", ColumnMeta(name="id", type_name="BIGINT")),
-        "user": _meta("user", ColumnMeta(name="id", type_name="BIGINT")),
-        "item": _meta("item", ColumnMeta(name="id", type_name="BIGINT")),
-    }
-    spec = DataGenSpec(tables=[
-        TableSpec(table_name="ORDER", row_count=10, fields={
-            "user_id": FieldRule(type=FieldRule.TYPE_REF, table="USER", column="ID"),
-            "user_id_skew": FieldRule(type=FieldRule.TYPE_REF_SKEW, table="user",
-                                      column="id", hot_percent=20, hot_share=80),
-            "status": FieldRule(type=FieldRule.TYPE_ENUM, values=["A"]),
-            # 指向组外表 → 忽略
-            "ext_id": FieldRule(type=FieldRule.TYPE_REF, table="external", column="id"),
-            # 缺 parent column → 忽略
-            "bad": FieldRule(type=FieldRule.TYPE_REF, table="user"),
-        }),
-        # 组外表整表跳过
-        TableSpec(table_name="external", row_count=10, fields={
-            "id": FieldRule(type=FieldRule.TYPE_REF, table="user", column="id"),
-        }),
-    ])
-    hints = extract(spec, meta_map)
-    assert len(hints) == 2
-    assert [(h.child_table, h.child_column, h.parent_table, h.parent_column)
-            for h in hints] == [("order", "user_id", "user", "id"),
-                                ("order", "user_id_skew", "user", "id")]
-    for h in hints:
-        assert h.source == RelationHint.SRC_EXPLICIT
-        assert h.confidence == 1.0
-        assert h.source_refs == ["request"]
-
-
-def test_explicit_rule_hints_null_spec():
-    assert extract(None, {}) == []

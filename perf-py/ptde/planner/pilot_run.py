@@ -202,7 +202,9 @@ def run_pilot(
 
     insert_sql 缺省按列清单构造；列清单为 (name, db_type) 二元组。
     """
-    from datagen.executor import DbApiBatchExecutor  # R3 降级通道（legacy 借用，不改本体）
+    from ptde.adapters.direct.executor import (
+        DbApiBatchExecutor,  # R3 降级通道（legacy 借用，不改本体）
+    )
 
     cfg = config or PilotRunConfig()
     rng = rng or random.Random(0)
@@ -402,7 +404,7 @@ def run_generation_pilot(
         report.seal()
         return report
 
-    from datagen.executor import DbApiBatchExecutor  # R4 借用 legacy 降级通道
+    from ptde.adapters.direct.executor import DbApiBatchExecutor  # R4 借用 legacy 降级通道
     from ptde.generator.file_format import read_shard_file
 
     col_names = [f.name for f in fields]

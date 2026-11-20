@@ -6,8 +6,8 @@
 
 import json
 
-from datagen.model import Op, Predicate, SqlAccess
-from datagen.plan_pipeline import (
+from ptde.analyzer.lang_java._legacy_model import Op, Predicate, SqlAccess
+from ptde.planner.workload import (
     MAX_ENUM_VALUES,
     MAX_TABLE_ROWS,
     MIN_MAIN_ROWS,
@@ -133,7 +133,7 @@ def test_compose_ref_and_seq_priority():
     """ref：已有谓词值的列不覆盖（谓词优先级更高）；seq 只落 prefix。"""
     fact = _fact(
         predicates=[Predicate(column="status", op=Op.EQ, values=["PAID"])],
-        join_refs=[__import__("datagen.plan_pipeline", fromlist=["JoinRef"]).JoinRef(
+        join_refs=[__import__("ptde.planner.workload", fromlist=["JoinRef"]).JoinRef(
             "user_id", "perf_user", "id", 0.9)])
     ctx = TableContext()
     ctx.join_refs = fact.join_refs
@@ -206,7 +206,7 @@ def test_cycle_unbreakable_returns_false():
 
 
 def test_refresh_seq_starts_probe_and_fallback():
-    from datagen.plan_pipeline import refresh_seq_starts
+    from ptde.planner.workload import refresh_seq_starts
 
     class FakeCursor:
         def __init__(self, results):
@@ -246,7 +246,7 @@ def test_refresh_seq_starts_probe_and_fallback():
 
 
 def test_rt_baseline_three_levels():
-    from datagen.plan_pipeline import resolve_rt_baseline
+    from ptde.planner.workload import resolve_rt_baseline
 
     class Repo:
         def __init__(self, samples=None, history=None):
@@ -283,7 +283,7 @@ def test_rt_baseline_three_levels():
 
 
 def test_rt_baseline_clamp():
-    from datagen.plan_pipeline import resolve_rt_baseline
+    from ptde.planner.workload import resolve_rt_baseline
 
     class Repo:
         def query_by_task(self, tid, limit):

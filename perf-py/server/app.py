@@ -33,6 +33,8 @@ from server.datagen_api import router as datagen_router
 from server.datagen_plan_service import DatagenPlanService
 from server.datagen_repo import DatagenRepository
 from server.datagen_service import DatagenWriteService
+from server.dataset_api import router as dataset_router
+from server.dataset_service import DatasetLifecycleService
 from server.db import database_url, make_session_factory
 from server.db_explain import DbExplainService
 from server.endpoint_scanner import EndpointScanner
@@ -45,6 +47,7 @@ from server.issue_service import (
 )
 from server.issue_verify_service import IssueVerifyService
 from server.knowledge import KnowledgeService, SqliteKnowledgeStore
+from server.ptde_repo import PtdeDatasetRepository
 from server.source_api import router as source_router
 from server.source_index import SourceFileIndexer
 from server.source_repo import SourceRepository
@@ -86,7 +89,9 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
                db_url: str | None = None,
                auth: AuthProperties | None = None,
                auth_enabled: bool | None = None,
-               stress_runner=None) -> FastAPI:
+               stress_runner=None,
+    dataset_repo: PtdeDatasetRepository | None = None,
+    dataset_pipeline=None) -> FastAPI:
     """构建 FastAPI 应用。
 
     include_knowledge_tool：把 knowledge_search 挂入工具注册表（AI 可检索知识库）。
@@ -112,6 +117,12 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.ai_service = AiAgentService(llm, registry, app.state.knowledge)
     session_factory = make_session_factory(db_url or database_url())
     resolved_db_url = db_url or database_url()
+    app.state.dataset_repo = dataset_repo if dataset_repo is not None \
+        else PtdeDatasetRepository(session_factory)
+    # dataset_pipeline：数据集执行体注入缝（generate/load/verify 三段）；
+    # 真库端到端执行体随 A2 真库环境批次接线（B6 §7F 口径），缺省显式失败。
+    app.state.dataset_service = DatasetLifecycleService(
+        app.state.dataset_repo, pipeline=dataset_pipeline)
     app.state.stress_repo = stress_repo if stress_repo is not None \
         else StressRepository(session_factory)
     if stress_runner is not None:
@@ -122,7 +133,22 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         from server.stress_service import SubprocessRunner
 
         runner = SubprocessRunner(resolved_db_url)
-    app.state.stress_service = StressTaskService(app.state.stress_repo, runner)
+    # T7.3 压测绑定：dataset 查询缝注入（创建任务时快照 READY 数据集）
+    def _dataset_lookup(instance_id: str):
+        try:
+            d = app.state.dataset_service.get_instance(instance_id)
+        except ValueError:
+            return None
+        return {
+            "rowId": int(d["id"]),
+            "status": d["status"],
+            "definitionVersion": d["definitionVersion"],
+            "schemaFingerprint": d["schemaFingerprint"],
+            "validationSummary": d["validationSummary"],
+        }
+
+    app.state.stress_service = StressTaskService(
+        app.state.stress_repo, runner, dataset_lookup=_dataset_lookup)
     app.state.collector_repo = collector_repo if collector_repo is not None \
         else CollectorRepository(session_factory)
     app.state.datagen_repo = datagen_repo if datagen_repo is not None \
@@ -185,6 +211,7 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.include_router(stress_router)
     app.include_router(collector_router)
     app.include_router(datagen_router)
+    app.include_router(dataset_router)
     app.include_router(source_router)
     # 全局异常处理对齐 Java GlobalExceptionHandler：任何异常 → 200 + code=1 错误包装
     app.add_exception_handler(RequestValidationError, handle_validation)

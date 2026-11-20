@@ -47,6 +47,11 @@ class StressTaskModel(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # T7.3 数据集绑定（实施方案 §12.6 加列；旧库经 init.sql 幂等 ALTER 补齐）
+    dataset_instance_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    dataset_definition_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dataset_schema_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dataset_validation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     finish_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -111,9 +116,14 @@ class StressRepository:
 
     def insert_task(self, *, task_name: str, engine_type: str | None, target_url: str,
                     app_name: str, app_version: str, method: str | None,
-                    concurrency: int, duration_sec: int, qps_limit: int) -> int:
+                    concurrency: int, duration_sec: int, qps_limit: int,
+                    dataset_instance_id: int | None = None,
+                    dataset_definition_version: str | None = None,
+                    dataset_schema_fingerprint: str | None = None,
+                    dataset_validation_json: str | None = None) -> int:
         """对齐 StressTaskMapper.insert：状态固定 pending，返回自增主键。
 
+        T7.3：dataset_* 绑定列为可选快照（未绑定缺省 None，wire 契约不变）。
         注意 create_time 依赖 DB 默认值（MySQL DEFAULT CURRENT_TIMESTAMP），
         与 Java 同款——插入后立刻返回的实体不含 create_time（wire 契约 createTime=null）。
         """
@@ -121,12 +131,31 @@ class StressRepository:
             task_name=task_name, engine_type=engine_type or "http", target_url=target_url,
             app_name=app_name, app_version=app_version, method=method or "GET",
             concurrency=concurrency, duration_sec=duration_sec, qps_limit=qps_limit,
+            dataset_instance_id=dataset_instance_id,
+            dataset_definition_version=dataset_definition_version,
+            dataset_schema_fingerprint=dataset_schema_fingerprint,
+            dataset_validation_json=dataset_validation_json,
             status="pending", create_time=datetime.now(),
         )
         with self._sessions() as s:
             s.add(row)
             s.commit()
             return row.id
+
+    def dataset_binding(self, task_id: int) -> dict | None:
+        """T7.3 反查：task → dataset_* 绑定快照（未绑定返回 None）。"""
+        row = self.find_by_id(task_id)
+        if row is None or row.dataset_instance_id is None:
+            return None
+        return {
+            "taskId": row.id,
+            "datasetInstanceId": str(row.dataset_instance_id),
+            "datasetDefinitionVersion": row.dataset_definition_version,
+            "datasetSchemaFingerprint": row.dataset_schema_fingerprint,
+            "datasetValidation": (
+                json.loads(row.dataset_validation_json)
+                if row.dataset_validation_json else None),
+        }
 
     def update_status(self, task_id: int, status: str) -> None:
         with self._sessions() as s:

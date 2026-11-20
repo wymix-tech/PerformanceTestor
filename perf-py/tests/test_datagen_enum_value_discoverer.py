@@ -1,6 +1,7 @@
 """枚举值四级发现等价单测：移植 SemanticParserTest 的枚举 4 个用例 + 覆盖补强。"""
 
-from datagen.enum_value_discoverer import (
+from ptde.models.wire import ColumnMeta
+from ptde_common.enum_value_discoverer import (
     discover,
     match_java_enum,
     parse_check_clause,
@@ -8,7 +9,6 @@ from datagen.enum_value_discoverer import (
     parse_inline_enum,
     suspect_enum_column,
 )
-from datagen.model import ColumnMeta
 
 
 def col(name: str, type_name: str, comment: str | None = None) -> ColumnMeta:

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 import server.datagen_service as dsvc
-from datagen.model import ColumnMeta, SchemaMetadata
+from ptde.models.wire import ColumnMeta, SchemaMetadata
 from server.app import create_app
 from server.datagen_repo import Base, DatagenRepository
 from server.datagen_service import DatagenWriteService

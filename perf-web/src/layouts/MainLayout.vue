@@ -98,7 +98,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Bot, Server, LogOut, CornerUpLeft
+  Activity, Bell, Settings, LayoutDashboard, Cpu, GitBranch, Gauge, Target, FolderGit, Database, Bot, Server, LogOut, CornerUpLeft
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { hasQuickStart, quickStartStepTitle, syncQuickStartFlag } from '@/stores/quickStartNav'
@@ -120,6 +120,7 @@ const menus = [
   { path: '/projects', title: '项目管理', icon: FolderGit },
   { path: '/deploy', title: '部署管理', icon: Server },
   { path: '/stress', title: '压测中心', icon: Gauge },
+  { path: '/datasets', title: '数据管理', icon: Database },
   { path: '/jvm', title: '项目监控', icon: Cpu },
   { path: '/trace', title: '调用链分析', icon: GitBranch },
   { path: '/optimize', title: '性能优化', icon: Target },

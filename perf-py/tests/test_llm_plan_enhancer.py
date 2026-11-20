@@ -8,11 +8,10 @@ MAX_TABLES=20 截断、redact/shapeOf 脱敏、提示词零字面值泄漏。
 import json
 
 from agents.llm import ChatResult, LlmClient
-from datagen.model import Op, Predicate, SqlAccess
-from datagen.plan_pipeline import (
+from ptde.analyzer.lang_java._legacy_model import Op, Predicate, SqlAccess
+from ptde.planner.llm_enhance import (
     MAX_MERGED_VALUES,
     MAX_TABLES,
-    EndpointTableFact,
     Enhancement,
     _merge_enum_suggestions,
     _redact,
@@ -21,6 +20,7 @@ from datagen.plan_pipeline import (
     contains_literal,
     llm_enhance,
 )
+from ptde.planner.workload import EndpointTableFact
 
 
 def _fact(table="t_order", col="status", op=Op.EQ, values=None, joins=None):

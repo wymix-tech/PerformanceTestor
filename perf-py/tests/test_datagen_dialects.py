@@ -2,8 +2,12 @@
 非连接部分（URL 路由/增强、标识符引用、INSERT 构建、CHECK 解析、SERIAL 判定）。
 """
 
-from datagen.dialects.mysql import MysqlDialect
-from datagen.dialects.postgres import PostgresDialect, is_serial_default, parse_check_definition
+from ptde.adapters.direct.dialects.mysql import MysqlDialect
+from ptde.adapters.direct.dialects.postgres import (
+    PostgresDialect,
+    is_serial_default,
+    parse_check_definition,
+)
 
 
 def test_mysql_supports_only_mysql_urls():
@@ -100,7 +104,7 @@ def test_serial_default_detected():
 
 
 def test_parse_jdbc_url_mysql_variants():
-    from datagen.dialects import parse_jdbc_url
+    from ptde.adapters.direct.dialects import parse_jdbc_url
     host, port, db, params = parse_jdbc_url(
         "jdbc:mysql://127.0.0.1:3306/demo?useSSL=false&x=1", "mysql")
     assert (host, port, db) == ("127.0.0.1", 3306, "demo")
@@ -112,7 +116,7 @@ def test_parse_jdbc_url_mysql_variants():
 
 
 def test_parse_jdbc_url_postgres_and_reject():
-    from datagen.dialects import parse_jdbc_url
+    from ptde.adapters.direct.dialects import parse_jdbc_url
     host, port, db, params = parse_jdbc_url(
         "jdbc:postgresql://127.0.0.1:5432/demo?reWriteBatchedInserts=true", "postgresql")
     assert (host, port, db, params) == ("127.0.0.1", 5432, "demo",
@@ -126,6 +130,6 @@ def test_parse_jdbc_url_postgres_and_reject():
 
 def test_connect_missing_driver_message():
     """驱动缺失时给出可执行的安装指引（pymysql/psycopg 环境差异由 .self 检查覆盖）。"""
-    from datagen.dialects import DRIVER_HINT
+    from ptde.adapters.direct.dialects import DRIVER_HINT
     assert "datagen-drivers" in DRIVER_HINT
 

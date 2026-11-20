@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import re
 
-from datagen.endpoint_path import join as ep_join
-from datagen.endpoint_path import normalize as ep_normalize
+from ptde.analyzer.lang_java.endpoint_path import join as ep_join
+from ptde.analyzer.lang_java.endpoint_path import normalize as ep_normalize
 from server.source_index import SourceFileIndexer
 from server.source_repo import SourceFileModel, SourceRepository
 from server.source_write_service import SourceWriteService

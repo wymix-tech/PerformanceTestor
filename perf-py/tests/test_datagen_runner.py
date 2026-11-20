@@ -4,9 +4,6 @@
 
 import json
 
-import pytest
-
-from datagen.model import DataGenSpec, EngineResult, TableStat
 from perf_cli.datagen_runner import (
     build_default_engine,
     collect_source_files,
@@ -16,6 +13,7 @@ from perf_cli.datagen_runner import (
     rule_from_json,
     spec_from_request,
 )
+from ptde.models.wire import DataGenSpec, EngineResult, TableStat
 
 # ===== rule_from_json（对齐 DataGenSpecAdapter#toRule） =====
 
@@ -132,24 +130,14 @@ def test_collect_source_files_selects_java_xml_sorted(tmp_path):
     assert files[0].content == "class A {}"
 
 
-# ===== build_default_engine（对齐 DataGenEngineConfig） =====
+# ===== build_default_engine（T7.6 切换路由；T7.9 后为唯一生产路由） =====
 
 
-def test_build_default_engine_registration():
-    engine = build_default_engine()
-    kinds = [type(d).__name__ for d in engine.get_dialects()]
-    assert kinds == ["MysqlDialect", "PostgresDialect"]
-    assert [type(p).__name__ for p in engine.orm_parsers] == \
-        ["MyBatisSourceParser", "JpaSourceParser"]
-    assert engine.executor.get_batch_size() >= 1
+def test_build_default_engine_routes_to_ptde():
+    """生产路由 = PTDE 背书引擎（B7 续批次 10 接管切换，legacy 装配随 T7.9 退役）。"""
+    from perf_cli.ptde_datagen_engine import PtdeDatagenEngine
 
-
-def test_engine_routes_registered_dialects():
-    engine = build_default_engine()
-    assert engine.resolve_dialect("jdbc:mysql://h/db").__class__.__name__ == "MysqlDialect"
-    assert engine.resolve_dialect("jdbc:postgresql://h/db").__class__.__name__ == "PostgresDialect"
-    with pytest.raises(ValueError):
-        engine.resolve_dialect("jdbc:oracle://h/db")
+    assert isinstance(build_default_engine(), PtdeDatagenEngine)
 
 
 # ===== result_to_camel_json（对齐 Java Jackson 序列化字段名） =====

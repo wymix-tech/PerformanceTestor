@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-from datagen.model import EngineResult, MagicHint, RelationHint, TableStat
+from ptde.models.wire import EngineResult, MagicHint, RelationHint, TableStat
 from server.app import create_app
 from server.datagen_repo import Base, DatagenRepository
 from server.datagen_service import DatagenWriteService

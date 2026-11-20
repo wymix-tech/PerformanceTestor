@@ -1,6 +1,11 @@
 """路径归一化单点工具等价单测：移植 EndpointPathTest 全部 9 个用例。"""
 
-from datagen.endpoint_path import join, normalize, simple_name_of, strip_trailing_slash
+from ptde.analyzer.lang_java.endpoint_path import (
+    join,
+    normalize,
+    simple_name_of,
+    strip_trailing_slash,
+)
 
 
 def test_normalize_adds_leading_slash():

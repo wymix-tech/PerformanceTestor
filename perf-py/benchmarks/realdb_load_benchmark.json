@@ -1,0 +1,17 @@
+{
+  "benchmark": "realdb_load_native_channel",
+  "product": "mysql",
+  "entity": "ptde_bench_orders",
+  "rows": 1000000,
+  "shards": 4,
+  "workers": 4,
+  "generate_ms": 1150,
+  "load_ms": 2496,
+  "load_rows_per_sec": 400641.0,
+  "total_ms": 3646,
+  "strategies": [
+    "load_data_local"
+  ],
+  "a2_degraded_channel_reference_ms": 12790,
+  "collected_at": "2026-11-19T15:20:20"
+}

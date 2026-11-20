@@ -176,6 +176,28 @@
     </template>
 
     <!-- ===== 共用压测参数（两种模式一致） ===== -->
+    <!-- 数据集绑定（共用：单接口与场景模式一致携带 payload.dataset.instanceId；
+         绑定仅 READY 实例，绑定快照随任务落库，报告经反查端点全链可溯） -->
+    <div>
+      <div class="flex items-center justify-between">
+        <label class="text-xs text-fg-sub">数据集绑定（可选，仅验证通过的 READY 实例）</label>
+        <button type="button" class="text-[10px] text-neon-blue hover:underline" @click="loadDatasets">刷新</button>
+      </div>
+      <select v-model="datasetId" class="input-select w-full">
+        <option value="">— 不绑定数据集 —</option>
+        <option v-for="d in datasets" :key="d.id" :value="d.id">
+          {{ d.definitionId }}（{{ d.actualRows ?? '?' }} 行，{{ d.environmentId || '?' }}）
+        </option>
+      </select>
+      <div v-if="selectedDataset" class="text-[10px] text-fg-sub mt-1 leading-relaxed">
+        绑定快照：定义版本 <span class="font-mono">{{ selectedDataset.definitionVersion || '—' }}</span>
+        · Schema 指纹 <span class="font-mono">{{ shortFingerprint }}</span>
+        <template v-if="selectedDataset.actualRows != null"> · 实际行数 {{ selectedDataset.actualRows }}</template>
+      </div>
+      <div v-else-if="datasetLoadFailed" class="text-[10px] text-fg-sub mt-1 leading-relaxed">
+        数据集列表加载失败：可刷新重试，或留空不绑定（不阻断压测）
+      </div>
+    </div>
     <div class="grid grid-cols-2 gap-3">
       <div>
         <label class="text-xs text-fg-sub">引擎</label>
@@ -241,7 +263,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { datasetApi, stressApi } from '@/api'
 
 /**
  * 压测表单公共组件：从 StressCenterView（895 行）/ QuickStartView（913 行）抽取的
@@ -602,6 +625,67 @@ const stageConcurrencies = ref('10,50,100')
 const headersText = ref('')
 const assertText = ref('')
 
+// ---------------- 数据集绑定（单接口与场景两模式共用） ----------------
+
+/**
+ * 数据集实例列表（仅 READY——后端绑定门禁 §9.5 门禁 5：只有验证通过的数据集
+ * 可承载压测；下拉先行过滤，避免选中后提交才报错）。
+ */
+const datasets = ref<Array<Record<string, any>>>([])
+const datasetId = ref('')
+const datasetLoadFailed = ref(false)
+
+/** 选中实例（快照摘要展示：定义版本 / Schema 指纹 / 实际行数） */
+const selectedDataset = computed(
+  () => datasets.value.find((d) => String(d.id) === datasetId.value) || null
+)
+
+/** Schema 指纹展示（长十六进制串截断，未封存显示 —） */
+const shortFingerprint = computed(() => {
+  const fp = selectedDataset.value?.schemaFingerprint
+  return typeof fp === 'string' && fp.length > 16 ? `${fp.slice(0, 16)}…` : (fp || '—')
+})
+
+async function loadDatasets() {
+  datasetLoadFailed.value = false
+  try {
+    // 游标分页单页拉满（size=100）：绑定下拉仅取 READY，首屏即全量口径
+    const page = await datasetApi.list({ status: 'READY', size: 100 })
+    datasets.value = page.items
+    // 当前选中项已不在 READY 列表（被清理/降级）时复位，避免提交后被后端拒绝
+    if (datasetId.value && !selectedDataset.value) datasetId.value = ''
+  } catch {
+    datasetLoadFailed.value = true
+    datasets.value = []
+  }
+}
+
+onMounted(loadDatasets)
+
+/**
+ * 绑定还原：「再来一次」回填历史任务时，经反查端点还原数据集绑定。
+ *
+ * <p>压测 wire 契约不含 dataset_*（B7 前段决策 6），历史任务表单拿不到绑定；
+ * 走 `GET /api/stress/tasks/{id}/dataset` 反查端点补齐。仅当实例仍在 READY
+ * 列表（未被清理/降级）时回填，失效复位为不绑定——与 READY 列表刷新的
+ * 复位口径一致。列表加载失败不阻断回填（绑定属可选功能，留空可重选）。
+ */
+async function restoreBinding(task: Record<string, any>) {
+  const taskId = task?.id
+  if (!taskId) return
+  try {
+    const resp: any = await stressApi.dataset(taskId)
+    const iid = resp?.data?.datasetInstanceId
+    if (!iid) return
+    await loadDatasets()
+    if (datasets.value.some((d) => String(d.id) === String(iid))) {
+      datasetId.value = String(iid)
+    }
+  } catch {
+    /* 反查失败保持不绑定，不阻断回填主链路 */
+  }
+}
+
 // 服务地址自动预填：仅空值或上次自动值时刷新（用户手改后不覆盖）
 let lastAutoBaseUrl = ''
 watch(
@@ -665,6 +749,8 @@ function buildPayload(): Record<string, unknown> {
   }
   if (stageList.length > 1) payload.stageConcurrencies = stageList
   if (body.value.trim()) payload.body = body.value.trim()
+  // 数据集绑定：单接口与场景两模式一致携带（后端按 instanceId 解析 READY 快照落库）
+  if (datasetId.value) payload.dataset = { instanceId: datasetId.value }
   // 请求头：单接口与多接口一致地按行解析（此前仅多接口支持，单接口缺失）
   const headers = parseHeaders(headersText.value)
   if (Object.keys(headers).length) payload.headers = headers
@@ -774,6 +860,9 @@ defineExpose({
     stepPick.value = []
     headersText.value = ''
     assertText.value = ''
+    // 历史任务 wire 契约不含 dataset_*，先复位为不绑定，再经反查端点异步还原绑定
+    datasetId.value = ''
+    restoreBinding(task)
   },
   /** 自动选中首个接口（QuickStart 项目选定后调用） */
   selectFirstEndpoint() {
@@ -782,12 +871,14 @@ defineExpose({
       selectEndpoint()
     }
   },
-  /** 当前表单状态（诊断用） */
+  /** 当前表单状态（诊断用；dataset 为定时压测模板快照的绑定携带——调度触发
+   *  走同一 create_and_run 绑定路径，模板不带绑定快照则调度压测静默失去绑定） */
   snapshot: () => ({
     targetUrl: targetUrl.value,
     method: method.value,
     concurrency: concurrency.value,
-    durationSec: durationSec.value
+    durationSec: durationSec.value,
+    ...(datasetId.value ? { dataset: { instanceId: datasetId.value } } : {})
   }),
   /** 标准压测请求体（按接口准备数据复用同一份参数） */
   buildPayload,

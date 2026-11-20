@@ -3,8 +3,8 @@
 XML resultMap/SQL 与 Java 注解/常量/枚举（样例内嵌即 golden 文件）。
 """
 
-from datagen.model import RelationHint, SourceFile
-from datagen.mybatis_source_parser import MyBatisSourceParser, snake, to_table_name
+from ptde.analyzer.lang_java.mybatis_source_parser import MyBatisSourceParser, snake, to_table_name
+from ptde.models.wire import RelationHint, SourceFile
 
 XML = """
 <?xml version="1.0" encoding="UTF-8"?>

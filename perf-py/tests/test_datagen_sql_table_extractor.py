@@ -4,8 +4,8 @@
 JOIN 关联边方向判定的三级证据优先级。
 """
 
-from datagen.model import SqlAccess
-from datagen.sql_table_extractor import (
+from ptde.analyzer.lang_java._legacy_model import SqlAccess
+from ptde.analyzer.lang_java.sql_table_extractor import (
     extract,
     extract_bare_columns,
     extract_columns_by_table,

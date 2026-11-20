@@ -182,10 +182,10 @@ def plan_row_factory(task: ShardTask) -> Iterator[list]:
         )
 
     # 延迟导入：worker 顶层只依赖 ptde（收编边界保持显式）
-    from datagen.model import ColumnMeta
     from ptde.generator.primitive import generate_default
     from ptde.generator.samplers import sample as sample_distribution
     from ptde.generator.seed import field_rng
+    from ptde.models.wire import ColumnMeta
 
     rngs = {
         f.name: field_rng(task.root_seed, task.entity, task.shard_id, f.name)
@@ -203,7 +203,10 @@ def plan_row_factory(task: ShardTask) -> Iterator[list]:
                 continue
             rng = rngs[spec.name]
             if spec.distribution is not None:
-                row.append(sample_distribution(spec.distribution, rng))
+                # row_index 上下文注入（B7 续批次 10）：sequential 等行号敏感
+                # 分布按分片内行号推进（缺省行工厂此前恒传 None → 恒取起始值）
+                row.append(sample_distribution(
+                    spec.distribution, rng, {"row_index": row_index}))
             else:
                 col = ColumnMeta(name=spec.name, type_name=spec.type_name)
                 row.append(generate_default(col, rng))

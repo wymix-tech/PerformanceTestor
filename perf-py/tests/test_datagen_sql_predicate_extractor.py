@@ -3,8 +3,8 @@
 覆盖等值（含同列合并）/ IN / 范围（含 BETWEEN）/ 别名归属 / 占位符不命中。
 """
 
-from datagen.model import Op
-from datagen.sql_predicate_extractor import extract, has_any_alias
+from ptde.analyzer.lang_java._legacy_model import Op
+from ptde.analyzer.lang_java.sql_predicate_extractor import extract, has_any_alias
 
 
 def preds(sql: str | None, table: str | None) -> list:

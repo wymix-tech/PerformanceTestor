@@ -233,8 +233,8 @@ def test_temporal_unknown_bucket_fails():
 
 def test_sequential_matches_primitive_seq_semantics():
     """step=1 时与 primitive.seq_value / legacy SeqRule 语义逐值一致。"""
-    from datagen.model import FieldRule
     from ptde.generator import primitive
+    from ptde.models.wire import FieldRule
 
     rule = FieldRule(type=FieldRule.TYPE_SEQ, seq_prefix="ORD_", seq_start=7)
     f = fit("sequential", seq_start=7, seq_prefix="ORD_")
@@ -414,15 +414,155 @@ def test_length_b3_default_shape_via_dispatcher():
                [samplers.sample(f, rng) for _ in range(2000)])
 
 
+# ---------------------------------------------------------------- ref（B7 续批次 9：legacy FieldRule 语义对齐）
+
+
+def test_ref_uniform_default():
+    """无 hot/orphan 参数 → 父主键区间均匀采样（对齐 _apply_fk_fields 注入语义）。"""
+    rng = random.Random(31)
+    values = [samplers.sample(fit("ref", min=1, max=1000), rng) for _ in range(20000)]
+    assert all(isinstance(v, int) and 1 <= v <= 1000 for v in values)
+    assert sum(values) / len(values) == pytest.approx(500.5, abs=6)
+
+
+def test_ref_hot_two_segment_share():
+    """两段线性热行权重：前 round(n×20/100)=40 个热 ID 承载 80% 子行（legacy 同口径）。"""
+    rng = random.Random(32)
+    f = fit("ref", min=1, max=200, hot_percent=20, hot_share=80)
+    values = [samplers.sample(f, rng) for _ in range(20000)]
+    hot = sum(1 for v in values if v <= 40) / len(values)
+    cold = sum(1 for v in values if v > 40) / len(values)
+    assert hot == pytest.approx(0.8, abs=0.02)
+    assert cold == pytest.approx(0.2, abs=0.02)
+    # 热区内单行均匀：单热行占比 = hot_share / hot_count = 80% / 40 = 2%
+    top = sum(1 for v in values if v == 1) / len(values)
+    assert top == pytest.approx(0.02, abs=0.006)
+
+
+def test_ref_hot_out_of_range_degrades_to_uniform():
+    """hot_percent<=0 或 >=100 → 退化为均匀（legacy build_skew_weights 同口径）。"""
+    for hp in (0, 100, -5):
+        rng = random.Random(33)
+        values = [samplers.sample(fit("ref", min=1, max=10, hot_percent=hp,
+                                      hot_share=80), rng) for _ in range(5000)]
+        assert all(1 <= v <= 10 for v in values)
+        assert sum(values) / len(values) == pytest.approx(5.5, abs=0.2)
+
+
+def test_ref_orphan_invalid_ids():
+    """orphan_rate → 无效 ID = max+1+randrange(1000)（legacy sample_invalid_id 同口径）。"""
+    rng = random.Random(34)
+    f = fit("ref", min=1, max=100, orphan_rate=0.3)
+    values = [samplers.sample(f, rng) for _ in range(20000)]
+    orphans = [v for v in values if v > 100]
+    assert len(orphans) / len(values) == pytest.approx(0.3, abs=0.02)
+    assert all(101 <= v < 101 + 1000 for v in orphans)
+    assert all(1 <= v <= 100 for v in values if v <= 100)
+
+
+def test_ref_orphan_null_share():
+    """orphan_null_ratio → orphan 行按概率置 None（legacy 可空列 50% 置 NULL 同口径）。"""
+    rng = random.Random(35)
+    f = fit("ref", min=1, max=100, orphan_rate=0.3, orphan_null_ratio=0.5)
+    values = [samplers.sample(f, rng) for _ in range(20000)]
+    nulls = sum(1 for v in values if v is None) / len(values)
+    invalid = sum(1 for v in values if v is not None and v > 100) / len(values)
+    assert nulls == pytest.approx(0.15, abs=0.02)
+    assert invalid == pytest.approx(0.15, abs=0.02)
+
+
+def test_ref_missing_params_fails_explicitly():
+    with pytest.raises(ValueError, match="min"):
+        samplers.sample(fit("ref", max=10), random.Random(1))
+    with pytest.raises(ValueError, match="max"):
+        samplers.sample(fit("ref", min=1), random.Random(1))
+    with pytest.raises(ValueError, match="整数值"):
+        samplers.sample(fit("ref", min=1.5, max=10), random.Random(1))
+
+
+def test_hot_row_share_warning_text_threshold():
+    """单热行承载占比估算（100×hot_share/hot_percent）>50% → 告警（HOT_ROW_SHARE_WARN 同口径）。"""
+    text = samplers.ref.hot_row_share_warning_text(
+        {"hot_percent": 20, "hot_share": 80})
+    assert text is not None and "热点倾斜极高" in text and "400.0%" in text
+    assert samplers.ref.hot_row_share_warning_text(
+        {"hot_percent": 90, "hot_share": 30}) is None
+    assert samplers.ref.hot_row_share_warning_text({"min": 1}) is None
+
+
+# ---------------------------------------------------------------- over_threshold（B7 续批次 9：legacy rule_engine 语义对齐）
+
+
+def test_over_threshold_share_allocation():
+    """share% 行取 (threshold, max]，其余取 [min, threshold]（非截断，legacy 同口径）。"""
+    rng = random.Random(41)
+    f = fit("over_threshold", min=0, max=100, threshold_value=80, share=30)
+    values = [samplers.sample(f, rng) for _ in range(20000)]
+    above = sum(1 for v in values if v > 80) / len(values)
+    assert above == pytest.approx(0.3, abs=0.02)
+    assert all(0 <= v <= 100 for v in values)
+    assert all(v <= 80 for v in values if v <= 80)
+
+
+def test_over_threshold_ge_op_includes_threshold():
+    """连续域（非整值参数）：op=">=" → [threshold, max]（含阈值，legacy 同口径）。"""
+    rng = random.Random(42)
+    f = fit("over_threshold", min=0.5, max=100.5, threshold_value=80.5,
+            share=100, threshold_op=">=")
+    values = [samplers.sample(f, rng) for _ in range(5000)]
+    assert all(isinstance(v, float) and 80.5 <= v <= 100.5 for v in values)
+
+
+def test_over_threshold_gt_op_excludes_threshold():
+    """连续域（非整值参数）：op=">" → (threshold, max] 开区间（nextafter，legacy 同口径）。"""
+    rng = random.Random(43)
+    f = fit("over_threshold", min=0.5, max=100.5, threshold_value=80.5,
+            share=100, threshold_op=">")
+    values = [samplers.sample(f, rng) for _ in range(5000)]
+    assert all(v > 80.5 for v in values)
+    # 整数域：Java Math.round 伪差（legacy INT 列同款——80.000…1 取整回 80）
+    f_int = fit("over_threshold", min=0, max=100, threshold_value=80,
+                share=100, threshold_op=">")
+    assert all(v >= 80 for v in
+               [samplers.sample(f_int, rng) for _ in range(2000)])
+
+
+def test_over_threshold_threshold_le_min_falls_back_to_full_domain():
+    """阈值 ≤ min → 未越阈分支回退 [min, max]；越阈分支仍取 (threshold, max]
+    （legacy 同口径，整数域取整后可为 [threshold, max]）。"""
+    rng = random.Random(44)
+    f = fit("over_threshold", min=10, max=100, threshold_value=5, share=50)
+    values = [samplers.sample(f, rng) for _ in range(10000)]
+    assert all(5 <= v <= 100 for v in values)
+    # 混合均值：未越阈 [10,100] 均值 55 + 越阈 (5,100] 均值 ≈52.5 → ≈53.75
+    assert sum(values) / len(values) == pytest.approx(53.75, abs=1.5)
+
+
+def test_over_threshold_integer_domain_returns_int():
+    rng = random.Random(45)
+    f = fit("over_threshold", min=0, max=100, threshold_value=80, share=30)
+    values = [samplers.sample(f, rng) for _ in range(2000)]
+    assert all(isinstance(v, int) for v in values)
+
+
+def test_over_threshold_missing_threshold_fails_explicitly():
+    with pytest.raises(ValueError, match="threshold_value"):
+        samplers.sample(fit("over_threshold", min=0, max=100), random.Random(1))
+    with pytest.raises(ValueError, match="op"):
+        samplers.sample(fit("over_threshold", min=0, max=100, threshold_value=5,
+                            threshold_op="<"), random.Random(1))
+
+
 # ---------------------------------------------------------------- 分发与口径对照
 
 
 def test_supported_types_cover_section_7_1():
-    """覆盖总方案 §7.1 全部 12 类分布。"""
+    """覆盖总方案 §7.1 全部 12 类分布 + B7 续批次 9 legacy 对齐扩展（ref/over_threshold）。"""
     assert set(samplers.SUPPORTED_TYPES) == {
         "uniform", "normal", "lognormal", "zipf", "skewed",
         "weighted_categorical", "temporal", "sequential", "random",
         "conditional", "correlated", "null_ratio", "length",
+        "ref", "over_threshold",
     }
     assert samplers.sample(DistributionFit(
         type="weightedcategorical", params={"values": [1], "weights": [1.0]}),

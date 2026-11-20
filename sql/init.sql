@@ -202,6 +202,34 @@ SET @ddl := IF(@col_exists = 0,
     'SELECT 1');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- T7.3 压测绑定（实施方案 §12.6）：stress_task 幂等加列——
+-- 压测任务记录 DatasetInstance ID + Definition 版本 + Schema 指纹 + 验证结果摘要
+-- （§10.3 门禁 1/2：数据集可绑定复用、压测结果可反查数据集全链）
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stress_task' AND COLUMN_NAME = 'dataset_instance_id');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE stress_task ADD COLUMN dataset_instance_id BIGINT UNSIGNED NULL COMMENT ''绑定的 PTDE 数据集实例''',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stress_task' AND COLUMN_NAME = 'dataset_definition_version');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE stress_task ADD COLUMN dataset_definition_version VARCHAR(32) NULL COMMENT ''绑定时的 Definition 版本''',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stress_task' AND COLUMN_NAME = 'dataset_schema_fingerprint');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE stress_task ADD COLUMN dataset_schema_fingerprint CHAR(64) NULL COMMENT ''绑定时的 Schema 指纹''',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stress_task' AND COLUMN_NAME = 'dataset_validation_json');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE stress_task ADD COLUMN dataset_validation_json MEDIUMTEXT NULL COMMENT ''绑定时的验证结果摘要''',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- ---------------------------------------------------------------------
 -- 6. stress_sample：压测周期采样（按天分区）
 -- ---------------------------------------------------------------------

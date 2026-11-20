@@ -1,12 +1,17 @@
-"""工作负载目标分支（R3 T3.5）：自 datagen/plan_pipeline.py 函数级收编（副本迁移）。
+"""工作负载目标分支（R3 T3.5）：datagen/plan_pipeline.py 的函数级收编终态。
 
 收编范围（F3 函数级迁移，实施方案 §6.2 T3.5）：
 - estimate / compose / complete_parents / edge_confidence / refresh_seq_starts /
   resolve_rt_baseline（含各自依赖的 dataclass、常量与辅助函数）；
-- legacy `plan_pipeline.py` 本体保留不动（A4a 终态才退役），两套并存期间以
-  「同输入同输出」对照单测保证一致（tests/test_ptde_workload.py）；
-- llm_enhance 不在本副本内：保持 legacy 侧建议定位，不进确定性规划路径
-  （planner.py 不消费任何 LLM 输出）。
+- B7 续批次 11（T7.9 退役收编补全）：parse_cycle / remove_ref_edge /
+  break_weakest_cycle_edge（环降级三函数，原遗留于 legacy 本体）；
+- llm_enhance 段收编于 ``ptde.planner.llm_enhance``（LLM 可选增强保持
+  建议定位，不进确定性规划路径——planner.py 不消费任何 LLM 输出）。
+
+模型居所：``Op/Predicate/SqlAccess`` 取自
+``ptde.analyzer.lang_java._legacy_model``（分析链模型唯一居所，与
+lang_java SQL/ORM 解析器返回对象同类——compose/llm_enhance 直接消费
+其产物，枚举/数据类必须同类可比）。
 
 逐语义对齐 Java perf-server plan 域：
 - RowCountEstimator     行数推导（峰压公式/权重分摊/上下限保护/全局缩减）
@@ -25,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from datagen.model import Op, Predicate, SqlAccess
+from ptde.analyzer.lang_java._legacy_model import Op, Predicate, SqlAccess
 
 log = logging.getLogger(__name__)
 
@@ -517,6 +522,68 @@ def edge_confidence(tables: list[PlanTable]) -> dict[str, float]:
             key = f"{child}->{parent}"
             out[key] = max(out.get(key, 0.0), conf)
     return out
+
+
+def parse_cycle(message: str) -> list[str]:
+    """从环消息解析节点：支持 "a -> b -> a"，去消息前缀与非法字符。"""
+    nodes: list[str] = []
+    for part in re.split(r"\s*->\s*", message or ""):
+        n = re.sub(r"[^A-Za-z0-9_]", "", part.strip())
+        if n:
+            nodes.append(n.lower())
+    if len(nodes) > 2 and nodes[0] == nodes[-1]:
+        nodes.pop()
+    return nodes
+
+
+def remove_ref_edge(tables: list[PlanTable], child: str, parent: str) -> bool:
+    """移除子表中指向指定父表的 ref/refSkew 规则。"""
+    removed = False
+    for t in tables:
+        if not t.table or t.table.lower() != child.lower() \
+                or not t.fields or not t.fields.strip():
+            continue
+        try:
+            root = json.loads(t.fields)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(root, dict):
+            continue
+        to_remove = [col for col, rule in root.items()
+                     if isinstance(rule, dict)
+                     and str(rule.get("type") or "").lower() in ("ref", "refskew")
+                     and str(rule.get("table") or "").lower() == parent.lower()]
+        if to_remove:
+            for col in to_remove:
+                root.pop(col, None)
+            t.fields = json.dumps(root, ensure_ascii=False)
+            removed = True
+            log.warning("cycle detected: removed ref edge %s -> %s (column %s)",
+                        child, parent, to_remove)
+    return removed
+
+
+def break_weakest_cycle_edge(tables: list[PlanTable], cycle_message: str | None,
+                             confidences: dict[str, float] | None) -> bool:
+    """环依赖降级：剔除环中置信度最低的一条 ref 边（返回是否已剔除）。"""
+    if not tables or not cycle_message:
+        return False
+    nodes = parse_cycle(cycle_message)
+    if len(nodes) < 2:
+        return False
+    victim: str | None = None
+    lowest = math.inf
+    for i, child in enumerate(nodes):
+        parent = nodes[(i + 1) % len(nodes)]
+        key = f"{child}->{parent}"
+        conf = (confidences or {}).get(key, DEFAULT_EDGE_CONFIDENCE)
+        if conf < lowest:
+            lowest = conf
+            victim = key
+    if victim is None:
+        return False
+    child, parent = victim.split("->", 1)
+    return remove_ref_edge(tables, child, parent)
 
 
 # ================================================================ SeqStartResolver
