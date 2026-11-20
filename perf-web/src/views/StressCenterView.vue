@@ -128,6 +128,11 @@
 
     <!-- 数据准备 Tab：与快速开始向导「灌注数据」共用 DataGenForm，能力完全一致 -->
     <div v-else-if="activeTab === 'datagen'">
+      <div class="text-xs text-fg-sub mb-3">
+        发起的灌数任务实例可在
+        <router-link to="/datasets" class="text-neon-blue hover:underline">数据准备</router-link>
+        页查看运行状态与详情
+      </div>
       <DataGenForm
         ref="dataGenFormRef"
         :poll="true"
@@ -164,7 +169,7 @@ const tabs = [
   { key: 'capacity', label: '容量建议' },
   { key: 'schedule', label: '定时压测' }
 ]
-const activeTab = ref(['stress', 'capacity', 'datagen'].includes(String(route.query.tab))
+const activeTab = ref(['stress', 'capacity', 'datagen', 'schedule'].includes(String(route.query.tab))
   ? String(route.query.tab) : 'stress')
 // 支持外部（总览快速开始引导等）通过 /stress?tab=datagen 直达指定 Tab
 watch(() => route.query.tab, (t) => {

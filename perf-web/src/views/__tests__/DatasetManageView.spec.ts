@@ -112,7 +112,10 @@ describe('DatasetManageView', () => {
   })
 
   async function mountView() {
-    const wrapper = mount(DatasetManageView)
+    const wrapper = mount(DatasetManageView, {
+      // 空状态引流使用了 router-link，测试环境无 router，stub 掉避免告警
+      global: { stubs: { RouterLink: true } }
+    })
     await flushPromises()
     return wrapper
   }

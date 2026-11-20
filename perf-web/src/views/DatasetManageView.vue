@@ -13,7 +13,11 @@
         </div>
       </div>
       <div v-if="loadFailed" class="text-xs text-red-400 py-4 text-center">实例列表加载失败，请点击刷新重试</div>
-      <div v-if="!instances.length" class="text-xs text-fg-sub py-8 text-center">暂无数据集实例</div>
+      <div v-if="!instances.length" class="text-xs text-fg-sub py-8 text-center">
+        暂无数据集实例，前往
+        <router-link to="/stress?tab=datagen" class="text-neon-blue hover:underline">压测中心 → 数据准备</router-link>
+        发起灌数
+      </div>
       <div v-else class="space-y-2 max-h-[560px] overflow-y-auto pr-1">
         <div
           v-for="it in instances" :key="it.id"

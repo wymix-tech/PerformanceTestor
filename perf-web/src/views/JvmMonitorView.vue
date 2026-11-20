@@ -2,7 +2,7 @@
   <div>
     <div class="page-title">
       <Activity class="w-5 h-5 text-neon-green" />
-      项目监控
+      JVM 监控
       <span class="text-xs font-normal text-fg-sub ml-2">JVM：堆 / 非堆 · GC · 线程 · CPU（5s 轮询）</span>
     </div>
 

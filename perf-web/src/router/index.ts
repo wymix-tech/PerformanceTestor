@@ -43,16 +43,10 @@ const routes = [
         meta: { title: '部署管理' }
       },
       {
-        path: 'jvm',
-        name: 'JvmMonitor',
-        component: () => import('@/views/JvmMonitorView.vue'),
-        meta: { title: '项目监控' }
-      },
-      {
-        path: 'trace',
-        name: 'TraceAnalyzer',
-        component: () => import('@/views/TraceAnalyzerView.vue'),
-        meta: { title: '调用链分析' }
+        path: 'datasets',
+        name: 'DatasetManage',
+        component: () => import('@/views/DatasetManageView.vue'),
+        meta: { title: '数据准备' }
       },
       {
         path: 'stress',
@@ -61,10 +55,16 @@ const routes = [
         meta: { title: '压测中心' }
       },
       {
-        path: 'datasets',
-        name: 'DatasetManage',
-        component: () => import('@/views/DatasetManageView.vue'),
-        meta: { title: '数据管理' }
+        path: 'jvm',
+        name: 'JvmMonitor',
+        component: () => import('@/views/JvmMonitorView.vue'),
+        meta: { title: 'JVM 监控' }
+      },
+      {
+        path: 'trace',
+        name: 'TraceAnalyzer',
+        component: () => import('@/views/TraceAnalyzerView.vue'),
+        meta: { title: '调用链分析' }
       },
       {
         path: 'optimize',

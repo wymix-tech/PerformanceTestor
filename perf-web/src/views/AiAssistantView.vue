@@ -93,7 +93,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Bot, Send, Zap, Database, Gauge, FileText, Wrench, Bug, Boxes, Loader2, Square } from 'lucide-vue-next'
+import { Bot, Send, Zap, Database, Gauge, FileText, Wrench, Bug, Boxes, Loader2, Square, HelpCircle } from 'lucide-vue-next'
 import { aiApi, sourceApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 
@@ -139,8 +139,30 @@ const SLASH_COMMANDS: PanelItem[] = [
   { key: 'slow', title: '慢 SQL 根因分析', desc: '关联源码给修复方案', icon: Wrench, insert: '分析最近慢 SQL 的根因并给出修复方案' },
   { key: 'capacity', title: '容量评估', desc: '当前性能能承受多少并发', icon: Gauge, insert: '当前性能能承受多少并发、何时扩容' },
   { key: 'jvm', title: '查询 JVM 指标', desc: '最近内存/线程/GC', icon: Boxes, insert: '查询最近 JVM 指标' },
-  { key: 'report', title: '生成性能检测报告', desc: '汇总压测/指标/问题', icon: FileText, insert: '生成一份性能检测报告' }
+  { key: 'report', title: '生成性能检测报告', desc: '汇总压测/指标/问题', icon: FileText, insert: '生成一份性能检测报告' },
+  { key: 'help', title: '使用指南', desc: '平台功能与业务流程速览', icon: HelpCircle, insert: '/help' }
 ]
+
+/** /help 本地输出：不请求后端，直接返回平台使用指南 */
+const HELP_GUIDE = [
+  'PerformanceTestor 使用指南 —— 按业务流程分三步：',
+  '',
+  '1. 资源准备（菜单「资源准备」组）',
+  '   · 项目管理：导入被测项目源码（zip / Git / 本地目录），管理分支与同步状态',
+  '   · 数据库连接：配置 JDBC 连接，用于慢 SQL 分析与 EXPLAIN 验证',
+  '   · 部署管理（可选）：配置 SSH 连接，部署被测服务',
+  '   · 数据准备：对项目数据库灌入压测数据（灌数实例的状态与详情在此查看）',
+  '',
+  '2. 测试与分析（菜单「测试与分析」组）',
+  '   · 压测中心：发起压测 → 查看报告 → 版本对比 → 容量建议 → 定时压测（回归门禁）',
+  '   · JVM 监控：内存 / GC / 线程 / CPU 实时观测与阈值告警',
+  '   · 调用链分析：调用链火焰图、慢 SQL / 慢命令、CPU 热点',
+  '   · 性能优化：查看性能问题 → 生成修复方案 → 验证修复',
+  '',
+  '3. 智能助手：像本页一样用自然语言或指令串联全流程',
+  '',
+  '首次使用建议点击侧边栏「快速开始」，七步向导会带着你完成一次完整压测。'
+].join('\n')
 
 const panelMode = ref<'' | 'slash' | 'project'>('')  // project 模式含项目与问题两类
 const panelQuery = ref('')
@@ -243,6 +265,13 @@ async function send(text: string) {
   input.value = ''
   panelMode.value = ''
   messages.value.push({ role: 'user', content })
+
+  // /help：本地输出使用指南，不消耗后端会话
+  if (content === '/help') {
+    messages.value.push({ role: 'assistant', content: HELP_GUIDE, toolCalls: [], thought: '', streaming: false })
+    scrollToBottom()
+    return
+  }
 
   const assistant: Record<string, any> = {
     role: 'assistant', content: '', toolCalls: [], thought: '', streaming: true
