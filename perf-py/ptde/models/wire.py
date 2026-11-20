@@ -4,9 +4,12 @@
 服务范围（B7 续批次 11，T7.9 退役收编）：灌数宿主链——spec 解析
 （perf_cli.datagen_runner）、PTDE 路由引擎（perf_cli.ptde_datagen_engine）、
 写路径服务（server.datagen_service）、规则翻译层与 contract 测试。
-分析链模型（Op/Predicate/SqlAccess 等 lang_java 解析器语义）另居
-``ptde.analyzer.lang_java._legacy_model``（三态字段等价演进版，枚举跨模块
-不可比，两居所不合并）。
+
+技术债清理（2026-11-20）：本模块自 T7.9 起为 wire 契约模型唯一居所；
+分析链（lang_java 解析器 / workload / llm_enhance）的重名类
+（OverThreshold/RelationHint/SourceFile/MagicHint/SqlAccess/Op/Predicate/
+JoinRef/EndpointRef）已统一复用本模块定义，
+``ptde.analyzer.lang_java._legacy_model`` 为兼容 re-export 垫片。
 
 对齐点：
 - 表名/列名构造时统一小写（规避 MySQL 大小写不敏感与 PG/Oracle 大小写敏感差异）；

@@ -45,16 +45,23 @@ RowFactory = Callable[["ShardTask"], Iterator[list]]
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """分片任务字段规格（JSON 原生：name/type_name/distribution 三键）。"""
+    """分片任务字段规格（JSON 原生：name/type_name/size/distribution）。
+
+    size 为列长度口径（CHARACTER_MAXIMUM_LENGTH 语义）：仅供无分布字段的
+    缺省生成（TEXT/VARCHAR 文本长度）使用；缺省 0 = 与收编期
+    ColumnMeta(name, type_name) 行为一致。
+    """
 
     name: str
     type_name: str | None = None
+    size: int = 0
     distribution: DistributionFit | None = None
 
     def to_manifest(self) -> dict:
         return {
             "name": self.name,
             "type_name": self.type_name,
+            "size": self.size,
             "distribution": (
                 {"type": self.distribution.type,
                  "params": self.distribution.params,
@@ -69,6 +76,7 @@ class FieldSpec:
         return cls(
             name=data["name"],
             type_name=data.get("type_name"),
+            size=int(data.get("size") or 0),
             distribution=DistributionFit(**dist) if dist else None,
         )
 
@@ -89,6 +97,13 @@ class ShardTask:
     mode: str = MODE_FILE
     format: str = FORMAT_VERSION
     path: str | None = None  # file 模式输出路径（缺省由 staging 分配）
+    # 实体内全局行偏移（技术债清理 2026-11-20）：sequential 等行号敏感分布
+    # 跨分片连续（此前 >2M 多分片按分片内行号重启为已知差异）；缺省 0 =
+    # 单分片/历史任务行为不变
+    row_offset: int = 0
+    # planned_range 接管的主键列名（技术债清理：非 id 名非自增主键泛化，
+    # worker ``spec.name == "id"`` 特判放宽）；缺省 "id" = 历史行为
+    pk_column: str = "id"
 
     def to_dict(self) -> dict:
         """协议序列化：全 JSON 原生值（跨语言 worker 可消费）。"""
@@ -104,6 +119,8 @@ class ShardTask:
             "plan_fingerprint": self.plan_fingerprint,
             "fields": [f.to_manifest() for f in self.fields],
             "root_seed": self.root_seed,
+            "row_offset": self.row_offset,
+            "pk_column": self.pk_column,
             "output": {"mode": self.mode, "format": self.format, "path": self.path},
         }
 
@@ -129,6 +146,9 @@ class ShardTask:
             mode=output.get("mode", MODE_FILE),
             format=output.get("format", FORMAT_VERSION),
             path=output.get("path"),
+            # 兼容缺省：旧协议载荷（无 row_offset/pk_column）按历史行为解析
+            row_offset=int(data.get("row_offset") or 0),
+            pk_column=data.get("pk_column") or "id",
         )
 
 
@@ -160,10 +180,12 @@ class ShardResult:
 def plan_row_factory(task: ShardTask) -> Iterator[list]:
     """默认行工厂（模块级可 pickle，多进程安全）。
 
-    确定性：主键自 [id_start, id_end] 顺序生成；hash 策略主键由
-    derive_seed(root_seed, entity, shard_id, f"pk#{row_index}") 派生；
-    每字段独立 rng（seed.py 派生）逐行复用——同任务跨进程逐行一致。
-    root_seed=None → 显式不可复现路径（field_rng 发 UserWarning）。
+    确定性：主键（task.pk_column 列，缺省 "id"）自 [id_start, id_end] 顺序
+    生成；hash 策略主键由 derive_seed(root_seed, entity, shard_id,
+    f"pk#{row_index}") 派生；每字段独立 rng（seed.py 派生）逐行复用——
+    同任务跨进程逐行一致。行号敏感分布按 task.row_offset + 分片内行号
+    推进（跨分片连续）。root_seed=None → 显式不可复现路径
+    （field_rng 发 UserWarning）。
     """
     if task.rows < 0:
         raise ValueError(f"分片行数必须非负，收到 {task.rows}（显式失败）")
@@ -182,10 +204,9 @@ def plan_row_factory(task: ShardTask) -> Iterator[list]:
         )
 
     # 延迟导入：worker 顶层只依赖 ptde（收编边界保持显式）
-    from ptde.generator.primitive import generate_default
+    from ptde.generator.primitive import generate_default_for
     from ptde.generator.samplers import sample as sample_distribution
     from ptde.generator.seed import field_rng
-    from ptde.models.wire import ColumnMeta
 
     rngs = {
         f.name: field_rng(task.root_seed, task.entity, task.shard_id, f.name)
@@ -194,7 +215,7 @@ def plan_row_factory(task: ShardTask) -> Iterator[list]:
     for row_index in range(task.rows):
         row: list[Any] = []
         for spec in task.fields:
-            if spec.name == "id":
+            if spec.name == task.pk_column:
                 if task.id_start is not None:
                     row.append(task.id_start + row_index)  # 区间顺序主键
                 else:
@@ -204,12 +225,16 @@ def plan_row_factory(task: ShardTask) -> Iterator[list]:
             rng = rngs[spec.name]
             if spec.distribution is not None:
                 # row_index 上下文注入（B7 续批次 10）：sequential 等行号敏感
-                # 分布按分片内行号推进（缺省行工厂此前恒传 None → 恒取起始值）
+                # 分布按行号推进；row_offset（技术债清理）使 >2M 多分片
+                # sequential 列跨分片连续（全局行号），单分片行为不变
                 row.append(sample_distribution(
-                    spec.distribution, rng, {"row_index": row_index}))
+                    spec.distribution, rng,
+                    {"row_index": task.row_offset + row_index}))
             else:
-                col = ColumnMeta(name=spec.name, type_name=spec.type_name)
-                row.append(generate_default(col, rng))
+                # 缺省生成走类型口径窄接口（技术债清理：worker 协议层不再
+                # 依赖宿主 wire 契约模型 ColumnMeta）
+                row.append(generate_default_for(spec.type_name, size=spec.size,
+                                                rng=rng))
         yield row
 
 
@@ -348,12 +373,22 @@ def shard_tasks_from_plan(
     root_seed: int | None,
     plan_fingerprint: str | None = None,
     staging: Any = None,
+    pk_by_entity: Mapping[str, str] | None = None,
 ) -> list[ShardTask]:
-    """ShardingPlan → ShardTask 列表（区间/字段/seed 装配，确定性排序）。"""
+    """ShardingPlan → ShardTask 列表（区间/字段/seed 装配，确定性排序）。
+
+    - ``row_offset``：按实体累计（shard_id 序 = 区间序，planned_range 连续
+      区间/有序桶名均满足）——sequential 等行号敏感分布跨分片连续；
+    - ``pk_by_entity``：各实体 planned_range 接管的主键列名（缺省 "id"，
+      非 id 名主键由调用方显式给出）。
+    """
     tasks: list[ShardTask] = []
+    offset_by_entity: dict[str, int] = {}
     for shard in sorted(sharding_plan.shards, key=lambda s: s.shard_id):
         path = (str(staging.shard_path(shard.entity, shard.shard_id))
                 if staging is not None else None)
+        row_offset = offset_by_entity.get(shard.entity, 0)
+        offset_by_entity[shard.entity] = row_offset + (shard.rows or 0)
         tasks.append(
             ShardTask(
                 shard_id=shard.shard_id,
@@ -367,6 +402,8 @@ def shard_tasks_from_plan(
                 plan_fingerprint=plan_fingerprint,
                 mode=MODE_FILE,
                 path=path,
+                row_offset=row_offset,
+                pk_column=(pk_by_entity or {}).get(shard.entity, "id"),
             )
         )
     return tasks

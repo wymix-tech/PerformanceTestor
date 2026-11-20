@@ -439,8 +439,8 @@ def test_relations_explicit_failure_cases():
         ("不在实体映射字段中", [{"child_table": "t_order",
                                "child_column": "ghost_col",
                                "parent_table": "t_item", "parent_column": "id"}]),
-        ("不得为 id", [{"child_table": "t_order", "child_column": "id",
-                       "parent_table": "t_item", "parent_column": "id"}]),
+        ("主键区间语义列", [{"child_table": "t_order", "child_column": "id",
+                          "parent_table": "t_item", "parent_column": "id"}]),
         ("四元组不完整", [{"child_table": "t_order", "child_column": "user_id",
                          "parent_table": "t_item", "parent_column": ""}]),
     ]

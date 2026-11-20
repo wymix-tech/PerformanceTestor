@@ -222,7 +222,25 @@ datagen-drivers 依赖组名称保留，供 direct 套件与 DRIVER_HINT 文案�
 
 ---
 
+## 8. 技术债处理记录（2026-11-20，§7 遗留清单处置）
+
+| # | 债项 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | wire.py 与 _legacy_model.py 重名类双居所 | **已统一**：datagen 退役后 A4 反向依赖禁令成因消失，9 个重名类（OverThreshold/RelationHint/SourceFile/MagicHint/SqlAccess/Op/Predicate/JoinRef/EndpointRef）以 `ptde.models.wire` 为唯一居所，`_legacy_model.py` 退化为兼容 re-export 垫片（语义逐类核对等价，SqlAccess 枚举自此跨模块可比） | `ptde/analyzer/lang_java/_legacy_model.py`、`ptde/models/wire.py` |
+| 2 | 模块命名沿用 legacy（datagen_runner 等） | **维持不动**（与原判一致）：API wire 契约与表结构不动的前提下属纯美观改动，不值得单独开批 | — |
+| 3 | worker 收编副本对 wire ColumnMeta 依赖 | **已消除**：primitive 抽出类型口径窄接口 `generate_default_for(type_name, size)`，worker 协议层不再 import 宿主 wire 模型；FieldSpec 增加可选 `size`（CHARACTER_MAXIMUM_LENGTH 口径，缺省 0 = 历史行为），引擎内省同步采集列长度（文本列缺省生成长度保真） | `ptde/generator/primitive.py`、`ptde/generator/worker.py`、`perf_cli/ptde_datagen_engine.py` |
+| 4a | >2M 行多分片 sequential per-shard offset | **已修复**：ShardTask 增加实体全局行偏移 `row_offset`（shard_tasks_from_plan 按 shard_id 序累计），sequential 等行号敏感分布跨分片连续；缺省 0 = 单分片历史行为不变 | `ptde/generator/worker.py` |
+| 4b | 非 id 名非自增主键 planned_range 泛化 | **已落地**：worker `spec.name == "id"` 特判放宽为 `task.pk_column`（协议字段，缺省 "id" = 历史行为）；OfflinePipeline/realdb 装配增加 `pk_columns` 注入缝；引擎按内省对任意单整型主键下传（非自增主键接管留痕告警，关系子列校验同步泛化） | `ptde/generator/worker.py`、`server/offline_pipeline.py`、`server/realdb_pipeline.py`、`perf_cli/ptde_datagen_engine.py` |
+
+回归口径：全量 pytest **1649 passed + 5 skipped**（新增 6 例：行偏移连续性、
+pk_column 泛化、缺省行为冻结、primitive 双口径类型矩阵、非 id 主键端到端），
+ruff All checks passed。协议新增字段均为可选缺省兼容（旧载荷解析行为不变）。
+遗留：`test_bind_ready_dataset_snapshot_recorded` 为异步构建 5s 轮询的时序
+敏感用例，全量跑偶发超时（与本次改动无关，复跑即绿）。
+
+---
+
 *B7 续批次 11 交接完成：T7.9 退役删除（datagen 整包 26 模块 + compat.py；
 收编归位 wire/direct/verify_min/llm_enhance + workload 补全；模型双居所；
 对照测试终态处置 −144；真库门控 PTDE 终态承接）。§13.2 六步骤代码工作
-全部闭环，B7 主线收口。*
+全部闭环，B7 主线收口。技术债清理见 §8。*

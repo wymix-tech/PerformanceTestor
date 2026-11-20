@@ -12,9 +12,10 @@ PTDE 字段分布 + 关系四元组，随后走 ``OfflinePipeline``（generate �
 - 表元数据：information_schema 内省（列名/类型/可空/主键/自增），
   缺失表 → legacy 同文案「表不存在或无可见列」；
 - 自增列：不进字段清单（DB 自动分配，legacy insert_columns 同口径）；
-- id 主键区间：``existing_max``（SELECT MAX(pk)）接入 IdRangeAllocator
-  （T4.5 既有数据检查）——追加灌数自既有最大值 +1 续区间，取代 legacy
-  ``refresh_seq_starts``「seq 起始值探测回写」的切换编排层决策落点；
+- 主键区间（pk_columns，任意单整型主键）：``existing_max``（SELECT MAX(pk)）
+  接入 IdRangeAllocator（T4.5 既有数据检查）——追加灌数自既有最大值 +1
+  续区间，取代 legacy ``refresh_seq_starts``「seq 起始值探测回写」的
+  切换编排层决策落点；
 - 规则翻译：``translate_fields``（orphan_rate 链：表级 → 全局 → 0；
   nullable_columns 由内省注入）；
 - ref 父表在任务清单内 → 声明关系四元组（db_fk；orphan_rate>0 降级
@@ -30,11 +31,12 @@ PTDE 字段分布 + 关系四元组，随后走 ``OfflinePipeline``（generate �
   服务层 MAX_ROWS / CLI spec 自负）。
 
 已知差异（观察期验收按统计容差口径，交接文档留痕）：
-- seq 规则落在 ``id`` 命名列 → 主键区间由 planned_range 接管
-  （seq_prefix/seq_start 不生效——连续性由 existing_max +1 结构保证）；
-  非 id 列 seq 语义逐值一致（row_index 上下文已接入 worker）；
-- 单实体分片大小固定 2,000,000 行（单分片覆盖 legacy 规模上限）；
-  超过 2M 行的多分片 sequential 列按分片内行号重启；
+- seq 规则落在主键列（pk_columns，缺省 ``id``，非 id 名主键按内省显式
+  给出）→ 主键区间由 planned_range 接管（seq_prefix/seq_start 不生效——
+  连续性由 existing_max +1 结构保证）；非主键列 seq 语义逐值一致
+  （row_index 上下文已接入 worker）；
+- 单实体分片大小固定 2,000,000 行；>2M 行多分片 sequential 列按实体
+  全局行偏移连续推进（技术债清理 2026-11-20：per-shard offset 落地）；
 - 语义提示（魔法值/ORM 关联 hints）与源码扫描不在 PTDE 通道
   （A2 映射产出器为 Schema 驱动）——on_hints 恒空，建议面板不再由
   灌数任务新增建议；
@@ -118,6 +120,7 @@ class TargetColumn:
     nullable: bool
     auto_increment: bool
     primary_key: bool
+    size: int = 0  # CHARACTER_MAXIMUM_LENGTH（文本列缺省生成长度口径）
 
 
 def _column_type_name(data_type: str) -> str:
@@ -133,7 +136,8 @@ def _introspect_table(conn, table: str) -> list[TargetColumn]:
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA "
+            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, "
+            "COALESCE(CHARACTER_MAXIMUM_LENGTH, 0) "
             "FROM information_schema.COLUMNS "
             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
             "ORDER BY ORDINAL_POSITION", (table,))
@@ -143,13 +147,14 @@ def _introspect_table(conn, table: str) -> list[TargetColumn]:
     if not rows:
         raise ValueError("表不存在或无可见列: " + table)
     cols = []
-    for name, data_type, nullable, key, extra in rows:
+    for name, data_type, nullable, key, extra, char_len in rows:
         cols.append(TargetColumn(
             name=name,
             type_name=_column_type_name(data_type),
             nullable=str(nullable).upper() == "YES",
             auto_increment="auto_increment" in str(extra or "").lower(),
             primary_key=key == "PRI",
+            size=int(char_len or 0),
         ))
     return cols
 
@@ -181,6 +186,7 @@ class _RunPlan:
     fields_by_entity: dict[str, list[dict]]
     relations: list[dict]
     existing_max: dict[str, int]
+    pk_columns: dict[str, str]
     seed: int
     def_name: str
     def_key: str
@@ -284,8 +290,10 @@ class PtdeDatagenEngine:
         active = {ts.table_name: ts.row_count for ts in spec.tables
                   if ts.row_count > 0}
 
-        # existing_max：单整型主键（自增任意名 / 非自增限 id 名）→ 追加区间
+        # existing_max + pk_columns：单整型主键（自增/非自增、任意列名——
+        # 技术债清理：非 id 名非自增主键 planned_range 泛化）→ 追加区间
         existing_max: dict[str, int] = {}
+        pk_columns: dict[str, str] = {}
         for name, cols in metas.items():
             if name not in active:
                 continue
@@ -293,10 +301,9 @@ class PtdeDatagenEngine:
             if len(pk_cols) != 1:
                 continue
             pk = pk_cols[0]
-            if not (pk.auto_increment or pk.name.lower() == "id"):
-                continue
             if pk.type_name not in _INT_PK_TYPES:
                 continue
+            pk_columns[name] = pk.name
             val = _scalar(conn, f"SELECT MAX({_validate_ident(pk.name, '主键列')}) "
                                 f"FROM {_validate_ident(name, '表名')}")
             existing_max[name] = int(val) if val is not None else 0
@@ -304,6 +311,10 @@ class PtdeDatagenEngine:
                 warnings.append(
                     f"表 {name} 已有存量主键（MAX={existing_max[name]}）："
                     "主键/外键区间自既有最大值 +1 续接（planned_range 追加语义）")
+            if not pk.auto_increment:
+                warnings.append(
+                    f"表 {name} 非自增主键列 {pk.name} 由 planned_range 接管"
+                    "（连续区间自既有最大值 +1，规则/缺省生成不再作用于该列）")
 
         active_set = set(active)
         relations: list[dict] = []
@@ -342,7 +353,8 @@ class PtdeDatagenEngine:
                     f"[{lo}, {hi}] 采样（域稀疏时孤儿由 verifyMin 如实暴露）")
 
             fields_by_entity[name] = [
-                ({"name": c.name, "type_name": c.type_name}
+                ({"name": c.name, "type_name": c.type_name,
+                  "size": c.size or 0}
                  | ({"distribution": dist}
                     if (dist := translated.distributions.get(c.name.lower())) is not None
                     else {}))
@@ -372,7 +384,7 @@ class PtdeDatagenEngine:
         return _RunPlan(
             dsn=dsn, conn_factory=factory, entities=dict(active),
             fields_by_entity=fields_by_entity, relations=relations,
-            existing_max=existing_max, seed=int(seed),
+            existing_max=existing_max, pk_columns=pk_columns, seed=int(seed),
             def_name=f"datagen-{first}",
             def_key=f"datagen-{uuid.uuid4().hex[:12]}",
             first_entity=first, last_entity=entity_names[-1],
@@ -415,7 +427,8 @@ class PtdeDatagenEngine:
             staging_base=self._staging_base,
             workers=self._workers,
             relations=plan.relations or None,
-            existing_max=plan.existing_max or None)
+            existing_max=plan.existing_max or None,
+            pk_columns=plan.pk_columns or None)
         spec_payload = {"name": plan.def_name,
                         "targets": {"rows": plan.entities},
                         "reproducibility": {"seed": plan.seed}}

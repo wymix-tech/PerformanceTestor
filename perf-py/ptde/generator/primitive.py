@@ -37,11 +37,15 @@ def _pick(rng=None):
     return rng if rng is not None else random
 
 
-def generate_default(col: ColumnMeta, rng=None):
-    """列类型默认生成器（承接原 DataGenService.generateDefault 行为）。"""
+def generate_default_for(type_name: str | None, size: int = 0, rng=None):
+    """列类型默认生成器（类型口径窄接口，技术债清理 2026-11-20）。
+
+    与 :func:`generate_default` 语义逐值一致（type_name/size 两要素）；
+    供不依赖宿主 wire 契约模型的调用方使用（worker 协议层等）。
+    """
     r = _pick(rng)
-    type_name = col.type_name if col.type_name is not None else "VARCHAR"
-    base = base_type(type_name)
+    t = type_name if type_name is not None else "VARCHAR"
+    base = base_type(t)
     if base == "INT":
         return r.randint(1, 99999)
     if base == "BIGINT":
@@ -55,8 +59,13 @@ def generate_default(col: ColumnMeta, rng=None):
     if base == "BIT":
         return r.randint(0, 1)
     if base == "TEXT":
-        return random_text(min(max(col.size, 1), 200), r)
-    return random_text(max(1, min(col.size, 64)), r)
+        return random_text(min(max(size, 1), 200), r)
+    return random_text(max(1, min(size, 64)), r)
+
+
+def generate_default(col: ColumnMeta, rng=None):
+    """列类型默认生成器（承接原 DataGenService.generateDefault 行为）。"""
+    return generate_default_for(col.type_name, size=col.size, rng=rng)
 
 
 def base_type(type_name: str) -> str:

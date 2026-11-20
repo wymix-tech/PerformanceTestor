@@ -202,3 +202,19 @@ def test_apply_rule_returns_string_for_varchar_column():
 
 def test_apply_rule_on_numeric_column_yields_number():
     assert prim.apply_rule(_seq("", 1), col("seq_no", "BIGINT"), 2) == 3
+
+
+# ---------------------------------------------------------------- 技术债清理
+
+
+def test_generate_default_for_parity_with_generate_default():
+    """generate_default_for 与 generate_default 语义逐值一致（类型矩阵）。"""
+    types = ["BIGINT", "INT", "SMALLINT", "TINYINT", "DOUBLE", "FLOAT",
+             "DECIMAL(18,2)", "DATETIME", "DATE", "TIMESTAMP", "BIT",
+             "TEXT", "VARCHAR(255)", "CHAR(32)", "ENUM('A','B')", None]
+    for t in types:
+        for size in (0, 64, 200):
+            c1 = prim.generate_default(ColumnMeta(name="c", type_name=t, size=size),
+                                       rng=random.Random(7))
+            c2 = prim.generate_default_for(t, size=size, rng=random.Random(7))
+            assert c1 == c2, f"type={t!r} size={size} 两口径不一致"

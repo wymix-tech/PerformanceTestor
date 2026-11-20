@@ -25,8 +25,8 @@ from server.ptde_repo import PtdeDatasetDefinitionModel, PtdeDatasetRepository
 JDBC = "jdbc:mysql://127.0.0.1:3306/demo"
 
 
-def _col(name, data_type, nullable="YES", key="", extra=""):
-    return (name, data_type, nullable, key, extra)
+def _col(name, data_type, nullable="YES", key="", extra="", char_len=0):
+    return (name, data_type, nullable, key, extra, char_len)
 
 
 class FakeCursor:
@@ -119,6 +119,7 @@ def _capture_pipeline(monkeypatch) -> dict:
     def spy(repo, dsn, fields, **kw):
         captured["relations"] = kw.get("relations")
         captured["existing_max"] = kw.get("existing_max")
+        captured["pk_columns"] = kw.get("pk_columns")
         return real(repo, dsn, fields, **kw)
 
     monkeypatch.setattr(server.realdb_pipeline, "build_realdb_pipeline", spy)
@@ -392,3 +393,25 @@ def test_zero_row_table_skipped(tmp_path, monkeypatch):
     assert "t_user" not in conn.rows, "0 行表跳过（legacy no-op 同口径）"
     assert captured["existing_max"] is None or "t_user" not in \
         (captured["existing_max"] or {})
+
+
+def test_non_auto_non_id_pk_planned_range_takeover(tmp_path, monkeypatch):
+    """技术债清理：非 id 名非自增主键由 planned_range 接管（区间自存量 +1）。"""
+    conn = FakeConn()
+    conn.columns["t_user"] = [
+        _col("code", "bigint", key="PRI"), _col("name", "varchar")]
+    conn.maxes["t_user"] = 40
+    holder = {"conn": conn}
+    captured = _capture_pipeline(monkeypatch)
+    engine = _engine(holder, tmp_path)
+    spec = DataGenSpec(jdbc_url=JDBC, db_user="u", db_password="p", seed=7,
+                       tables=[TableSpec("t_user", 5)])
+    result = engine.execute(spec)
+    assert result.success is True, result.error_msg
+    rows = conn.rows["t_user"]
+    assert [int(r[0]) for r in rows] == [41, 42, 43, 44, 45], \
+        "主键列 code 自存量最大值 +1 续区间（planned_range 接管）"
+    assert (captured["pk_columns"] or {}).get("t_user") == "code", \
+        "主键列名按内省显式下传（非 id 名泛化）"
+    assert any("planned_range 接管" in w for w in result.warnings), \
+        "接管决策留痕告警"

@@ -155,13 +155,15 @@ class EntityMapping:
 def normalize_relations(
     relations: Sequence[RelationModel | Mapping] | None,
     mapping: Mapping[str, EntityMapping],
+    pk_by_entity: Mapping[str, str] | None = None,
 ) -> list[RelationModel]:
     """关系规格归一化 + 显式校验（B7 续批次 8：关系映射接线缝）。
 
     - dict（JSON 原生四元组）→ ``RelationModel.model_validate``；
     - 四元组完整性、标识符合法性、子/父表与列均在实体映射内逐项校验
       （缺失/不一致显式失败，不静默降级为空集）；
-    - 子列不得为 ``id``（主键区间语义列，不承载外键）。
+    - 子列不得为该实体的 planned_range 主键列（pk_columns，缺省 ``id``；
+      主键区间语义列不承载外键）。
     """
     normalized: list[RelationModel] = []
     for r in list(relations or []):
@@ -180,9 +182,11 @@ def normalize_relations(
             if col not in m.columns:
                 raise OfflinePipelineError(
                     f"关系列 {table}.{col} 不在实体映射字段中（清单不一致，显式失败）")
-        if rel.child_column == "id":
+        pk_col = (pk_by_entity or {}).get(rel.child_table, "id")
+        if rel.child_column == pk_col:
             raise OfflinePipelineError(
-                "关系子列不得为 id（主键区间语义列，不承载外键，显式失败）")
+                f"关系子列不得为 {rel.child_table} 的主键区间语义列 {pk_col!r}"
+                "（planned_range 接管列不承载外键，显式失败）")
         normalized.append(rel)
     return normalized
 
@@ -334,6 +338,8 @@ class OfflinePipeline:
       B7 续批次 8 接线缝；缺省 None = 空集，verify 关系层退回既有口径）。
       声明后生成侧自动为子表外键列推导父实体主键区间采样（见
       ``_apply_fk_fields``），verify 关系层全量零孤儿核对按实映射执行。
+    - ``pk_columns``：各实体 planned_range 接管的主键列名（缺省 ``id``；
+      非 id 名非自增主键由调用方按 Schema 显式给出——技术债清理泛化）。
     """
 
     def __init__(
@@ -353,6 +359,7 @@ class OfflinePipeline:
         endpoint_probe: Callable[[], dict[str, int]] | None = None,
         relations: Sequence[RelationModel | Mapping] | None = None,
         existing_max: Mapping[str, int] | None = None,
+        pk_columns: Mapping[str, str] | None = None,
     ) -> None:
         self._repo = repo
         self._conn_factory = conn_factory
@@ -362,7 +369,11 @@ class OfflinePipeline:
         }
         if not self._mapping:
             raise OfflinePipelineError("entity_mapping 为空（映射缝不得留空伪装可用）")
-        self._relations = normalize_relations(relations, self._mapping)
+        # 各实体 planned_range 接管的主键列名（技术债清理：非 id 名非自增
+        # 主键泛化；缺省 "id" = 历史行为）
+        self._pk_columns = dict(pk_columns or {})
+        self._relations = normalize_relations(relations, self._mapping,
+                                              pk_by_entity=self._pk_columns)
         self._validate_orphan_semantics()
         # 既有数据最大 ID（T4.5 三重检查之一）：追加灌数自既有最大值 +1 续区间；
         # 缺省 None = 空表构建口径（[1, N]，既有行为不变）
@@ -564,6 +575,7 @@ class OfflinePipeline:
             root_seed=seed,
             plan_fingerprint=row.spec_fingerprint,
             staging=staging,  # 分片输出路径由 staging 分配（file 模式必需）
+            pk_by_entity=self._pk_columns or None,
         )
         if not tasks:
             raise OfflinePipelineError("分片计划为空（无任何分片，显式失败）")

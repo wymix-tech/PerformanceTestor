@@ -170,13 +170,15 @@ def _mysql_column_def(field: FieldSpec) -> str:
 
 def entity_mappings_from_fields(
     fields_by_entity: Mapping[str, Sequence[FieldSpec]],
+    pk_by_entity: Mapping[str, str] | None = None,
 ) -> dict[str, EntityMapping]:
     """字段规格 → EntityMapping（A2 最小版映射产出器）。
 
     - DDL 由 FieldSpec.type_name 经 ``_MYSQL_TYPES`` 映射生成
       （``CREATE TABLE IF NOT EXISTS`` 形态，对齐 EntityMapping 校验口径）；
-    - ``id`` 字段承载主键区间语义（worker planned_range 主键自预分配），
-      命名为 ``id`` 时落 NOT NULL PRIMARY KEY；
+    - 主键列承载 planned_range 区间语义（worker 主键自预分配），落
+      NOT NULL PRIMARY KEY；列名经 ``pk_by_entity``（缺省 ``id``，
+      非 id 名主键由调用方按 Schema 显式给出）；
     - 未知类型显式失败（防口径漂移）。
     """
     mappings: dict[str, EntityMapping] = {}
@@ -185,10 +187,11 @@ def entity_mappings_from_fields(
         specs = [_field_spec_of(f) for f in fields]
         if not specs:
             raise RealDbPipelineError(f"实体 {entity} 字段规格为空（显式失败）")
+        pk = (pk_by_entity or {}).get(entity, "id")
         cols = []
         for f in specs:
             col = _mysql_column_def(f)
-            if f.name == "id":
+            if f.name == pk:
                 col += " NOT NULL PRIMARY KEY"
             cols.append(col)
         ddl = (f"CREATE TABLE IF NOT EXISTS {entity} (\n  "
@@ -213,6 +216,7 @@ def build_realdb_pipeline(
     conn_factory: Callable[[], object] | None = None,
     relations: Sequence[Mapping] | None = None,
     existing_max: Mapping[str, int] | None = None,
+    pk_columns: Mapping[str, str] | None = None,
 ) -> OfflinePipeline:
     """MySQL 真库通道执行体装配（编排协议不变，换三处注入）。
 
@@ -226,6 +230,8 @@ def build_realdb_pipeline(
       映射一致性校验在 ``OfflinePipeline``（normalize_relations）；
     - ``existing_max``：既有数据每实体最大 ID（追加灌数续接区间，
       T4.5 既有数据检查；缺省 None = 空表构建口径）；
+    - ``pk_columns``：各实体 planned_range 接管的主键列名（缺省 ``id``；
+      非 id 名主键由调用方按内省显式给出）。
     - ``register_builtin_adapters()`` 宿主显式注册（幂等，overwrite=True）。
     """
     from ptde.adapters import register_builtin_adapters
@@ -240,7 +246,7 @@ def build_realdb_pipeline(
     return OfflinePipeline(
         repo,
         factory,
-        entity_mappings_from_fields(fields_by_entity),
+        entity_mappings_from_fields(fields_by_entity, pk_by_entity=pk_columns),
         product="mysql",
         batch_size=max(1, batch_size),
         loader_chain=chain,
@@ -252,4 +258,5 @@ def build_realdb_pipeline(
         endpoint_probe=endpoint_probe,
         relations=relations,
         existing_max=existing_max,
+        pk_columns=pk_columns,
     )

@@ -21,8 +21,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-# EndpointRef/SourceFile/SqlAccess 取自 lang_java 分析链模型居所（与
-# SQL/ORM 解析器返回对象同类——SqlAccess 枚举跨模块不可比）
+# EndpointRef/SourceFile/SqlAccess 取自 lang_java 分析链兼容垫片
+# （模型已统一居所 ptde.models.wire，SqlAccess 枚举跨模块可比）
 from ptde.analyzer.lang_java._legacy_model import EndpointRef, SourceFile, SqlAccess
 from ptde.analyzer.lang_java.call_graph_analyzer import TRIPPED_CONFIDENCE, CallGraphAnalyzer
 from ptde.analyzer.lang_java.endpoint_index_parser import EndpointIndexParser
