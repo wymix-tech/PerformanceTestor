@@ -6,6 +6,9 @@
 1. P95 相对基线下降 ≥ 30%（P95_DROP_PCT）；
 2. 无回归（baseline_compare.diff().regressed == False：QPS 降幅 ≤10%、P95 涨幅 ≤20%、
    错误率上升 ≤5 个百分点）。
+压测瓶颈类（stress/stress_bottleneck，吞吐/容量瓶颈）放宽为「或」关系：
+P95 下降 ≥ 30% **或** QPS 提升 ≥ 15%（STRESS_QPS_GAIN_PCT），且无回归；
+verify_json 附加 criteria 字段说明命中规则。slow_sql / hot_method 仍沿用原「且」规则。
 达标则问题自动流转 resolved，并写 verify_json 结论。
 
 异步语义（对齐 Java）：verify 只做「校验快照 + 启动重放 + 落库进行中结论」（毫秒级返回），
@@ -28,6 +31,8 @@ from server.baseline_compare import diff as baseline_diff
 log = logging.getLogger(__name__)
 
 P95_DROP_PCT = 30.0      # 达标阈值：P95 相对基线下降百分比
+STRESS_QPS_GAIN_PCT = 15.0  # 压测瓶颈类达标备选阈值：QPS 相对基线提升百分比
+STRESS_ISSUE_TYPES = ("stress", "stress_bottleneck")  # 吞吐/容量瓶颈类问题类型
 POLL_INTERVAL_MS = 500   # 轮询间隔毫秒
 WAIT_BUFFER_SEC = 60     # 轮询等待时在压测时长之上额外预留的收尾时间（秒）
 MIN_WAIT_SEC = 30        # 等待预算下限（秒）：防 timeoutSec/durationSec 误配 0 秒判超时
@@ -63,6 +68,7 @@ class _VerifyResult:
         self.qpsBefore = 0.0
         self.qpsAfter = 0.0
         self.regressed = False
+        self.criteria = ""  # 压测瓶颈类：说明命中的验收规则（非空才写入 verify_json）
         self.status = ""
         self.message = ""
         self.verifyTime = None
@@ -231,6 +237,10 @@ class IssueVerifyService:
         p95_before = self._metric(snapshot, "p95Ms")
         p95_after = self._metric(finished, "p95Ms")
         drop_pct = 0 if p95_before <= 0 else (p95_before - p95_after) / p95_before * 100
+        qps_before = self._metric(snapshot, "qps")
+        qps_after = self._metric(finished, "qps")
+        qps_gain_pct = 0 if qps_before <= 0 else (qps_after - qps_before) / qps_before * 100
+        is_stress = issue.issue_type in STRESS_ISSUE_TYPES
 
         r = _VerifyResult(issue.id)
         r.snapshotTaskId = snapshot.id
@@ -238,19 +248,33 @@ class IssueVerifyService:
         r.p95Before = p95_before
         r.p95After = p95_after
         r.p95DropPct = _round(drop_pct)
-        r.qpsBefore = self._metric(snapshot, "qps")
-        r.qpsAfter = self._metric(finished, "qps")
+        r.qpsBefore = qps_before
+        r.qpsAfter = qps_after
         r.regressed = d["regressed"]
         r.rows = [{"label": row["label"], "base": row["base"], "cur": row["cur"],
                    "deltaPct": row["deltaPct"], "improved": row["improved"],
                    "regressed": row["regressed"]} for row in d["rows"]]
         r.verifyTime = datetime.now()
-        r.passed = drop_pct >= P95_DROP_PCT and not d["regressed"]
+        if is_stress:
+            # 吞吐/容量瓶颈：「P95 下降 ≥30% 或 QPS 提升 ≥15%」，且无回归
+            r.passed = not d["regressed"] and (
+                drop_pct >= P95_DROP_PCT or qps_gain_pct >= STRESS_QPS_GAIN_PCT)
+            r.criteria = (
+                ("P95 下降 ≥30%" if drop_pct >= P95_DROP_PCT else "QPS 提升 ≥15%")
+                + "，且无指标回归"
+                if r.passed else "P95 下降 ≥30% 或 QPS 提升 ≥15%，且无指标回归")
+        else:
+            # slow_sql / hot_method：沿用 P95 下降 ≥30% 且无回归
+            r.passed = drop_pct >= P95_DROP_PCT and not d["regressed"]
         r.status = "resolved" if r.passed else issue.status
         r.message = (
             f"验证通过：P95 由 {_fmt(p95_before)}ms 降至 {_fmt(p95_after)}ms"
             f"（下降 {_fmt(r.p95DropPct)}%），无指标回归，问题已自动关闭"
-            if r.passed else self._not_passed_message(drop_pct, d, p95_before, p95_after))
+            if r.passed and drop_pct >= P95_DROP_PCT else
+            (f"验证通过：QPS 由 {_fmt(qps_before)} 提升至 {_fmt(qps_after)}"
+             f"（提升 {_fmt(_round(qps_gain_pct))}%，命中 QPS ≥15% 验收规则），"
+             "无指标回归，问题已自动关闭"
+             if r.passed else self._not_passed_message(drop_pct, d, p95_before, p95_after)))
         return r
 
     def _not_passed_message(self, drop_pct: float, d: dict,
@@ -406,6 +430,8 @@ class IssueVerifyService:
             "message": r.message,
             "verifyTime": "" if r.verifyTime is None else r.verifyTime.isoformat(),
         }
+        if r.criteria:
+            node["criteria"] = r.criteria
         rows = []
         for row in r.rows or []:
             item: dict = {}

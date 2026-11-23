@@ -107,11 +107,12 @@ def env(tmp_path):
     return client, fac, source_repo, snapshot_id, fake
 
 
-def _seed_issue(fac, snapshot_id: int, status: str = "analyzed") -> int:
+def _seed_issue(fac, snapshot_id: int, status: str = "analyzed",
+                issue_type: str = "stress_bottleneck") -> int:
     now = datetime.now()
     with fac() as s:
         issue = PerformanceIssueModel(
-            issue_type="stress_bottleneck", app_name="demo", title="压测瓶颈",
+            issue_type=issue_type, app_name="demo", title="压测瓶颈",
             evidence_json="{}", status=status, stress_task_id=snapshot_id,
             create_time=now)
         s.add(issue)
@@ -176,6 +177,7 @@ def test_verify_passed_resolves_issue(env):
     # 结论 JSON 落库（rows 复用基线对比表格语义）
     stored = json.loads(detail["issue"]["verifyJson"])
     assert stored["passed"] is True and stored["status"] == "resolved"
+    assert stored["criteria"] == "P95 下降 ≥30%，且无指标回归"
     assert [r["label"] for r in stored["rows"]] == ["QPS", "P95 (ms)", "P99 (ms)", "错误率 (%)"]
     assert stored["rows"][0] == {"label": "QPS", "base": "100", "cur": "120",
                                  "deltaPct": "+20.0%", "improved": True, "regressed": False}
@@ -210,6 +212,38 @@ def test_verify_regressed_blocks_pass(env):
     assert data["message"] == ("验证未达标：P95 由 100ms 变为 55ms（下降 45%，需 ≥ 30%）；"
                                "且存在指标回归：QPS -30.0%。问题保持原状态，"
                                "建议复查修复是否生效。")
+
+
+def test_verify_stress_type_passes_via_qps_gain(env):
+    """Fix-5：压测瓶颈类「或」规则——P95 仅降 10% 但 QPS +20% ≥ 15% → 达标，
+    message 走 QPS 文案，criteria 落库说明命中规则。"""
+    client, fac, _, snapshot_id, fake = env
+    issue_id = _seed_issue(fac, snapshot_id)
+    fake.replay_result = {"qps": 120.0, "p95Ms": 90.0, "p99Ms": 150.0, "errorRate": 0.5}
+    client.post(f"/api/source/issues/{issue_id}/verify")
+    data = client.get(f"/api/source/issues/{issue_id}/verify").json()["data"]
+    assert data["passed"] is True and data["status"] == "resolved"
+    assert data["regressed"] is False
+    assert data["message"] == ("验证通过：QPS 由 100 提升至 120"
+                               "（提升 20%，命中 QPS ≥15% 验收规则），"
+                               "无指标回归，问题已自动关闭")
+    stored = json.loads(client.get(f"/api/source/issues/{issue_id}").json()
+                        ["data"]["issue"]["verifyJson"])
+    assert stored["criteria"] == "QPS 提升 ≥15%，且无指标回归"
+
+
+def test_verify_non_stress_type_keeps_p95_only_rule(env):
+    """Fix-5：非压测类（slow_sql / hot_method）沿用「且」规则——
+    P95 仅降 10%，即便 QPS +20% 也不达标，且 verify_json 无 criteria 字段。"""
+    client, fac, _, snapshot_id, fake = env
+    issue_id = _seed_issue(fac, snapshot_id, issue_type="slow_sql")
+    fake.replay_result = {"qps": 120.0, "p95Ms": 90.0, "p99Ms": 150.0, "errorRate": 0.5}
+    client.post(f"/api/source/issues/{issue_id}/verify")
+    data = client.get(f"/api/source/issues/{issue_id}/verify").json()["data"]
+    assert data["passed"] is False and data["status"] == "analyzed"
+    stored = json.loads(client.get(f"/api/source/issues/{issue_id}").json()
+                        ["data"]["issue"]["verifyJson"])
+    assert "criteria" not in stored
 
 
 def test_verify_replay_start_failure_persisted(env):

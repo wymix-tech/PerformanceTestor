@@ -83,12 +83,16 @@ public final class HttpClientSupport {
             if (first == null) {
                 return;
             }
-            if (first.invoke(request, "traceparent") != null) {
+            String tp = TraceContext.currentTraceparent();
+            if (tp != null && !tp.isBlank()
+                    && first.invoke(request, "traceparent") != null) {
                 return; // 应用自身已注入：不覆盖
             }
             Method add = reqMethod(request, "addHeader", String.class, String.class);
             if (add != null) {
-                add.invoke(request, "traceparent", TraceContext.currentTraceparent());
+                if (tp != null && !tp.isBlank()) {
+                    add.invoke(request, "traceparent", tp);
+                }
                 injectStressHeader(v -> {
                     try {
                         add.invoke(request, "X-Perf-Stress-Task-Id", v);
@@ -126,7 +130,10 @@ public final class HttpClientSupport {
                 return request;
             }
             Method set = header;
-            set.invoke(builder, "traceparent", TraceContext.currentTraceparent());
+            String tp = TraceContext.currentTraceparent();
+            if (tp != null && !tp.isBlank()) {
+                set.invoke(builder, "traceparent", tp);
+            }
             injectStressHeader(v -> {
                 try {
                     set.invoke(builder, "X-Perf-Stress-Task-Id", v);
@@ -162,7 +169,10 @@ public final class HttpClientSupport {
             if (set == null) {
                 return;
             }
-            set.invoke(h, "traceparent", TraceContext.currentTraceparent());
+            String tp = TraceContext.currentTraceparent();
+            if (tp != null && !tp.isBlank()) {
+                set.invoke(h, "traceparent", tp);
+            }
             injectStressHeader(v -> {
                 try {
                     set.invoke(h, "X-Perf-Stress-Task-Id", v);

@@ -125,12 +125,45 @@ def test_parse_k6_filters_warmup_and_bad_lines():
     stats = HistogramStatistician()
     assert parse_k6_json_line(_point("http_req_duration", 100, 0.5), stats, 1000) is False
     assert parse_k6_json_line(_point("http_req_duration", 100, 1.2), stats, 1000) is True
-    assert parse_k6_json_line(_point("http_req_failed", 1, 1.3), stats, 1000) is True
+    assert parse_k6_json_line(_point("http_req_failed", 1, 1.3), stats, 1000) is False  # failed 指标忽略
     assert parse_k6_json_line(_point("vus", 10, 1.4), stats, 1000) is False  # 非目标指标
     assert parse_k6_json_line("not-json", stats, 1000) is False  # 脏行容错
     assert parse_k6_json_line(json.dumps({"type": "Metric", "name": "x"}), stats, 1000) is False
     s = stats.build_summary(10)
-    assert s["total"] == 2 and s["errors"] == 1  # failed 指标计错误，不计延迟桶
+    assert s["total"] == 1 and s["errors"] == 0
+
+
+def test_parse_k6_ignores_failed_point_no_double_counting():
+    """Fix-1 回归：k6 每次请求同时输出 duration + failed 两条 Point，
+    仅统计 duration——total == 1、p50 为请求真实耗时（而非 total == 2、p50 == 0）。"""
+    stats = HistogramStatistician()
+    assert parse_k6_json_line(_point("http_req_duration", 42, 2.0,
+                                     {"expected_response": "true"}), stats, 1000) is True
+    assert parse_k6_json_line(_point("http_req_failed", 0, 2.0), stats, 1000) is False
+    s = stats.build_summary(1)
+    assert s["total"] == 1 and s["errors"] == 0
+    assert s["p50"] == 42 and s["p95"] == 42 and s["avg"] == 42.0
+
+
+def test_executor_duration_includes_warmup():
+    """Fix-1 回归：executor 总时长 = warmup + duration，正式期过滤预热后仍跑满 duration。"""
+    # constant-vus：warmup 10 + duration 30 → 40s
+    s1 = _scenario(duration_sec=30, warmup_sec=10)
+    assert _executor_of(s1)[1]["duration"] == "40s"
+    # constant-arrival-rate 同语义
+    s2 = _scenario(qps_limit=100, duration_sec=30, warmup_sec=10,
+                   request=RequestSpec.model_construct(
+                       url="http://h/a", method="GET", headers={}, body=None,
+                       assertions=[], csv=None))
+    assert _executor_of(s2)[1]["duration"] == "40s"
+    assert '"duration": "40s"' in generate_k6_script(s2)
+    # ramping-vus：warmup(10) > ramp_up(5) → 第二阶段补足 10+30-5=35s
+    s3 = _scenario(ramp_up_sec=5, warmup_sec=10, duration_sec=30)
+    stages = _executor_of(s3)[1]["stages"]
+    assert stages[0]["duration"] == "5s" and stages[1]["duration"] == "35s"
+    # ramping-vus：warmup(5) ≤ ramp_up(10) → 第二阶段维持 duration 30s
+    s4 = _scenario(ramp_up_sec=10, warmup_sec=5, duration_sec=30)
+    assert _executor_of(s4)[1]["stages"][1]["duration"] == "30s"
 
 
 # ---------------------------------------------------------------- 分布式合并

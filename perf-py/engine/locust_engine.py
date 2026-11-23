@@ -254,15 +254,17 @@ def run_locust(
         last_cpu = os.times()
         while runner.state not in ("stopped", "stopping"):
             t0 = time.monotonic()
-            last_times = os.times()
             gevent.sleep(1.0)
+            # CPU 快照在 sleep 之后读取：以窗口末值与上一窗口末值做差，
+            # 避免首秒 cpu_delta≈0 与逐秒滞后 1 秒的错位。
+            now_cpu = os.times()
             drift_ms = (time.monotonic() - t0 - 1.0) * 1000
-            cpu_delta = ((last_times.user + last_times.system)
+            cpu_delta = ((now_cpu.user + now_cpu.system)
                          - (last_cpu.user + last_cpu.system))
             ncpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") \
                 else (os.cpu_count() or 1)
             cpu_pct = max(0.0, min(100.0, cpu_delta * 100.0 / ncpu))
-            last_cpu = last_times
+            last_cpu = now_cpu
             # 仅统计正式期（warmup 期爬坡抖动不代表发压能力饱和）
             if state["formal_start"] is not None \
                     and time.time() >= state["formal_start"]:

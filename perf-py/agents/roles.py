@@ -42,6 +42,8 @@ ROLE_ANALYSIS = RoleDef(
         # P1-2 在线观测查询工具：直接查平台库运行态证据，形成自动归因证据链
         "jvm_metrics_query", "slow_sql_query", "trace_query", "hotspot_query",
         "db_explain_run",
+        # P2-1 火焰图热点路径：与 hotspot_query 叶帧视图互补
+        "profile_flamegraph_summary",
     ),
     system_prompt=(
         "职责：性能归因分析 Agent（只读）。\n"
@@ -51,6 +53,9 @@ ROLE_ANALYSIS = RoleDef(
         "回溯最近时间窗。\n"
         "- 命中慢 SQL 后调用 db_explain_run 查看执行计划（仅 SELECT/WITH）；"
         "再结合 source_scan 关联 Mapper/表业务语义定位代码。\n"
+        "- 存在 CPU / 内存分配 / 锁热点（hotspot_query 有结果）时<b>优先调用</b> "
+        "profile_flamegraph_summary 获取完整调用路径 Top N（叶帧视图看不到中间层），"
+        "再结合 source_scan 定位根因代码。\n"
         "- 基于压测 Agent 传递的分档点调用 capacity_analyze 评估容量与拐点；"
         "有慢日志输入时可用 slowlog_analyze 交叉核对；必要时 stress_result_read 复核工件。\n"
         "- 结束时输出完整证据链：现象（指标）→ 运行态证据（JVM/慢 SQL/Trace/热点）→ "

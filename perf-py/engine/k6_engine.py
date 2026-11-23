@@ -37,28 +37,38 @@ K6_METRIC_FAILED = "http_req_failed"
 
 
 def _executor_of(scenario: Scenario) -> tuple[str, dict]:
-    """负载参数 → k6 executor（类型 + 参数）。"""
+    """负载参数 → k6 executor（类型 + 参数）。
+
+    duration 均含 warmup 期：formal_start_ms 按 warmup 过滤样本后，
+    正式采集仍能完整达到 load.duration_sec。
+    """
     load = scenario.load
+    total_sec = load.warmup_sec + load.duration_sec
     if load.qps_limit > 0:
         return "constant-arrival-rate", {
             "rate": load.qps_limit,
             "timeUnit": "1s",
-            "duration": f"{load.duration_sec}s",
+            "duration": f"{total_sec}s",
             "preAllocatedVUs": max(1, load.concurrency),
             "maxVUs": max(1, load.concurrency),
         }
     if load.ramp_up_sec > 0:
+        # warmup > ramp_up 时正式期起点（warmup 结束）落在第二阶段中途，
+        # 第二阶段需补足差值，确保正式期完整跑满 load.duration_sec。
+        formal_stage_sec = load.duration_sec
+        if load.warmup_sec > load.ramp_up_sec:
+            formal_stage_sec = load.warmup_sec + load.duration_sec - load.ramp_up_sec
         return "ramping-vus", {
             "startVUs": 0,
             "stages": [
                 {"duration": f"{load.ramp_up_sec}s", "target": load.concurrency},
-                {"duration": f"{load.duration_sec}s", "target": load.concurrency},
+                {"duration": f"{formal_stage_sec}s", "target": load.concurrency},
             ],
             "gracefulRampDown": "0s",
         }
     return "constant-vus", {
         "vus": load.concurrency,
-        "duration": f"{load.duration_sec}s",
+        "duration": f"{total_sec}s",
     }
 
 
@@ -291,8 +301,11 @@ export const options = {{
 
 def parse_k6_json_line(line: str, stats: HistogramStatistician,
                        formal_start_ms: int) -> bool:
-    """解析 k6 JSON 输出一行；Point 命中 http_req_duration/failed 时记录统计。
+    """解析 k6 JSON 输出一行；Point 命中 http_req_duration 时记录统计。
 
+    忽略 http_req_failed（k6 每次请求会同时输出两条 Point，重复统计会导致
+    total/QPS 虚高 2 倍且 50% 样本为 0ms；成败由 duration 的
+    tags.expected_response 判定）。
     返回是否计入正式期（warmup 期样本按时间过滤，不计入统计，对齐 Locust/JMeter）。
     """
     line = line.strip()
@@ -306,17 +319,17 @@ def parse_k6_json_line(line: str, stats: HistogramStatistician,
         return False
     data = obj.get("data") or {}
     metric = data.get("metric")
-    if metric not in (K6_METRIC_DURATION, K6_METRIC_FAILED):
+    # k6 每次请求会同时输出 http_req_duration 与 http_req_failed 两条 Point；
+    # 仅统计 duration，忽略 failed（成败由 tags.expected_response 判定），
+    # 否则 total/QPS 虚高 2 倍且 50% 样本为 0ms 拉垮分位数。
+    if metric != K6_METRIC_DURATION:
         return False
     ts_ms = _point_time_ms(data.get("time"))
     if ts_ms is not None and ts_ms < formal_start_ms:
         return False  # warmup 期不计入统计（对齐 Java/Locust 语义）
     value = data.get("value")
-    if metric == K6_METRIC_FAILED:
-        stats.record(0, bool(value))
-    else:
-        # 失败请求的 duration 也计入直方图（与 Locust on_request 语义一致）
-        stats.record(float(value or 0), _point_failed(data.get("tags")))
+    # 失败请求的 duration 也计入直方图（与 Locust on_request 语义一致）
+    stats.record(float(value or 0), _point_failed(data.get("tags")))
     return True
 
 

@@ -123,6 +123,8 @@ def test_roles_tool_subsets():
         # P1-2 在线观测查询工具
         "jvm_metrics_query", "slow_sql_query", "trace_query", "hotspot_query",
         "db_explain_run",
+        # P2-1 火焰图热点路径（Fix-4）
+        "profile_flamegraph_summary",
     }
     assert ROLE_ADVISORY.tool_names == (), "修复建议 Agent 纯推理"
 
