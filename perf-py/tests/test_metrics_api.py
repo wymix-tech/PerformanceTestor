@@ -143,7 +143,8 @@ def test_traces_list_filter_and_detail(ctx):
     data = client.get("/api/traces", params={"app": "demo", "method": "Order",
                                             "minCostMs": 100}).json()["data"]["items"]
     assert [i["traceId"] for i in data] == ["t1"]
-    assert set(data[0]) == {"id", "traceId", "appName", "rootMethod", "totalMs", "startTime"}
+    assert set(data[0]) == {"id", "traceId", "appName", "rootMethod", "totalMs",
+                            "startTime", "stressTaskId"}
     assert "traceJson" not in data[0]  # 列表不携带调用树
 
     detail = client.get("/api/traces/t1").json()

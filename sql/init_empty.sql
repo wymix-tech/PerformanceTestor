@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS jvm_metric (
     thread_count     INT           NOT NULL DEFAULT 0 COMMENT '线程数',
     cpu_usage        DOUBLE        NOT NULL DEFAULT 0 COMMENT '进程 CPU 使用率 %',
     system_cpu       DOUBLE        NOT NULL DEFAULT 0 COMMENT '系统 CPU 使用率 %',
+    extra_metrics    TEXT          NULL COMMENT 'P1-5 扩展指标 JSON（连接池/容器线程池/直接内存/Metaspace/线程状态，旧探针为 NULL）',
     PRIMARY KEY (id, collect_time),
     KEY idx_app_time (app_name, collect_time, id)
 ) ENGINE = InnoDB COMMENT = 'JVM 指标时序数据'
@@ -81,9 +82,11 @@ CREATE TABLE IF NOT EXISTS trace_chain (
     trace_json   MEDIUMTEXT    NOT NULL COMMENT '调用树 JSON（TraceNode 树，含每层耗时与占比）',
     total_ms     DOUBLE        NOT NULL DEFAULT 0 COMMENT '总耗时 ms',
     start_time   DATETIME      NOT NULL COMMENT '链路开始时间',
+    stress_task_id BIGINT      NULL COMMENT '触发压测任务 ID（压测流量染色，非压测流量为 NULL）',
     PRIMARY KEY (id),
     UNIQUE KEY uk_trace (trace_id),
-    KEY idx_app_time (app_name, start_time, id)
+    KEY idx_app_time (app_name, start_time, id),
+    KEY idx_stress_task (stress_task_id, start_time)
 ) ENGINE = InnoDB COMMENT = '业务方法调用链';
 
 -- ---------------------------------------------------------------------
@@ -98,8 +101,10 @@ CREATE TABLE IF NOT EXISTS slow_sql (
     db_host       VARCHAR(255)  NOT NULL DEFAULT '' COMMENT '数据库地址（慢日志解析来源）',
     method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶，如 Controller → Service → Mapper）',
     execute_time  DATETIME      NOT NULL COMMENT '执行时间',
+    stress_task_id BIGINT      NULL COMMENT '触发压测任务 ID（压测流量染色，非压测流量为 NULL）',
     PRIMARY KEY (id),
     KEY idx_app_time (app_name, execute_time, id),
+    KEY idx_stress_task (stress_task_id, execute_time),
     KEY idx_cost (cost_ms)
 ) ENGINE = InnoDB COMMENT = '慢 SQL 记录';
 
@@ -115,8 +120,10 @@ CREATE TABLE IF NOT EXISTS slow_command (
     trace_id      VARCHAR(64)   NULL COMMENT '关联调用链 ID（未采样时为空）',
     method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶）',
     execute_time  DATETIME      NOT NULL COMMENT '执行时间',
+    stress_task_id BIGINT      NULL COMMENT '触发压测任务 ID（压测流量染色，非压测流量为 NULL）',
     PRIMARY KEY (id),
     KEY idx_app_time (app_name, execute_time, id),
+    KEY idx_stress_task (stress_task_id, execute_time),
     KEY idx_type (type, execute_time),
     KEY idx_trace (trace_id),
     KEY idx_cost (cost_ms)

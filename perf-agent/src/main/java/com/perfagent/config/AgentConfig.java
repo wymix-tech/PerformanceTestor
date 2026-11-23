@@ -75,14 +75,24 @@ public class AgentConfig {
     /** 是否启用 JMX 采集 */
     public boolean jmxEnabled = true;
     /**
+     * 是否启用跨线程异步上下文透传（P1-5，默认 false）：
+     * 拦截 {@code Executor#execute(Runnable)} 包装任务，子线程恢复调用链与压测染色。
+     * 默认关闭：验证稳定后再开启（改造面涉及线程池提交路径，需灰度观察）。
+     */
+    public boolean asyncTraceEnabled = false;
+    /**
      * 是否启用 Servlet Filter 根模式（默认 true）：以最外层 Filter#doFilter 作为
      * 调用链唯一采样决策点，消除采样稀释与半截链路。非 Servlet 应用无匹配类，零影响。
      */
     public boolean filterRootEnabled = true;
     /** 是否启用方法级 CPU 热点采样（默认 false，需要时开启控制常态开销） */
     public boolean hotspotEnabled = false;
-    /** CPU 热点采样周期毫秒（默认 10ms = 每秒 100 样本/线程） */
-    public int hotspotIntervalMs = 10;
+    /**
+     * CPU 热点采样周期毫秒（默认 50ms）。下限 20ms（HotspotSampler 防呆强制）：
+     * 高频全线程 getThreadInfo 会触发 Safepoint 风暴，影响被测应用停顿；
+     * P2 预留替换为 JDK Flight Recorder（JFR）连续剖析。
+     */
+    public int hotspotIntervalMs = 50;
     /** CPU 热点聚合上报周期秒 */
     public int hotspotReportSec = 30;
     /** 每次上报的热点方法数上限 */
@@ -126,6 +136,7 @@ public class AgentConfig {
         if (kv.containsKey("middlewareEnabled")) cfg.middlewareEnabled = Boolean.parseBoolean(kv.get("middlewareEnabled"));
         if (kv.containsKey("slowCommandThresholdMs")) cfg.slowCommandThresholdMs = Long.parseLong(kv.get("slowCommandThresholdMs"));
         if (kv.containsKey("jmxEnabled")) cfg.jmxEnabled = Boolean.parseBoolean(kv.get("jmxEnabled"));
+        if (kv.containsKey("asyncTraceEnabled")) cfg.asyncTraceEnabled = Boolean.parseBoolean(kv.get("asyncTraceEnabled"));
         if (kv.containsKey("filterRootEnabled")) cfg.filterRootEnabled = Boolean.parseBoolean(kv.get("filterRootEnabled"));
         if (kv.containsKey("hotspotEnabled")) cfg.hotspotEnabled = Boolean.parseBoolean(kv.get("hotspotEnabled"));
         if (kv.containsKey("hotspotIntervalMs")) cfg.hotspotIntervalMs = Integer.parseInt(kv.get("hotspotIntervalMs"));

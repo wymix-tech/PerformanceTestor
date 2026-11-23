@@ -67,6 +67,18 @@ async def start(request: Request) -> dict:
         return _err(str(exc))
 
 
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: int, request: Request) -> dict:
+    """中止运行中/排队中的压测任务（P1-3）：SIGTERM→SIGKILL，状态置 cancelled。
+
+    任务已结束 / 运行器不支持取消 / 任务不存在 → code=1 + 文案原样。
+    """
+    try:
+        return _ok(request.app.state.stress_service.cancel(task_id))
+    except ValueError as exc:
+        return _err(str(exc))
+
+
 @router.post("/gate")
 def gate(request: Request,
          payload: dict = Body(...),

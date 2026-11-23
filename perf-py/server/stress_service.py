@@ -44,6 +44,9 @@ from server.stress_request import (
 
 log = logging.getLogger(__name__)
 
+# K5 生产环境标识（与 server/dataset_service.py 同口径小写包含匹配）
+PRODUCTION_MARKERS = ("production", "prod")
+
 # 对齐 StressGateService 默认配置（perf.verify.timeout-sec / perf.gate.max-timeout-sec
 # / perf.gate.timeout-overhead-sec）
 DEFAULT_GATE_TIMEOUT_SEC = 300
@@ -118,7 +121,7 @@ def _run_stages(request: StressTaskRequestData, engine, repo: StressRepository,
     errors = 0
     last: StressTaskResult | None = None
     for i, stage in enumerate(stages):
-        sub = stage_scenario(request, stage, with_warmup=(i == 0))
+        sub = stage_scenario(request, stage, with_warmup=(i == 0), task_id=task_id)
         r = engine.run(sub, listener=lambda s, _t=task_id: _persist_sample(repo, _t, s))
         points.append(StagePoint(
             concurrency=stage.concurrency, qps=r.qps, p50_ms=r.p50_ms,
@@ -163,7 +166,7 @@ def run_task(task_id: int, payload: dict, session_factory, engine=None) -> None:
         repo.update_status(task_id, "running")
         engine = engine or _default_engine(request)
         if request.is_scenario_mode or request.resolve_stages() is None:
-            scenario = to_scenario(request)
+            scenario = to_scenario(request, task_id=task_id)
             result = engine.run(
                 scenario, listener=lambda s: _persist_sample(repo, task_id, s))
             result.task_id = task_id
@@ -189,30 +192,89 @@ def run_task(task_id: int, payload: dict, session_factory, engine=None) -> None:
 
 
 class SubprocessRunner:
-    """生产执行器：独立 worker 子进程执行（gevent monkey-patch 隔离在子进程内）。"""
+    """生产执行器：独立 worker 子进程执行（gevent monkey-patch 隔离在子进程内）。
 
-    def __init__(self, db_url: str, python: str | None = None):
+    P1-3 运维控制：
+    - 进程注册表 ``_procs``（task_id → Popen）支撑 cancel(SIGTERM→SIGKILL)；
+    - 有界并发槽位（PERF_STRESS_MAX_CONCURRENT，默认 2）防失控刷机；
+    - watcher 线程在子进程退出后回收注册表并删除临时 payload 文件。
+    """
+
+    def __init__(self, db_url: str, python: str | None = None,
+                 max_concurrent: int | None = None):
         self._db_url = db_url
         self._python = python or sys.executable
         self._package_root = Path(__file__).resolve().parent.parent
+        limit = max_concurrent if max_concurrent is not None \
+            else int(os.environ.get("PERF_STRESS_MAX_CONCURRENT") or 2)
+        self._max_concurrent = max(1, limit)
+        self._slots = threading.BoundedSemaphore(self._max_concurrent)
+        self._procs: dict[int, subprocess.Popen] = {}
+        self._paths: dict[int, str] = {}
+        self._lock = threading.Lock()
 
     def submit(self, task_id: int, payload: dict) -> None:
         if ":memory:" in (self._db_url or ""):
             raise RuntimeError(
                 "内存库不支持子进程执行压测：请配置 PERF_PY_DATABASE_URL 指向共享数据库")
+        if not self._slots.acquire(blocking=False):
+            raise ValueError(
+                f"并发压测任务数已达上限（PERF_STRESS_MAX_CONCURRENT="
+                f"{self._max_concurrent}），请等待运行中的任务结束或取消后重试")
         fd, path = tempfile.mkstemp(prefix="perf-py-task-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False)
         env = dict(os.environ)
         env["PERF_PY_DATABASE_URL"] = self._db_url
         try:
-            subprocess.Popen(  # noqa: S603 — 固定模块入口，无外部输入拼接
+            proc = subprocess.Popen(  # noqa: S603 — 固定模块入口，无外部输入拼接
                 [self._python, "-m", "server.stress_worker", path, str(task_id)],
                 cwd=str(self._package_root), env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             os.unlink(path)
+            self._slots.release()
             raise
+        with self._lock:
+            self._procs[task_id] = proc
+            self._paths[task_id] = path
+        threading.Thread(target=self._reap, args=(task_id, proc, path),
+                         daemon=True).start()
+
+    def _reap(self, task_id: int, proc: subprocess.Popen, path: str) -> None:
+        """子进程退出回收：注册表摘除 + 临时文件删除 + 并发槽位释放。"""
+        try:
+            proc.wait()
+        except Exception:  # noqa: BLE001 — wait 异常不影响回收
+            pass
+        with self._lock:
+            self._procs.pop(task_id, None)
+            self._paths.pop(task_id, None)
+        _unlink_quiet(path)
+        self._slots.release()
+
+    def cancel(self, task_id: int) -> bool:
+        """中止压测子进程：SIGTERM → 最多等 5s → SIGKILL。返回是否命中运行中进程。"""
+        with self._lock:
+            proc = self._procs.get(task_id)
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            proc.terminate()  # SIGTERM：worker 信号钩子优雅退出（不再跑后续档位）
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()  # SIGKILL 兜底
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover — 极端场景
+                pass
+        return True
 
 
 class InlineRunner:
@@ -226,6 +288,17 @@ class InlineRunner:
         threading.Thread(target=run_task, daemon=True,
                          args=(task_id, payload, self._factory, self._engine)).start()
 
+    def cancel(self, task_id: int) -> bool:
+        """进程内线程不可安全强杀：内嵌执行器不支持取消（显式失败不伪装）。"""
+        return False
+
+
+def _unlink_quiet(path: str) -> None:
+    try:
+        os.unlink(path)
+    except (FileNotFoundError, OSError):
+        pass
+
 
 # ---------------------------------------------------------------- 任务服务
 
@@ -235,13 +308,16 @@ class StressTaskService:
 
     def __init__(self, repo: StressRepository, runner: Any,
                  engine_availability: Callable[[str], bool] | None = None,
-                 dataset_lookup: Callable[[str], dict | None] | None = None):
+                 dataset_lookup: Callable[[str], dict | None] | None = None,
+                 dataset_reset: Callable[[str, str], None] | None = None):
         self._repo = repo
         self._runner = runner
         self._availability = engine_availability or engine_available
         # T7.3 数据集绑定反查缝：instanceId → {definitionVersion, schemaFingerprint,
         # validationSummary, status,...}（app 工厂注入 dataset 域查询；未注入时绑定拒绝）
         self._dataset_lookup = dataset_lookup
+        # P1-3 数据集重置钩子：resetPolicy 非 none 时按 phase("before"/"after") 回调
+        self._dataset_reset = dataset_reset
 
     # -------------------------------------------------------- POST /tasks
 
@@ -251,6 +327,9 @@ class StressTaskService:
         返回 dict 与 Java 实体 Jackson 序列化一致；createTime/finishTime/resultJson/
         errorMsg 均为 null（MyBatis 插入后实体未回填，DB 默认值仅入库）。
         """
+        # 绑定解析提前：样本 CSV 注入与 K5 生产校验发生在常规校验之前
+        binding = self._resolve_dataset_binding(payload)
+        self._inject_sample_csv(payload, binding)
         request = parse_stress_request(payload)
         self._validate(request)
 
@@ -261,7 +340,6 @@ class StressTaskService:
         app_name = request.app_name if request.app_name and request.app_name.strip() else ""
         # 版本快照：发起压测时记录应用当前版本（agent 心跳维护），只解析一次
         app_version = self._repo.find_app_version(app_name)
-        binding = self._resolve_dataset_binding(payload)
         task_id = self._repo.insert_task(
             task_name=task_name,
             engine_type=request.engine_type,
@@ -281,6 +359,7 @@ class StressTaskService:
             dataset_validation_json=binding.get("validationJson") if binding else None,
         )
         self._runner.submit(task_id, payload)
+        self._schedule_dataset_reset(task_id, payload, binding)
         return {
             "id": task_id,
             "taskName": task_name,
@@ -304,6 +383,11 @@ class StressTaskService:
 
         绑定仅允许 READY 实例（验证通过的数据集才可承载压测语义）；
         未注入 dataset_lookup 时携带绑定请求显式拒绝（不静默忽略）。
+
+        P1-3 扩展（可选字段，向后兼容）：
+        - ``useSampleCsv``：绑定数据集存在参数样本 CSV 时自动注入压测参数池；
+        - ``resetPolicy``（none/after/before_and_after，默认 none）：写压测前后
+          数据重置钩子；**K5 红线——environmentId 含生产标识的实例直接拒绝**。
         """
         raw = payload.get("dataset")
         if not isinstance(raw, dict) or raw.get("instanceId") is None:
@@ -320,13 +404,99 @@ class StressTaskService:
             raise ValueError(
                 f"绑定的数据集实例非 READY（当前 {info.get('status')}）——"
                 "仅验证通过（READY）的数据集可绑定压测任务")
+        reset_policy = str(raw.get("resetPolicy") or "none").strip().lower()
+        if reset_policy not in ("none", "after", "before_and_after"):
+            raise ValueError(
+                f"dataset.resetPolicy 非法：{raw.get('resetPolicy')!r}"
+                "（可选 none / after / before_and_after）")
+        if reset_policy != "none":
+            env_label = str(info.get("environmentId") or "").strip().lower()
+            if any(m in env_label for m in PRODUCTION_MARKERS):
+                raise ValueError(
+                    f"生产环境数据集禁止自动重置（K5 红线；environmentId="
+                    f"{info.get('environmentId')!r}，resetPolicy={reset_policy}）"
+                    "——请在任务创建时移除 resetPolicy 或改用非生产数据集")
         return {
             "instanceId": int(info["rowId"]),
             "definitionVersion": info.get("definitionVersion"),
             "schemaFingerprint": info.get("schemaFingerprint"),
             "validationJson": (json.dumps(info.get("validationSummary"), ensure_ascii=False)
                                if info.get("validationSummary") is not None else None),
+            # P1-3 附加（不落库，供注入与重置钩子消费）
+            "resetPolicy": reset_policy,
+            "resetKey": instance_id,
+            "useSampleCsv": bool(raw.get("useSampleCsv")),
+            "sampleCsvPath": info.get("sampleCsvPath"),
+            "sampleCsvRows": info.get("sampleCsvRows") or 0,
         }
+
+    def _inject_sample_csv(self, payload: dict, binding: dict | None) -> None:
+        """useSampleCsv=true 且请求未显式携带 csv 时注入数据集参数样本（内联文本）。"""
+        if not binding or not binding.get("useSampleCsv"):
+            return
+        if payload.get("csv"):
+            return  # 用户显式配置的参数池优先，不覆盖
+        path = binding.get("sampleCsvPath")
+        if not path:
+            raise ValueError(
+                "dataset.useSampleCsv=true 但绑定数据集实例无参数样本导出"
+                "（READY 重建时未生成样本 CSV）")
+        sample_path = Path(path)
+        if not sample_path.is_file():
+            raise ValueError(f"数据集参数样本文件缺失：{path}（请重新构建数据集）")
+        try:
+            text = sample_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"数据集参数样本读取失败：{exc}") from None
+        # 防磁盘撑爆：样本导出侧限行（≤10000），注入侧再限体积（≤1MB，对齐 csv_provider）
+        if len(text.encode("utf-8")) > 1024 * 1024:
+            raise ValueError("数据集参数样本超过 1MB 上限（请缩小样本规模后重建）")
+        payload["csv"] = {"mode": "sequential", "text": text}
+
+    def _schedule_dataset_reset(self, task_id: int, payload: dict,
+                                binding: dict | None) -> None:
+        """数据集重置钩子调度：before 同步执行；after 终局后异步触发（尽力而为）。"""
+        if not binding or binding.get("resetPolicy", "none") == "none" \
+                or self._dataset_reset is None:
+            return
+        key = binding["resetKey"]
+        policy = binding["resetPolicy"]
+
+        def _invoke(phase: str) -> None:
+            try:
+                self._dataset_reset(key, phase)
+            except Exception:  # noqa: BLE001 — 重置失败不阻断压测主流程（留痕日志）
+                log.warning("dataset reset hook failed, instance=%s phase=%s, taskId=%s",
+                            key, phase, task_id, exc_info=True)
+
+        if policy == "before_and_after":
+            _invoke("before")
+        if policy in ("after", "before_and_after"):
+            def _wait_then_reset() -> None:
+                deadline = time.time() + 3600
+                while time.time() < deadline:
+                    task = self._repo.find_by_id(task_id)
+                    if task is not None and task.status in ("finished", "failed", "cancelled"):
+                        break
+                    time.sleep(2)
+                _invoke("after")
+
+            threading.Thread(target=_wait_then_reset, daemon=True).start()
+
+    # -------------------------------------------------------- POST /tasks/{id}/cancel
+
+    def cancel(self, task_id: int) -> dict:
+        """中止运行中/排队中的压测任务：runner SIGTERM→SIGKILL，状态置 cancelled。"""
+        task = self._repo.find_by_id(task_id)
+        if task is None:
+            raise ValueError(f"压测任务不存在：{task_id}")
+        if task.status not in ("pending", "running"):
+            raise ValueError(f"任务已结束（当前 {task.status}），无法取消")
+        cancel_hook = getattr(self._runner, "cancel", None)
+        if not callable(cancel_hook) or not cancel_hook(task_id):
+            raise ValueError("当前运行器不支持取消（任务可能刚结束或为内嵌执行器）")
+        self._repo.update_cancelled(task_id)
+        return self._repo.find_by_id(task_id).to_camel()
 
     def _validate(self, request: StressTaskRequestData) -> None:
         """对齐 validateCommon 的引擎可用性校验（其余文案在 stress_request 层）。"""

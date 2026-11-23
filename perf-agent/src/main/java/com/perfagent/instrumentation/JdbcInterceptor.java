@@ -74,7 +74,8 @@ public class JdbcInterceptor {
         if (costMs >= slowSqlThresholdMs && reporter != null) {
             // 超阈值才做完整 SQL 解析（toString 兜底 + 截断）与方法链快照
             reporter.reportSlowSql(appName, resolveSql(je), costMs, System.currentTimeMillis(),
-                    TraceContext.currentMethodChain(), extractDbHost(je.statement));
+                    TraceContext.currentMethodChain(), extractDbHost(je.statement),
+                    TraceContext.currentStressTaskId());
         }
     }
 

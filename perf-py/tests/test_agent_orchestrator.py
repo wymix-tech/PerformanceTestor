@@ -17,9 +17,15 @@ from agents.react import Agent, AgentReport
 from agents.roles import ROLE_ADVISORY, ROLE_ANALYSIS, ROLE_STRESS, ROLES
 from perf_cli.config import EXIT_GATE_FAILED, EXIT_INVOCATION_ERROR, EXIT_OK
 from perf_cli.main import app
+from tools.observability_tools import wire_observability_tools
 from tools.registry import build_registry, call_tool
 
 runner = CliRunner()
+
+
+def _full_registry() -> dict:
+    """完整注册表：域工具 + P1-2 在线观测工具（CLI agent 同款装配）。"""
+    return wire_observability_tools(build_registry())
 
 
 class FakeLlm(LlmClient):
@@ -112,8 +118,12 @@ def test_report_context_block():
 
 def test_roles_tool_subsets():
     assert set(ROLE_STRESS.tool_names) == {"stress_run", "stress_result_read", "datagen_dry_run"}
-    assert set(ROLE_ANALYSIS.tool_names) == {"capacity_analyze", "slowlog_analyze",
-                                             "source_scan", "stress_result_read"}
+    assert set(ROLE_ANALYSIS.tool_names) == {
+        "capacity_analyze", "slowlog_analyze", "source_scan", "stress_result_read",
+        # P1-2 在线观测查询工具
+        "jvm_metrics_query", "slow_sql_query", "trace_query", "hotspot_query",
+        "db_explain_run",
+    }
     assert ROLE_ADVISORY.tool_names == (), "修复建议 Agent 纯推理"
 
 
@@ -137,7 +147,7 @@ def test_pipeline_three_agents_serial():
         _final("根因 1（待验证）：索引缺失；修复提示词：..."),
     ]
     llm = FakeLlm(script)
-    out = run_pipeline("对 /api/order/list 做压测并归因", llm, build_registry())
+    out = run_pipeline("对 /api/order/list 做压测并归因", llm, _full_registry())
     assert out["finalAdvice"].startswith("根因 1")
     assert not out["degraded"]
     assert [r["agent"] for r in out["reports"]] == [r.name for r in ROLES]
@@ -153,7 +163,7 @@ def test_pipeline_none_answer_counts_as_final():
         def chat(self, messages, tools):
             return ChatResult(content=None)
 
-    out = run_pipeline("任务", SilentLlm(), build_registry())
+    out = run_pipeline("任务", SilentLlm(), _full_registry())
     assert out["degraded"] is False, "空回答按 final 处理不截断"
     assert out["finalAdvice"] is None
 

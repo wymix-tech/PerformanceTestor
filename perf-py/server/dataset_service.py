@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -44,6 +45,8 @@ from ptde.loader.gate import DestructiveApproval, SecurityGate
 from ptde.models.dataset import DatasetState, ValidationReport
 from ptde.models.spec import DatasetSpec, ExecutionManifest
 from server.ptde_repo import PtdeDatasetInstanceModel, PtdeDatasetRepository
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "DatasetCancelled",
@@ -103,7 +106,9 @@ class DatasetLifecycleService:
     def __init__(self, repo: PtdeDatasetRepository, *, pipeline: Any | None = None,
                  pipeline_factory: Callable[[dict], Any] | None = None,
                  max_workers: int = 2, operator: str = "api",
-                 degradable_layers: frozenset | None = None):
+                 degradable_layers: frozenset | None = None,
+                 sample_dir: str | None = None,
+                 sample_rows: int = 10_000):
         self._repo = repo
         self._pipeline = pipeline if pipeline is not None else UnwiredPipeline()
         # P0-2：动态工厂（ctx → pipeline）优先于静态注入——真库执行体按
@@ -122,6 +127,11 @@ class DatasetLifecycleService:
         # 按 instance 行主键登记，随任务结束清理。
         self._state_lock = threading.Lock()
         self._cancel_flags: dict[int, threading.Event] = {}
+        # P1-3 参数样本导出目录（None = 关闭；app 工厂按 PERF_DATASET_SAMPLE_DIR
+        # 或 ~/.perftestor/samples 装配）：READY 后从主表分层采样写 CSV，
+        # 供压测 dataset.useSampleCsv 自动注入参数池。
+        self._sample_dir = sample_dir
+        self._sample_rows = max(1, min(int(sample_rows), 10_000))
 
     # ------------------------------------------------------------ Definition（T6.6）
 
@@ -394,11 +404,26 @@ class DatasetLifecycleService:
             raise DatasetServiceError(
                 f"ExecutionManifest.instance_id 链路不一致：{manifest.instance_id!r} vs "
                 f"实例 {model.id!r}（§12.4 链路可溯，READY 条件 7）")
-        self._repo.insert_manifest(row_id, manifest)  # READY/FAILED 均留痕（可追溯）
         cleanup_ctx = CleanupContext.model_validate(result["cleanup"])
         cleanup_decision = plan_cleanup(cleanup_ctx)
         decision = evaluate_ready(model, report, manifest, cleanup_decision,
                                   degradable_layers=self._degradable_layers)
+        # P1-3 参数样本导出（READY 后供压测 useSampleCsv 注入）：
+        # 尽力而为——样本目录未配置/目标库不可达/表为空时跳过，不阻断 READY 门禁。
+        if decision.allowed and self._sample_dir:
+            try:
+                from server.dataset_sample import export_sample_csv
+
+                info = export_sample_csv(
+                    self._repo, self._repo.find_instance(row_id),
+                    self._sample_dir, limit=self._sample_rows)
+                if info:
+                    manifest.sample_csv_path = info["path"]
+                    manifest.sample_csv_rows = info["rows"]
+            except Exception:  # noqa: BLE001 — 样本导出失败不阻断 READY
+                log.warning("dataset sample csv export failed, instance=%s",
+                            row_id, exc_info=True)
+        self._repo.insert_manifest(row_id, manifest)  # READY/FAILED 均留痕（可追溯）
         summary = {
             "ready": decision.allowed,
             "checks": [c.model_dump() for c in decision.checks],

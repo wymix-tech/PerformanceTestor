@@ -19,10 +19,11 @@ import net.bytebuddy.asm.Advice;
 public class FilterRootAdvice {
 
     @Advice.OnMethodEnter
-    public static Object enter() {
+    public static Object enter(@Advice.Argument(0) Object request) {
         // true = 本 Filter 是最外层且创建了链路上下文（owner）；
-        // null = 嵌套 Filter 或上下文已存在（非 owner，零处理）
-        return TraceContext.beginFilterRoot() ? Boolean.TRUE : null;
+        // null = 嵌套 Filter 或上下文已存在（非 owner，零处理）。
+        // request（doFilter 第一个参数）传入后由 TraceContext 零依赖捕获压测染色头（P1-1）
+        return TraceContext.beginFilterRoot(request) ? Boolean.TRUE : null;
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class)

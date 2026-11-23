@@ -4,12 +4,17 @@ import com.perfagent.config.AgentConfig;
 import com.perfagent.reporter.MetricsReporter;
 import com.sun.management.OperatingSystemMXBean;
 
+import java.lang.management.BufferPoolMXBean;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
+import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryUsage;
+import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -20,6 +25,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * JVM 指标采集器：通过 JDK JMX（Memory / GC / Thread / OS MXBean）周期采集，
  * 采集结果交由 {@link MetricsReporter} 批量上报平台。
+ *
+ * <p>P1-5 扩展：连接池（HikariCP）/容器线程池（Tomcat）MBean 只读探测与
+ * 内存/线程细分，产出 {@code extraMetrics} 可选扩展 JSON（服务端独立扩展列落库，
+ * 旧表字段零破坏）。全部按 ObjectName 名称探测，零编译期依赖。
  *
  * <p>使用独立单线程调度，不阻塞业务线程；默认 5s 采集一次。
  */
@@ -72,11 +81,129 @@ public class JvmCollector {
             collectGc(metric);
             collectThread(metric);
             collectCpu(metric);
+            metric.extraMetrics = collectExtraMetrics();
 
             reporter.reportJvm(appName, metric.toMap());
         } catch (Throwable t) {
             // 采集失败不影响业务，忽略并等待下一周期
         }
+    }
+
+    /**
+     * 扩展指标采集（P1-5，可选上报）：HikariCP 连接池、Tomcat 容器线程池、
+     * 直接内存 / Metaspace、BLOCKED/WAITING 线程计数。
+     *
+     * <p>全部只读探测：平台 {@code getPlatformMBeanServer()} 按 ObjectName 通配符
+     * 名称匹配（Hikari/Tomcat 类无需在 classpath），类或 MBean 不存在时静默缺省；
+     * 线程状态仅计数不抓栈（避免高频 Safepoint）。任何异常吞掉返回 null（不上报字段）。
+     */
+    private Map<String, Object> collectExtraMetrics() {
+        Map<String, Object> extra = new LinkedHashMap<>();
+        try { // HikariCP 连接池：com.zaxxer.hikari:type=Pool (*)
+            Set<javax.management.ObjectName> pools = mbeanServer()
+                    .queryNames(new javax.management.ObjectName("com.zaxxer.hikari:type=Pool,*"), null);
+            if (!pools.isEmpty()) {
+                Map<String, Object> hikari = new LinkedHashMap<>();
+                int active = 0;
+                int awaiting = 0;
+                int total = 0;
+                for (javax.management.ObjectName on : pools) {
+                    active += attrInt(on, "ActiveConnections");
+                    awaiting += attrInt(on, "ThreadsAwaitingConnection");
+                    total += attrInt(on, "TotalConnections");
+                }
+                hikari.put("activeConnections", active);
+                hikari.put("threadsAwaitingConnection", awaiting);
+                hikari.put("totalConnections", total);
+                extra.put("hikari", hikari);
+            }
+        } catch (Throwable ignored) {
+            // HikariCP 不在 classpath / MBean 缺失：静默缺省
+        }
+        try { // Tomcat 线程池：Tomcat:type=ThreadPool,name=*（多池取峰值）
+            Set<javax.management.ObjectName> pools = mbeanServer()
+                    .queryNames(new javax.management.ObjectName("Tomcat:type=ThreadPool,*"), null);
+            if (!pools.isEmpty()) {
+                Map<String, Object> tomcat = new LinkedHashMap<>();
+                int busy = 0;
+                int count = 0;
+                int max = 0;
+                for (javax.management.ObjectName on : pools) {
+                    busy = Math.max(busy, attrInt(on, "currentThreadsBusy"));
+                    count = Math.max(count, attrInt(on, "currentThreadCount"));
+                    max = Math.max(max, attrInt(on, "maxThreads"));
+                }
+                tomcat.put("busyThreads", busy);
+                tomcat.put("threadCount", count);
+                tomcat.put("maxThreads", max);
+                extra.put("tomcat", tomcat);
+            }
+        } catch (Throwable ignored) {
+            // 非 Tomcat 容器：静默缺省
+        }
+        try { // 直接内存（BufferPoolMXBean：direct used）
+            long direct = 0;
+            for (BufferPoolMXBean pool : ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class)) {
+                if ("direct".equalsIgnoreCase(pool.getName())) {
+                    direct = pool.getMemoryUsed();
+                    break;
+                }
+            }
+            if (direct > 0) {
+                extra.put("directMemoryMb", Math.round(direct / 1048576.0 * 10.0) / 10.0);
+            }
+        } catch (Throwable ignored) {
+            // 平台不支持：静默缺省
+        }
+        try { // Metaspace（内存池 usage.used）
+            for (MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
+                if (pool.getName().contains("Metaspace") && pool.getUsage() != null) {
+                    extra.put("metaspaceUsedMb",
+                            Math.round(pool.getUsage().getUsed() / 1048576.0 * 10.0) / 10.0);
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {
+            // 平台不支持：静默缺省
+        }
+        try { // 线程状态细分：仅计数，不抓栈（避免 Safepoint 风暴）
+            long[] ids = ManagementFactory.getThreadMXBean().getAllThreadIds();
+            ThreadInfo[] infos = ManagementFactory.getThreadMXBean().getThreadInfo(ids);
+            int blocked = 0;
+            int waiting = 0;
+            for (ThreadInfo info : infos) {
+                if (info == null) {
+                    continue;
+                }
+                Thread.State st = info.getThreadState();
+                if (st == Thread.State.BLOCKED) {
+                    blocked++;
+                } else if (st == Thread.State.WAITING || st == Thread.State.TIMED_WAITING) {
+                    waiting++;
+                }
+            }
+            Map<String, Object> states = new LinkedHashMap<>();
+            states.put("blocked", blocked);
+            states.put("waiting", waiting);
+            extra.put("threadStates", states);
+        } catch (Throwable ignored) {
+            // 平台不支持：静默缺省
+        }
+        return extra.isEmpty() ? null : extra;
+    }
+
+    /** MBean 属性只读读取（类型不符/属性缺失返回 0，绝不抛栈） */
+    private int attrInt(javax.management.ObjectName name, String attr) {
+        try {
+            Object v = mbeanServer().getAttribute(name, attr);
+            return v instanceof Number n ? n.intValue() : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private javax.management.MBeanServer mbeanServer() {
+        return ManagementFactory.getPlatformMBeanServer();
     }
 
     /** 采集 GC 计数与耗时（精确名称映射区分 Young/Full） */

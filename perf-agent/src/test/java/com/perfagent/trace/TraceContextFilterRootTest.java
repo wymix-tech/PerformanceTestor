@@ -13,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -26,9 +27,10 @@ class TraceContextFilterRootTest {
     private static final double ALWAYS = 1.0;
     private static final double NEVER = 0.0;
 
-    /** 记录型替身：捕获提交的调用链根节点（真实 reporter 未 start 时为 no-op） */
+    /** 记录型替身：捕获提交的调用链根节点与染色标识（真实 reporter 未 start 时为 no-op） */
     private static final class RecordingReporter extends MetricsReporter {
         final List<TraceNode> submittedRoots = new CopyOnWriteArrayList<>();
+        final List<String> submittedStressTaskIds = new CopyOnWriteArrayList<>();
 
         RecordingReporter() {
             super(new AgentConfig(), new HttpReporter());
@@ -36,7 +38,14 @@ class TraceContextFilterRootTest {
 
         @Override
         public void reportTrace(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs) {
+            reportTrace(traceId, app, root, nodeCount, startTimeMs, null);
+        }
+
+        @Override
+        public void reportTrace(String traceId, String app, TraceNode root, int nodeCount,
+                                long startTimeMs, String stressTaskId) {
             submittedRoots.add(root);
+            submittedStressTaskIds.add(stressTaskId);
         }
     }
 
@@ -169,5 +178,66 @@ class TraceContextFilterRootTest {
         TraceContext.end(System.nanoTime());
         assertEquals(1, reporter.submittedRoots.size());
         assertEquals("com.demo.task.ScheduledJob#run", reporter.submittedRoots.get(0).method);
+    }
+
+    // ===================== P1-1 压测流量染色 =====================
+
+    /** 测试用最小请求替身：与 Servlet API 无关，仅提供 getHeader(String) 方法签名 */
+    static class FakeServletRequest {
+        String value;
+
+        public String getHeader(String name) {
+            return value;
+        }
+    }
+
+    /** 不带 getHeader 的替身（非 Servlet 请求）：染色提取应安全短路 */
+    static class PlainObject {
+    }
+
+    @Test
+    void stressTaskIdCapturedEvenWhenNotSampled() {
+        // 关键验收：sampleRate=0.0 时染色标识仍必须进上下文
+        //（慢 SQL / 慢命令独立于调用链采样率触发，未采样请求同样要携带 stressTaskId）
+        initSampler(NEVER);
+        FakeServletRequest req = new FakeServletRequest();
+        req.value = "42";
+        assertTrue(TraceContext.beginFilterRoot(req));
+        assertFalse(TraceContext.inSampledContext());
+        assertEquals("42", TraceContext.currentStressTaskId());
+        TraceContext.endFilterRoot();
+    }
+
+    @Test
+    void stressTaskIdPropagatesToSubmittedTrace() {
+        FakeServletRequest req = new FakeServletRequest();
+        req.value = "1001";
+        assertTrue(TraceContext.beginFilterRoot(req));
+        assertEquals("1001", TraceContext.currentStressTaskId());
+        TraceContext.begin("com.demo.controller.OrderController#create");
+        TraceContext.end(System.nanoTime());
+        assertEquals(1, reporter.submittedRoots.size());
+        assertEquals("1001", reporter.submittedStressTaskIds.get(0));
+        TraceContext.endFilterRoot();
+    }
+
+    @Test
+    void missingOrInvalidHeaderYieldsNullStressTaskId() {
+        // 未染色流量（无头 / 非 Servlet 请求 / null 请求）：不抛异常，标识为 null
+        assertTrue(TraceContext.beginFilterRoot(new FakeServletRequest()));
+        assertNull(TraceContext.currentStressTaskId());
+        TraceContext.endFilterRoot();
+
+        assertTrue(TraceContext.beginFilterRoot(new PlainObject()));
+        assertNull(TraceContext.currentStressTaskId());
+        TraceContext.endFilterRoot();
+
+        assertTrue(TraceContext.beginFilterRoot(null));
+        assertNull(TraceContext.currentStressTaskId());
+        TraceContext.endFilterRoot();
+        // 无参旧重载（兼容既有调用方）仍可用
+        assertTrue(TraceContext.beginFilterRoot());
+        assertNull(TraceContext.currentStressTaskId());
+        TraceContext.endFilterRoot();
     }
 }

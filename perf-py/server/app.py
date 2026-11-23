@@ -16,7 +16,9 @@ LlmClient 由调用方注入（测试注入脚本化假客户端；生产 client
 from __future__ import annotations
 
 import hmac
+import logging
 import os
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -133,9 +135,21 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.tools_registry = registry
     app.state.knowledge = knowledge if knowledge is not None \
         else KnowledgeService(SqliteKnowledgeStore())
-    app.state.ai_service = AiAgentService(llm, registry, app.state.knowledge)
+    # P1-2 观测工具接线：collector/stress 仓储与 EXPLAIN 服务需在 AiAgentService
+    # 之前就绪（工具闭包引用），并经 setdefault 注入（不覆盖测试注入的桩工具）。
     session_factory = make_session_factory(db_url or database_url())
     resolved_db_url = db_url or database_url()
+    app.state.collector_repo = collector_repo if collector_repo is not None \
+        else CollectorRepository(session_factory)
+    app.state.stress_repo = stress_repo if stress_repo is not None \
+        else StressRepository(session_factory)
+    app.state.db_explain = db_explain if db_explain is not None else DbExplainService()
+    from tools.observability_tools import build_observability_tools
+
+    for _tool in build_observability_tools(
+            app.state.collector_repo, app.state.stress_repo, app.state.db_explain):
+        registry.setdefault(_tool.name, _tool)
+    app.state.ai_service = AiAgentService(llm, registry, app.state.knowledge)
     app.state.dataset_repo = dataset_repo if dataset_repo is not None \
         else PtdeDatasetRepository(session_factory)
     # dataset_pipeline：数据集执行体注入缝（generate/load/verify 三段）。
@@ -150,9 +164,10 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         resolved_pipeline_factory = realdb_pipeline_factory(app.state.dataset_repo)
     app.state.dataset_service = DatasetLifecycleService(
         app.state.dataset_repo, pipeline=dataset_pipeline,
-        pipeline_factory=resolved_pipeline_factory)
-    app.state.stress_repo = stress_repo if stress_repo is not None \
-        else StressRepository(session_factory)
+        pipeline_factory=resolved_pipeline_factory,
+        # P1-3 参数样本导出目录（默认启用，压测 useSampleCsv 注入源）
+        sample_dir=os.environ.get("PERF_DATASET_SAMPLE_DIR")
+        or str(Path.home() / ".perftestor" / "samples"))
     if stress_runner is not None:
         runner = stress_runner
     elif ":memory:" in resolved_db_url:
@@ -161,24 +176,52 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         from server.stress_service import SubprocessRunner
 
         runner = SubprocessRunner(resolved_db_url)
-    # T7.3 压测绑定：dataset 查询缝注入（创建任务时快照 READY 数据集）
+    # T7.3 压测绑定：dataset 查询缝注入（创建任务时快照 READY 数据集）。
+    # P1-3 扩展：environmentId（K5 生产红线校验）+ 样本 CSV 摘要（useSampleCsv 注入）。
     def _dataset_lookup(instance_id: str):
         try:
             d = app.state.dataset_service.get_instance(instance_id)
         except ValueError:
             return None
+        sample_path, sample_rows = _dataset_sample_info(instance_id)
         return {
             "rowId": int(d["id"]),
             "status": d["status"],
             "definitionVersion": d["definitionVersion"],
             "schemaFingerprint": d["schemaFingerprint"],
             "validationSummary": d["validationSummary"],
+            "environmentId": d.get("environmentId"),
+            "sampleCsvPath": sample_path,
+            "sampleCsvRows": sample_rows,
         }
 
+    def _dataset_sample_info(instance_id: str) -> tuple[str | None, int]:
+        """最近一次 manifest 的样本 CSV 摘要（无 manifest/读取失败 → 缺省）。"""
+        try:
+            rows = app.state.dataset_repo.manifests_for_instance(int(instance_id))
+            if not rows:
+                return None, 0
+            m = app.state.dataset_repo.manifest_to_model(rows[-1])
+            return m.sample_csv_path, m.sample_csv_rows or 0
+        except Exception:  # noqa: BLE001 — 样本摘要缺失不阻断绑定
+            return None, 0
+
+    # P1-3 数据集重置钩子：cleanup（决策挡生产/未知）→ 重建（尽力而为，异常由钩子捕获留痕）
+    def _dataset_reset(instance_id: str, phase: str) -> None:
+        app.state.dataset_service.cleanup(
+            instance_id, env_class="staging_like", operator=f"stress-reset-{phase}")
+        app.state.dataset_service.build(instance_id, operator=f"stress-reset-{phase}")
+
     app.state.stress_service = StressTaskService(
-        app.state.stress_repo, runner, dataset_lookup=_dataset_lookup)
-    app.state.collector_repo = collector_repo if collector_repo is not None \
-        else CollectorRepository(session_factory)
+        app.state.stress_repo, runner, dataset_lookup=_dataset_lookup,
+        dataset_reset=_dataset_reset)
+    # P1-3 孤儿收口：进程重启遗留的 running/pending 任务统一置 failed（防僵尸占用）。
+    # 尽力而为：测试/最小建库形态下 stress_task 可能不存在，缺表仅告警不阻断启动。
+    try:
+        app.state.stress_repo.fail_stale("服务重启，任务已中断")
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "stress orphan sweep skipped (stress_task table unavailable)", exc_info=True)
     app.state.dbconn_service = dbconn_service if dbconn_service is not None \
         else DbConnService(session_factory)
     app.state.datagen_repo = datagen_repo if datagen_repo is not None \
@@ -197,7 +240,6 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         inline_import=":memory:" in resolved_db_url)
     app.state.data_cleanup_service = data_cleanup if data_cleanup is not None \
         else DataCleanupService(session_factory, app.state.knowledge.store)
-    app.state.db_explain = db_explain if db_explain is not None else DbExplainService()
     # P0-1b/1d：定时调度与 deploy 域（deploy SSH 执行体缺省 paramiko 懒加载）。
     # 仓储与 stress 域同源 session_factory（测试注入内存库时同库可查）。
     app.state.schedule_service = schedule_service if schedule_service is not None \

@@ -4,9 +4,11 @@
 > 数据来源：`perf-web/src/api/index.ts`、`perf-py/server/*_api.py`、`perf-agent`、`scripts/`。
 > 评估日期：2026-11-20。
 
-**总体结论**：平台已完成 Java `perf-server` / `perf-datagen` 退役并建立起 PTDE 智能数据引擎与 CLI/MCP 能力，但绞杀者迁移留下的接口断层与运行时接线缺口，导致「接入 → 造数 → 压测 → 观测 → 归因 → 修复验证」在 Web 端与真库执行链路上尚未真正闭环。
+**总体结论**：平台已完成 Java `perf-server` / `perf-datagen` 退役并建立起 PTDE 智能数据引擎与 CLI/MCP 能力；评估时指出的 4 处 P0 硬断点（接口缺失、PTDE 未接线、启动脚本漏 export、验证重放丢上下文）已在提交 `4ac50a0` 中全部修复，「接入 → 造数 → 压测 → 观测 → 归因 → 修复验证」在 Web 端与真库执行链路上已打通。剩余断点集中在 P1/P2 层的因果联动与剖析精度。
 
-**核心指标**：六大闭环环节中有 **4 个环节**存在直接阻断端到端流转的 P0/P1 断点；其中前端 **11 组接口**在 Python 服务端尚未注册。
+**核心指标**：P0 闭环断点 **0 处**（4/4 已修复）；前端 11 组接口均已在 Python 服务端注册。P1 仍有流量染色、AI 观测工具、数据集参数化与中止控制 4 类断层。
+
+> 阶段状态：**阶段 1 · P0 止血已完成**；当前工作重心为阶段 2（P1 贯通）。
 
 ---
 
@@ -23,16 +25,18 @@
 
 | 环节 | 状态 | 已通能力 | 断点/风险 |
 | --- | --- | --- | --- |
-| 1. 应用接入与部署 | 🔴 P0 | 源码导入 / 端点扫描已通 | × `/api/deploy/**` 全部 404；× 启动脚本漏 export DB URL |
-| 2. 测试数据准备 (PTDE) | 🔴 P0 | CLI 真库灌数与 5 层验证已通 | × `perf serve` 未接 pipeline；△ 绑定未喂给压测参数化 |
-| 3. 压测编排与执行 | 🟡 P1 | Locust/JMeter 与分档执行已通 | △ 无流量染色、无运行中止；× `/stress/schedules` 缺失 |
-| 4. Java 探针可观测性 | 🔴 P0 | Agent 上报 `/agent/report` 已通 | × 查询 API(JVM/Trace) 全 404；△ 缺异步链路与安全点偏差 |
-| 5. 根因归因与容量评估 | 🔴 P0 | EXPLAIN + 源码定位 + ReAct | × `/capacity` & `/reports/export` 缺失；△ AI 工具无法查 JVM/Trace |
-| 6. 修复验证与 CI 门禁 | 🟢 基本可用 | `perf gate` 与基线比对已通 | × 验证重放丢 body/场景/预热；△ P99 不入回归门禁、缺去噪 |
+| 1. 应用接入与部署 | 🟢 P0 已修复 | 源码导入 / 端点扫描、`/api/deploy/**` 与启动脚本 export 已通 | △ SSH 部署依赖可选 extras `perf-py[deploy]` |
+| 2. 测试数据准备 (PTDE) | 🟢 P0 已修复 | CLI 与 `perf serve` 真库灌数、5 层验证已通 | △ 绑定未喂给压测参数化（P1） |
+| 3. 压测编排与执行 | 🟡 P1 | Locust/JMeter、分档执行与 `/api/stress/schedules` 已通 | △ 无流量染色、无运行中止（P1） |
+| 4. Java 探针可观测性 | 🟢 P0 已修复 | Agent 上报与 JVM/Trace/慢 SQL/慢命令/热点查询 API 已通 | △ 缺异步链路与安全点偏差（P1/P2） |
+| 5. 根因归因与容量评估 | 🟢 P0 已修复 | EXPLAIN + 源码定位 + ReAct、容量评估与报告导出已通 | △ AI 工具无法查 JVM/Trace（P1） |
+| 6. 修复验证与 CI 门禁 | 🟢 基本可用 | `perf gate`、基线比对与完整请求快照重放已通 | △ P99 不入回归门禁、缺去噪（P2） |
 
-> 闭环反馈：知识库沉淀（当前默认内存态，重启即清空）
+> 闭环反馈：知识库默认持久化至 `~/.perftestor/knowledge.sqlite`（`PERF_KNOWLEDGE_DB` 可覆盖），不再随重启清空。
 
-## 二、P0 级硬断点：4 处核心接线尚未闭合
+## 二、P0 级硬断点：4 处核心接线（历史诊断，均已闭合）
+
+> 以下为评估时的问题记录；修复结果见第〇节。
 
 ### P0-1 前端 11 组接口在后端缺失（P0 · 阻塞）
 
@@ -116,13 +120,13 @@
 
 **闭环完整度预估**（按「接入部署、数据闭环、压测执行、观测可见性、AI 归因联动、验证与门禁」六大阶段加权估算）：
 
-- 当前 main 分支：45%
-- 阶段 1（P0 止血）：68%
+- 评估基线：45%
+- 阶段 1（P0 止血，**已完成**）：68%
 - 阶段 2（P1 贯通）：88%
 - 阶段 3（P2 深化）：97%
 
 | 实施阶段 | 关键交付事项 | 主要涉及模块/文件 | 闭环验收标准 |
 | --- | --- | --- | --- |
-| **阶段 1 · P0 止血**（1–2 周） | 补齐观测查询/容量/报告导出 API；`perf serve` 动态接入 `realdb_pipeline` 与持久化知识库；脚本补 `export`；`stress_task` 持久化 `request_json` 修复验证重放；增加压测取消与临时文件清理 | `metrics_api.py`(新)、`capacity_api.py` / `report_api.py`(新)、`app.py`、`issue_verify_service.py`、`scripts/start-all.sh` | 单机执行 `start-all.sh` 后，Web 端所有主视图零 404；可在页面完成 PTDE 造数 → 场景压测 → 查看 JVM/Trace/慢 SQL → 生成报告 → 一键验证完整重放 |
-| **阶段 2 · P1 贯通**（2–4 周） | 压测引擎注入 `X-Perf-Stress-Task-Id`，探针采集透传并按任务聚合运行态瓶颈；补齐 5 个 AI 观测查询工具接入 `ROLE_ANALYSIS`；PTDE 导出参数样本 CSV 并支持写压测前后数据重置；补齐高精度发压引擎（k6/JMeter 完整场景） | `perf-agent`（`FilterRootAdvice` / `TraceContext`）、`perf-py/tools/` & `agents/roles.py`、`perf-py/engine/` & `stress_service.py` | 压测报告自动展示该次任务关联的慢 SQL Top N 与 JVM 峰值；AI Agent 无需手工传慢日志文件即可基于在线观测数据输出根因与修复代码提示词 |
+| **阶段 1 · P0 止血**（**已完成**，提交 `4ac50a0`） | 补齐观测查询/容量/报告导出/告警/调度/部署 API；`perf serve` 动态接入 `realdb_pipeline` 与持久化知识库；脚本补 `export`；`stress_task` 持久化 `request_json` 修复验证重放 | `metrics_api.py`、`capacity_api.py`、`report_api.py`、`jvm_alert_api.py`、`schedule_api.py`、`deploy_api.py`、`app.py`、`issue_verify_service.py`、`scripts/start-all.sh` | ✅ 单机执行 `start-all.sh` 后，Web 端所有主视图零 404；可在页面完成 PTDE 造数 → 场景压测 → 查看 JVM/Trace/慢 SQL → 生成报告 → 一键验证完整重放 |
+| **阶段 2 · P1 贯通**（2–4 周） | 压测引擎注入 `X-Perf-Stress-Task-Id`，探针采集透传并按任务聚合运行态瓶颈；补齐 5 个 AI 观测查询工具接入 `ROLE_ANALYSIS`；PTDE 导出参数样本 CSV 并支持写压测前后数据重置；补齐压测取消/临时文件清理与高精度发压引擎（k6/JMeter 完整场景） | `perf-agent`（`FilterRootAdvice` / `TraceContext`）、`perf-py/tools/` & `agents/roles.py`、`perf-py/engine/` & `stress_service.py` | 压测报告自动展示该次任务关联的慢 SQL Top N 与 JVM 峰值；AI Agent 无需手工传慢日志文件即可基于在线观测数据输出根因与修复代码提示词 |
 | **阶段 3 · P2 深化**（4–8 周） | 以 JFR / `async-profiler` 替代 10ms `ThreadMXBean` 轮询并输出火焰图；补齐异步线程池/WebFlux/W3C Trace 透传与 HikariCP/Tomcat/GC 停顿指标；升级基线门禁（纳入 P99、防抖与分类型验收）及分布式施压 | `perf-agent`（`JfrProfiler` / `JvmCollector` / `TraceEnhancer`）、`perf-py/server/baseline_compare.py`、`perf-web` 火焰图视图 | 高压下探针 CPU 开销 < 3%、无 Safepoint 引起的 P99 尖刺；异步与微服务链路不中断；CI 门禁能稳定捕获 P99 退化且零误报 |

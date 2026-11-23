@@ -119,6 +119,9 @@ class JvmMetricModel(Base):
     thread_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cpu_usage: Mapped[float] = mapped_column(Double, nullable=False, default=0)
     system_cpu: Mapped[float] = mapped_column(Double, nullable=False, default=0)
+    # P1-5 扩展指标（连接池/容器线程池/直接内存/Metaspace/线程状态细分）：
+    # 旧探针不上报时为 NULL，独立扩展列保持旧表字段零破坏
+    extra_metrics: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class TraceChainModel(Base):
@@ -133,6 +136,8 @@ class TraceChainModel(Base):
     trace_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     total_ms: Mapped[float] = mapped_column(Double, nullable=False, default=0)
     start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # P1-1 压测流量染色：旧探针不上报时为 NULL（可选字段，向后兼容）
+    stress_task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class SlowSqlModel(Base):
@@ -148,6 +153,8 @@ class SlowSqlModel(Base):
     db_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     method_chain: Mapped[str | None] = mapped_column(Text, nullable=True)
     execute_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # P1-1 压测流量染色：旧探针不上报时为 NULL（可选字段，向后兼容）
+    stress_task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class SlowCommandModel(Base):
@@ -163,6 +170,8 @@ class SlowCommandModel(Base):
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     method_chain: Mapped[str | None] = mapped_column(Text, nullable=True)
     execute_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # P1-1 压测流量染色：旧探针不上报时为 NULL（可选字段，向后兼容）
+    stress_task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class HotspotMethodModel(Base):
@@ -365,6 +374,7 @@ class CollectorRepository:
         self, app: str | None, method: str | None, min_cost_ms: float | None,
         start: datetime | None, end: datetime | None,
         cursor_pair: tuple[datetime, int] | None, limit_plus_one: int,
+        stress_task_id: int | None = None,
     ) -> list[TraceChainModel]:
         stmt = select(TraceChainModel)
         if app:
@@ -373,6 +383,8 @@ class CollectorRepository:
             stmt = stmt.where(TraceChainModel.root_method.contains(method))
         if min_cost_ms is not None and min_cost_ms > 0:
             stmt = stmt.where(TraceChainModel.total_ms >= min_cost_ms)
+        if stress_task_id is not None:
+            stmt = stmt.where(TraceChainModel.stress_task_id == stress_task_id)
         if start:
             stmt = stmt.where(TraceChainModel.start_time >= start)
         if end:
@@ -396,12 +408,15 @@ class CollectorRepository:
         self, app: str | None, min_cost_ms: float | None,
         start: datetime | None, end: datetime | None,
         cursor_pair: tuple[datetime, int] | None, limit_plus_one: int,
+        stress_task_id: int | None = None,
     ) -> list[SlowSqlModel]:
         stmt = select(SlowSqlModel)
         if app:
             stmt = stmt.where(SlowSqlModel.app_name == app)
         if min_cost_ms is not None and min_cost_ms > 0:
             stmt = stmt.where(SlowSqlModel.cost_ms >= min_cost_ms)
+        if stress_task_id is not None:
+            stmt = stmt.where(SlowSqlModel.stress_task_id == stress_task_id)
         if start:
             stmt = stmt.where(SlowSqlModel.execute_time >= start)
         if end:
@@ -417,6 +432,7 @@ class CollectorRepository:
         self, app: str | None, cmd_type: str | None, min_cost_ms: float | None,
         start: datetime | None, end: datetime | None,
         cursor_pair: tuple[datetime, int] | None, limit_plus_one: int,
+        stress_task_id: int | None = None,
     ) -> list[SlowCommandModel]:
         stmt = select(SlowCommandModel)
         if app:
@@ -425,6 +441,8 @@ class CollectorRepository:
             stmt = stmt.where(SlowCommandModel.type == cmd_type.lower())
         if min_cost_ms is not None and min_cost_ms > 0:
             stmt = stmt.where(SlowCommandModel.cost_ms >= min_cost_ms)
+        if stress_task_id is not None:
+            stmt = stmt.where(SlowCommandModel.stress_task_id == stress_task_id)
         if start:
             stmt = stmt.where(SlowCommandModel.execute_time >= start)
         if end:

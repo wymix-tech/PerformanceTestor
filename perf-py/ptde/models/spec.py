@@ -323,3 +323,6 @@ class ExecutionManifest(VersionedModel):
     shard_summaries: list[ShardSummary] = Field(default_factory=list)
     start_time: datetime | None = None
     end_time: datetime | None = None
+    # P1-3 压测参数样本导出（READY 后生成；可选，缺省 None 不进指纹）
+    sample_csv_path: str | None = None
+    sample_csv_rows: int = 0

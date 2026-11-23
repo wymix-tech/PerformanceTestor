@@ -16,7 +16,7 @@
 │                   #   perf_cli/  perf CLI（压测/门禁/灌数/Agent 工具/MCP）
 │                   #   engine/    本地压测引擎（locust/jmeter，统计层逐位对齐 Java）
 │                   #   ptde/      智能测试数据引擎 PTDE（分析/规划/生成/装载/生命周期）
-│                   #   tools/ agents/  AI Agent 工具层（7 工具，OpenAI/MCP 双形态）+ ReAct 编排
+│                   #   tools/ agents/  AI Agent 工具层（12 工具，OpenAI/MCP 双形态）+ ReAct 编排
 │                   #   scenario/ stress/ slowlog/ capacity/  场景即代码 / 模板渲染 / 慢日志 / 容量
 ├── perf-web/       # 前端（Vue3 + TS + Vite + Tailwind + ECharts），零改动对接 Python server
 ├── perf-demo/      # 示例被测应用（Spring Boot 3.2 + MyBatis）：N+1 / 慢 SQL 演示热点
@@ -80,7 +80,7 @@ uv run ruff check .         # lint
 | `perf ptde plan <spec.json> [--preview / --def-key K]` | 数据集规划（离线预览 / 注册 Definition） |
 | `perf ptde dataset <create/build/status/verify/list/cleanup> ...` | 数据集生命周期（READY 门禁；生产环境无构建/清理入口） |
 | `perf ptde migrate-legacy` | legacy 三表 → ptde_* 存量迁移（幂等 + 核对报告） |
-| `perf tools list` / `perf tools call <name> -a '<json>'` | Agent 工具直接调用（7 个，双形态暴露） |
+| `perf tools list` / `perf tools call <name> -a '<json>'` | Agent 工具直接调用（12 个，双形态暴露） |
 | `perf mcp` | MCP server（stdio JSON-RPC 2.0），IDE / Agent 子进程接入 |
 | `perf agent run <task> [-r pipeline]` | ReAct Agent / 三角色流水线（压测→分析→修复建议） |
 | `perf serve [--port 8000] [--knowledge-db kb.sqlite]` | 启动 Python server（FastAPI） |
@@ -149,7 +149,7 @@ REPORT_URL=http://<平台IP>:8000/api/agent/report scripts/start-agent.sh   # �
 
 ## AI Agent 闭环
 
-- **工具层**（`perf-py/tools/`）：7 个工具双形态暴露（OpenAI Function Calling schema + MCP server）：`stress_result_read` / `stress_run` / `capacity_analyze` / `slowlog_analyze` / `source_scan` / `datagen_dry_run` / `datagen_run`。handler 出参 JSON 可序列化，异常一律转 `{"error": ...}` 不向 Agent 抛栈。
+- **工具层**（`perf-py/tools/`）：12 个工具双形态暴露（OpenAI Function Calling schema + MCP server）：域内 7 个 `stress_result_read` / `stress_run` / `capacity_analyze` / `slowlog_analyze` / `source_scan` / `datagen_dry_run` / `datagen_run`，P1-2 在线观测 5 个 `jvm_metrics_query` / `slow_sql_query` / `trace_query` / `hotspot_query` / `db_explain_run`（server 与 CLI agent 装配时注入）。handler 出参 JSON 可序列化，异常一律转 `{"error": ...}` 不向 Agent 抛栈。
 - **编排**（`perf-py/agents/`）：ReAct 循环单体（max_steps 防死循环）+ 三角色流水线（压测→分析→修复建议），角色间只传结构化上下文，单角色截断不阻断下游（`degraded` 标记）。配置 `PERF_LLM_MODEL / PERF_LLM_BASE_URL / PERF_LLM_API_KEY` 后运行：
 
 ```bash

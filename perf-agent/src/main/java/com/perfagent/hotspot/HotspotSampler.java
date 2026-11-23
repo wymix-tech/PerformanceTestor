@@ -47,10 +47,27 @@ public class HotspotSampler {
     private final ConcurrentHashMap<String, LongAdder> frameCounts = new ConcurrentHashMap<>();
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** 采样周期下限（防呆）：低于该值的全线程 getThreadInfo 会造成 Safepoint 风暴 */
+    static final int MIN_INTERVAL_MS = 20;
+
+    /** 防呆生效后的实际采样周期（≥ 20ms） */
+    final int effectiveIntervalMs;
 
     public HotspotSampler(AgentConfig config, MetricsReporter reporter) {
         this.config = config;
         this.reporter = reporter;
+        // P1-5 Safepoint 防呆：配置 < 20ms 时上调到 20ms 并一次性 stderr 告警。
+        // 高频全线程 getThreadInfo 需要停顿所有线程（Safepoint），采样越密停顿越频繁，
+        // 会直接放大被测应用 P99 抖动（观测者效应）。P2 预留替换为 JDK Flight Recorder
+        // （JFR）连续剖析（ExecutionSample 事件由 JVM 内部安全点批处理，开销低一个量级）。
+        int requested = config.hotspotIntervalMs;
+        this.effectiveIntervalMs = Math.max(MIN_INTERVAL_MS, requested);
+        if (requested < MIN_INTERVAL_MS) {
+            System.err.println("[perf-agent] hotspotIntervalMs=" + requested
+                    + "ms 低于安全下限 " + MIN_INTERVAL_MS + "ms（全线程 getThreadInfo "
+                    + "高频触发 Safepoint 风暴，放大被测应用停顿），已上调至 "
+                    + this.effectiveIntervalMs + "ms；持续剖析建议改用 JFR（P2 预留）");
+        }
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "perf-hotspot");
             t.setDaemon(true);
@@ -61,7 +78,7 @@ public class HotspotSampler {
     public void start() {
         if (running.compareAndSet(false, true)) {
             scheduler.scheduleWithFixedDelay(this::sample,
-                    500, Math.max(1, config.hotspotIntervalMs), TimeUnit.MILLISECONDS);
+                    500, effectiveIntervalMs, TimeUnit.MILLISECONDS);
             scheduler.scheduleWithFixedDelay(this::report,
                     config.hotspotReportSec, Math.max(1, config.hotspotReportSec), TimeUnit.SECONDS);
         }

@@ -199,6 +199,31 @@ class StressRepository:
                 row.finish_time = datetime.now()
                 s.commit()
 
+    def update_cancelled(self, task_id: int) -> None:
+        """P1-3 中止通道：status=cancelled + finish_time = NOW()。"""
+        with self._sessions() as s:
+            row = s.get(StressTaskModel, task_id)
+            if row is not None:
+                row.status = "cancelled"
+                row.finish_time = datetime.now()
+                s.commit()
+
+    def fail_stale(self, error_msg: str) -> int:
+        """P1-3 孤儿收口：进程重启时遗留的 running/pending 任务统一置 failed。
+
+        返回收口条数（create_app 启动时调用，防止僵尸 running 永久占用并发）。
+        """
+        with self._sessions() as s:
+            rows = list(s.scalars(select(StressTaskModel).where(
+                StressTaskModel.status.in_(("running", "pending")))))
+            for row in rows:
+                row.status = "failed"
+                row.error_msg = error_msg
+                row.finish_time = datetime.now()
+            if rows:
+                s.commit()
+            return len(rows)
+
     def insert_sample(self, *, task_id: int, sample_time: datetime, concurrency: int,
                       qps: float, p50_ms: float, p95_ms: float, p99_ms: float,
                       error_count: int) -> None:

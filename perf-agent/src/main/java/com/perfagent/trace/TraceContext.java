@@ -2,6 +2,8 @@ package com.perfagent.trace;
 
 import com.perfagent.reporter.MetricsReporter;
 
+import java.lang.ClassValue;
+import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -32,6 +34,28 @@ public final class TraceContext {
     /** 链路 ID 序号生成器 */
     private static final AtomicLong TRACE_SEQ = new AtomicLong(0);
 
+    /**
+     * 压测流量染色请求头（P1-1）：压测引擎统一注入 {@code X-Perf-Stress-Task-Id}，
+     * 探针在 Filter 根入口零依赖捕获（兼容 javax/jakarta Servlet）。
+     */
+    static final String STRESS_TASK_ID_HEADER = "X-Perf-Stress-Task-Id";
+
+    /**
+     * getHeader(String) 反射方法缓存：按 request 实际类缓存（ClassValue，热路径 O(1)）。
+     * 零依赖兼容 javax.servlet / jakarta.servlet 及任意带 getHeader 的请求包装类；
+     * 类上无 getHeader（非 Servlet 容器 / 单测 MockHttpServletRequest）时缓存 null 直接短路。
+     */
+    private static final ClassValue<Method> GET_HEADER_CACHE = new ClassValue<>() {
+        @Override
+        protected Method computeValue(Class<?> type) {
+            try {
+                return type.getMethod("getHeader", String.class);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+    };
+
     /** 采样器（由 AgentPremain 初始化） */
     private static volatile TraceSampler sampler = new TraceSampler(0.1);
     /** 应用名称（由 AgentPremain 初始化） */
@@ -50,6 +74,8 @@ public final class TraceContext {
         String traceId;
         long rootStartNanos;
         int nodeCount;
+        /** 压测染色任务 ID（P1-1：与采样决策无关，未采样请求同样携带，供慢 SQL/慢命令关联） */
+        String stressTaskId;
 
         Ctx(boolean filterOwned) {
             this.filterOwned = filterOwned;
@@ -133,7 +159,8 @@ public final class TraceContext {
         if (stack.isEmpty()) {
             // 根节点完成：提交整条链路（树对象直接入队，转 Map 在 reporter 线程做）
             if (reporter != null) {
-                reporter.reportTrace(ctx.traceId, appName, node, ctx.nodeCount, System.currentTimeMillis());
+                reporter.reportTrace(ctx.traceId, appName, node, ctx.nodeCount,
+                        System.currentTimeMillis(), ctx.stressTaskId);
             }
             ctx.chainSubmitted = true;
             // Filter 根模式：上下文保留至 Filter 退出（sampled 标志仍有效，
@@ -162,11 +189,27 @@ public final class TraceContext {
      *         false = 嵌套 Filter 或上下文已存在，无需处理
      */
     public static boolean beginFilterRoot() {
+        return beginFilterRoot(null);
+    }
+
+    /**
+     * Filter 根进入（P1-1 增强重载）：由 {@code FilterRootAdvice} 传入请求对象，
+     * 在采样决策<b>之前</b>捕获压测染色头 {@code X-Perf-Stress-Task-Id}。
+     *
+     * <p>关键语义：无论 {@code sampler.shouldSample()} 命中与否，{@code stressTaskId}
+     * 都必须存入上下文——慢 SQL（JdbcInterceptor）与慢命令（MiddlewareSupport）独立于
+     * 调用链采样率触发，未采样请求产生的慢 SQL 同样必须携带染色标识。
+     *
+     * @param request Servlet 请求对象（{@code javax/jakarta.servlet.ServletRequest}），
+     *                为 null 或非 Servlet 请求时染色标识为 null（可选字段，向后兼容）
+     */
+    public static boolean beginFilterRoot(Object request) {
         Ctx existing = CTX.get();
         if (existing != null) {
             return false;
         }
         Ctx ctx = new Ctx(true);
+        ctx.stressTaskId = extractStressTaskId(request);
         if (sampler.shouldSample()) {
             ctx.sampled = true;
             ctx.traceId = nextTraceId();
@@ -177,6 +220,28 @@ public final class TraceContext {
         }
         CTX.set(ctx);
         return true;
+    }
+
+    /**
+     * 零依赖提取压测染色头：反射调用 {@code request.getHeader(String)}，
+     * 方法引用按 request 实际类经 {@link #GET_HEADER_CACHE} 缓存（热路径 O(1)）。
+     * 必须为 public static（被 Advice 内联代码引用），内部全量兜底，绝不影响业务。
+     */
+    public static String extractStressTaskId(Object request) {
+        if (request == null) {
+            return null;
+        }
+        try {
+            Method m = GET_HEADER_CACHE.get(request.getClass());
+            if (m == null) {
+                return null;
+            }
+            Object v = m.invoke(request, STRESS_TASK_ID_HEADER);
+            return v == null ? null : v.toString();
+        } catch (Throwable ignored) {
+            // 非 Servlet 容器、方法不可达、反射受限等场景：染色标识缺省为空
+            return null;
+        }
     }
 
     /**
@@ -215,6 +280,97 @@ public final class TraceContext {
     public static String currentTraceId() {
         Ctx ctx = CTX.get();
         return ctx == null ? null : ctx.traceId;
+    }
+
+    /**
+     * 当前压测染色任务 ID（P1-1）：供慢 SQL / 慢命令上报关联压测任务。
+     * 与采样决策无关（Filter 根入口已无条件捕获）；无上下文/非压测流量返回 null。
+     * 仅在阈值命中后调用（慢路径），正常路径零开销。
+     */
+    public static String currentStressTaskId() {
+        Ctx ctx = CTX.get();
+        return ctx == null ? null : ctx.stressTaskId;
+    }
+
+    /**
+     * 跨线程上下文快照（P1-5 异步透传）：{@link #capture()} 在提交任务时拍快照，
+     * 子线程 {@link #attach(Snapshot)} 恢复、{@link #detach(Snapshot)} 清理。
+     */
+    public static final class Snapshot {
+        final String traceId;
+        final String stressTaskId;
+        final boolean sampled;
+        /** 父线程当前栈顶节点（子任务方法挂为它的子调用；未采样为 null） */
+        final TraceNode parentNode;
+
+        Snapshot(String traceId, String stressTaskId, boolean sampled, TraceNode parentNode) {
+            this.traceId = traceId;
+            this.stressTaskId = stressTaskId;
+            this.sampled = sampled;
+            this.parentNode = parentNode;
+        }
+    }
+
+    /**
+     * 拍摄当前线程上下文快照（任务提交时刻调用，线程池复用安全）。
+     * 无上下文 / 上下文既未采样也无染色标识时返回 null（无需透传）。
+     */
+    public static Snapshot capture() {
+        Ctx ctx = CTX.get();
+        if (ctx == null || (!ctx.sampled && ctx.stressTaskId == null)) {
+            return null;
+        }
+        return new Snapshot(ctx.traceId, ctx.stressTaskId, ctx.sampled,
+                ctx.sampled ? ctx.stack.peek() : null);
+    }
+
+    /**
+     * 在子线程恢复快照（必须与 {@link #detach(Snapshot)} 配对，finally 中调用）。
+     *
+     * <p>语义：线程已存在上下文（池复用残留/嵌套提交）时<b>不覆盖</b>并返回其快照；
+     * 正常恢复时把子任务方法挂为 {@code parentNode} 的子调用（采样继承），
+     * {@code stressTaskId} 无条件继承（未采样压测流量同样透传染色标识）。
+     *
+     * @return 供 {@link #detach(Snapshot)} 使用的"提交时刻"前上下文快照（可为 null）
+     */
+    public static Snapshot attach(Snapshot snapshot) {
+        Snapshot prev = capture();
+        if (snapshot == null || CTX.get() != null) {
+            return prev; // 已有上下文不覆盖（防池复用串用）
+        }
+        Ctx ctx = new Ctx(false); // 非 Filter 根：由 detach/end 负责清理
+        ctx.sampled = snapshot.sampled;
+        ctx.traceId = snapshot.traceId;
+        ctx.stressTaskId = snapshot.stressTaskId;
+        ctx.rootStartNanos = System.nanoTime();
+        if (snapshot.sampled && snapshot.parentNode != null) {
+            ctx.stack.push(snapshot.parentNode); // 子任务方法成为父节点子调用
+        }
+        CTX.set(ctx);
+        return prev;
+    }
+
+    /**
+     * 清理/恢复子线程上下文（<b>必须</b>在 finally 中调用，严禁在线程池复用线程上
+     * 遗留 CTX——否则后续无关请求会串用 stressTaskId/traceId 造成上下文污染）。
+     *
+     * @param prev {@link #attach(Snapshot)} 返回的快照：非 null 恢复该上下文，
+     *             null 直接移除 ThreadLocal
+     */
+    public static void detach(Snapshot prev) {
+        if (prev == null) {
+            CTX.remove();
+            return;
+        }
+        Ctx ctx = new Ctx(false);
+        ctx.sampled = prev.sampled;
+        ctx.traceId = prev.traceId;
+        ctx.stressTaskId = prev.stressTaskId;
+        ctx.rootStartNanos = System.nanoTime();
+        if (prev.sampled && prev.parentNode != null) {
+            ctx.stack.push(prev.parentNode);
+        }
+        CTX.set(ctx);
     }
 
     /**

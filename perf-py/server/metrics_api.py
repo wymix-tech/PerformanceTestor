@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Query, Request
@@ -67,6 +68,9 @@ def jvm_metrics(
             "fullGcCount": r.full_gc_count, "fullGcMs": r.full_gc_ms,
             "threadCount": r.thread_count, "cpuUsage": r.cpu_usage,
             "systemCpu": r.system_cpu,
+            # P1-5 扩展指标（可选 JSON 列，旧探针为 None）
+            "extraMetrics": (json.loads(r.extra_metrics)
+                             if getattr(r, "extra_metrics", None) else None),
         },
     ))
 
@@ -77,6 +81,7 @@ def list_traces(
     app: str | None = None,
     method: str | None = None,
     minCostMs: float | None = Query(default=None),
+    stressTaskId: int | None = Query(default=None),
     start: str | None = None,
     end: str | None = None,
     size: int | None = None,
@@ -91,6 +96,7 @@ def list_traces(
         app=app, method=method, min_cost_ms=minCostMs,
         start=parse_time(start), end=parse_time(end),
         cursor_pair=cursor_pair, limit_plus_one=page_size + 1,
+        stress_task_id=stressTaskId,
     )
     return _ok(build_cursor_page(
         rows, page_size,
@@ -99,7 +105,7 @@ def list_traces(
         serializer=lambda r: {
             "id": r.id, "traceId": r.trace_id, "appName": r.app_name,
             "rootMethod": r.root_method, "totalMs": r.total_ms,
-            "startTime": _fmt(r.start_time),
+            "startTime": _fmt(r.start_time), "stressTaskId": r.stress_task_id,
         },
     ))
 
@@ -121,6 +127,7 @@ def list_slow_sqls(
     request: Request,
     app: str | None = None,
     minCostMs: float | None = Query(default=None),
+    stressTaskId: int | None = Query(default=None),
     start: str | None = None,
     end: str | None = None,
     size: int | None = None,
@@ -134,6 +141,7 @@ def list_slow_sqls(
     rows = request.app.state.collector_repo.query_slow_sqls(
         app=app, min_cost_ms=minCostMs, start=parse_time(start), end=parse_time(end),
         cursor_pair=cursor_pair, limit_plus_one=page_size + 1,
+        stress_task_id=stressTaskId,
     )
     return _ok(build_cursor_page(
         rows, page_size,
@@ -143,6 +151,7 @@ def list_slow_sqls(
             "id": r.id, "appName": r.app_name, "sqlText": r.sql_text,
             "costMs": r.cost_ms, "source": r.source, "dbHost": r.db_host,
             "methodChain": r.method_chain, "executeTime": _fmt(r.execute_time),
+            "stressTaskId": r.stress_task_id,
         },
     ))
 
@@ -153,6 +162,7 @@ def list_slow_commands(
     app: str | None = None,
     type: str | None = None,
     minCostMs: float | None = Query(default=None),
+    stressTaskId: int | None = Query(default=None),
     start: str | None = None,
     end: str | None = None,
     size: int | None = None,
@@ -167,6 +177,7 @@ def list_slow_commands(
         app=app, cmd_type=type, min_cost_ms=minCostMs,
         start=parse_time(start), end=parse_time(end),
         cursor_pair=cursor_pair, limit_plus_one=page_size + 1,
+        stress_task_id=stressTaskId,
     )
     return _ok(build_cursor_page(
         rows, page_size,
@@ -176,6 +187,7 @@ def list_slow_commands(
             "id": r.id, "appName": r.app_name, "type": r.type,
             "command": r.command, "costMs": r.cost_ms, "traceId": r.trace_id,
             "methodChain": r.method_chain, "executeTime": _fmt(r.execute_time),
+            "stressTaskId": r.stress_task_id,
         },
     ))
 

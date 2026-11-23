@@ -11,6 +11,7 @@ import net.bytebuddy.matcher.ElementMatcher;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
 import static net.bytebuddy.matcher.ElementMatchers.isAbstract;
@@ -23,6 +24,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isSynthetic;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 import static net.bytebuddy.matcher.ElementMatchers.named;
 import static net.bytebuddy.matcher.ElementMatchers.not;
+import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 /**
  * 增强规则定义：配置 ByteBuddy 拦截哪些类与方法。
@@ -88,6 +90,22 @@ public class TraceEnhancer {
                                     .on(named("doFilter").and(not(isStatic())))));
         }
 
+        // 1.2) 异步上下文透传（P1-5，默认关闭 asyncTraceEnabled=false）：拦截
+        //      Executor#execute(Runnable) 用携带快照的包装任务替换入参，子线程执行前
+        //      attach、finally 中 detach（防线程池复用串用 stressTaskId/traceId）。
+        //      明确排除 agent 自身类与 JDK 内部 ForkJoinPool*（防类加载死锁与递归增强）。
+        //      注意：只拦 execute 路径（submit(Runnable) 底层同样经由 execute；
+        //      submit(Callable) 的 RunnableAdapter 不走 execute，本期明确不覆盖）。
+        if (config.asyncTraceEnabled) {
+            AsyncSupport.enabled = true;
+            agentBuilder = agentBuilder
+                    .type(asyncExecutorTypeMatcher())
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(AsyncAdvice.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on(asyncExecuteMethodMatcher())));
+        }
+
         // 2) JDBC 执行拦截
         if (config.jdbcEnabled) {
             agentBuilder = agentBuilder
@@ -128,6 +146,25 @@ public class TraceEnhancer {
                                     .on(mqMethodMatcher().and(not(isStatic())))));
         }
         return agentBuilder;
+    }
+
+    /**
+     * 异步透传类型匹配（P1-5）：Executor 实现类，排除接口、agent 自身类与
+     * JDK 内部 ForkJoinPool*（防类加载死锁与递归增强）。
+     */
+    private static ElementMatcher.Junction<TypeDescription> asyncExecutorTypeMatcher() {
+        return isSubTypeOf(Executor.class)
+                .and(not(isInterface()))
+                .and(not(nameStartsWith("com.perfagent.")))
+                .and(not(nameStartsWith("net.bytebuddy.")))
+                .and(not(nameStartsWith("java.util.concurrent.ForkJoin")));
+    }
+
+    /** 异步透传方法匹配：{@code execute(Runnable)} 实例方法（submit(Runnable) 底层亦经此路径） */
+    private static ElementMatcher.Junction<MethodDescription> asyncExecuteMethodMatcher() {
+        return named("execute")
+                .and(takesArgument(0, isSubTypeOf(Runnable.class)))
+                .and(not(isStatic()));
     }
 
     /**

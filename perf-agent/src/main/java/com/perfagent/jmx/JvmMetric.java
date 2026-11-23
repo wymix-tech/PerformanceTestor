@@ -31,6 +31,12 @@ public class JvmMetric {
     public double cpuUsage;
     /** 系统 CPU 使用率 %（0~100） */
     public double systemCpu;
+    /**
+     * 扩展指标（P1-5，可选）：连接池/容器线程池/直接内存/Metaspace/线程状态细分。
+     * 上报为 {@code extraMetrics} 嵌套 JSON；不可用（类/MBean 不存在）时为 null 不上报，
+     * 保持旧表字段零破坏。
+     */
+    public Map<String, Object> extraMetrics;
 
     /** 转为上报 JSON 用的 Map */
     public Map<String, Object> toMap() {
@@ -47,6 +53,9 @@ public class JvmMetric {
         map.put("threadCount", threadCount);
         map.put("cpuUsage", cpuUsage);
         map.put("systemCpu", systemCpu);
+        if (extraMetrics != null && !extraMetrics.isEmpty()) {
+            map.put("extraMetrics", extraMetrics);
+        }
         return map;
     }
 }

@@ -173,6 +173,37 @@ def test_jvm_metrics_defaults_and_time_conversion(ctx):
             r.cpu_usage, r.system_cpu) == (0.0, 0, 0, 0.0, 0.0)
 
 
+def test_jvm_extra_metrics_persisted_as_json(ctx):
+    """P1-5 扩展指标：extraMetrics dict → JSON 文本落库；缺失/非 dict → NULL（旧探针兼容）。"""
+    client, factory = ctx
+    _post(client, {"type": "jvm", "appName": "demo-app", "items": [
+        {"collectTime": EPOCH,
+         "extraMetrics": {"hikari": {"activeConnections": 8}, "tomcat": {"busyThreads": 3}}},
+        {"collectTime": EPOCH + 5000},  # 旧探针：无 extraMetrics
+        {"collectTime": EPOCH + 6000, "extraMetrics": "bad"},  # 非 dict → NULL
+    ]})
+    rows = _all(factory, JvmMetricModel)
+    assert len(rows) == 3
+    import json as _json
+
+    assert _json.loads(rows[0].extra_metrics) == {
+        "hikari": {"activeConnections": 8}, "tomcat": {"busyThreads": 3}}
+    assert rows[1].extra_metrics is None
+    assert rows[2].extra_metrics is None
+    # 查询 API 序列化回 dict（专用客户端关闭会话鉴权）
+    from fastapi.testclient import TestClient as _TC
+
+    from server.app import create_app as _create_app
+
+    api = _TC(_create_app(stress_repo=StressRepository(factory),
+                          collector_repo=CollectorRepository(factory),
+                          auth_enabled=False))
+    data = api.get("/api/jvm/metrics").json()["data"]["items"]
+    assert data[2]["extraMetrics"] == {"hikari": {"activeConnections": 8},
+                                       "tomcat": {"busyThreads": 3}}  # 时间倒序
+    assert data[1]["extraMetrics"] is None
+
+
 def test_trace_compact_json_and_replay_idempotent(ctx):
     """trace：tree 序列化为紧凑 JSON（无空格，对齐 Jackson）；缺 tree → "{}"；
     trace_id 冲突时更新（重放幂等）。"""

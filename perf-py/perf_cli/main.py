@@ -269,6 +269,9 @@ def agent_run(
         raise typer.Exit(EXIT_INVOCATION_ERROR) from None
 
     registry = build_registry()
+    from tools.observability_tools import wire_observability_tools
+
+    wire_observability_tools(registry)  # P1-2：CLI agent 也接入在线观测工具
     try:
         if role == "pipeline":
             result = run_pipeline(task, llm, registry, max_steps)

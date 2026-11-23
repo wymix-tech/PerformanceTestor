@@ -55,13 +55,17 @@ public class MetricsReporter {
         final String app;
         final TraceNode root;
         final long startTimeMs;
+        /** 压测流量染色任务 ID（P1-1，未染色为 null，不上报字段） */
+        final String stressTaskId;
         final int estBytes;
 
-        TraceItem(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs) {
+        TraceItem(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs,
+                  String stressTaskId) {
             this.traceId = traceId;
             this.app = app;
             this.root = root;
             this.startTimeMs = startTimeMs;
+            this.stressTaskId = stressTaskId;
             this.estBytes = Math.max(MIN_TRACE_BYTES, nodeCount * BYTES_PER_NODE);
         }
     }
@@ -243,12 +247,18 @@ public class MetricsReporter {
 
     // ===================== 上报入口（业务线程调用，非阻塞 O(1)） =====================
 
-    /** 上报一条调用链（原生树直接入队，转 Map 在 reporter 线程做） */
+    /** 上报一条调用链（旧重载：不带染色标识，兼容既有单测） */
     public void reportTrace(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs) {
+        reportTrace(traceId, app, root, nodeCount, startTimeMs, null);
+    }
+
+    /** 上报一条调用链（P1-1：携带压测染色任务 ID，原生树直接入队，转 Map 在 reporter 线程做） */
+    public void reportTrace(String traceId, String app, TraceNode root, int nodeCount,
+                            long startTimeMs, String stressTaskId) {
         if (!running.get()) {
             return;
         }
-        TraceItem item = new TraceItem(traceId, app, root, nodeCount, startTimeMs);
+        TraceItem item = new TraceItem(traceId, app, root, nodeCount, startTimeMs, stressTaskId);
         synchronized (traceQueue) {
             // 条数与字节预算双重限制，超限丢最旧
             while (traceQueue.size() >= bufferSize || traceQueueBytes + item.estBytes > traceBufferBytes) {
@@ -276,9 +286,15 @@ public class MetricsReporter {
         }
     }
 
-    /** 上报一条慢 SQL（携带触发方法链与目标数据库标识，供源码定位与 EXPLAIN 分析） */
+    /** 上报一条慢 SQL（旧重载：不带染色标识，兼容既有单测） */
     public void reportSlowSql(String app, String sql, long costMs, long executeTimeMs,
                               List<String> methodChain, String dbHost) {
+        reportSlowSql(app, sql, costMs, executeTimeMs, methodChain, dbHost, null);
+    }
+
+    /** 上报一条慢 SQL（P1-1：携带压测染色任务 ID + 触发方法链与目标数据库标识） */
+    public void reportSlowSql(String app, String sql, long costMs, long executeTimeMs,
+                              List<String> methodChain, String dbHost, String stressTaskId) {
         if (!running.get()) {
             return;
         }
@@ -289,6 +305,9 @@ public class MetricsReporter {
         item.put("costMs", costMs);
         item.put("source", "jdbc");
         item.put("executeTime", executeTimeMs);
+        if (stressTaskId != null && !stressTaskId.isBlank()) {
+            item.put("stressTaskId", stressTaskId);
+        }
         if (methodChain != null && !methodChain.isEmpty()) {
             item.put("methodChain", methodChain);
         }
@@ -310,6 +329,12 @@ public class MetricsReporter {
      */
     public void reportSlowCommand(String app, String type, String command, long costMs, long executeTimeMs,
                                   List<String> methodChain, String traceId) {
+        reportSlowCommand(app, type, command, costMs, executeTimeMs, methodChain, traceId, null);
+    }
+
+    /** 上报一条中间件慢命令（P1-1：携带压测染色任务 ID） */
+    public void reportSlowCommand(String app, String type, String command, long costMs, long executeTimeMs,
+                                  List<String> methodChain, String traceId, String stressTaskId) {
         if (!running.get()) {
             return;
         }
@@ -320,6 +345,9 @@ public class MetricsReporter {
         item.put("command", command);
         item.put("costMs", costMs);
         item.put("executeTime", executeTimeMs);
+        if (stressTaskId != null && !stressTaskId.isBlank()) {
+            item.put("stressTaskId", stressTaskId);
+        }
         if (traceId != null && !traceId.isBlank()) {
             item.put("traceId", traceId);
         }
@@ -436,6 +464,9 @@ public class MetricsReporter {
         // 链路总耗时 = 根节点自身耗时（父节点耗时已包含子调用，不应逐层相加）
         item.put("totalMs", t.root.costMs);
         item.put("startTime", t.startTimeMs);
+        if (t.stressTaskId != null && !t.stressTaskId.isBlank()) {
+            item.put("stressTaskId", t.stressTaskId);
+        }
         item.put("tree", toTreeMap(t.root));
         return item;
     }

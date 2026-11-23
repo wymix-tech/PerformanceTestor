@@ -15,6 +15,12 @@ from scenario.model import Scenario
 
 DEFAULT_ENGINE_TYPE = "http"
 
+# P2 预留接入点：k6 / Gatling 等高精度发压引擎（Locust Python 侧 P95/P99 长尾
+# 系统性偏高）。接入时实现 Engine 协议（type="k6"）并在此注册；
+# steps 多步场景若走 JMeter 补齐，优先在 generate_jmx 按 ThroughputController +
+# JSONPostProcessor 映射权重与变量提取（当前 steps 执行仍由 locust 承担）。
+RESERVED_ENGINE_TYPES = ("k6",)
+
 
 class Engine(Protocol):
     """引擎协议（对齐 StressEngine SPI：type + run）。"""

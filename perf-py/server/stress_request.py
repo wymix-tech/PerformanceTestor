@@ -31,6 +31,13 @@ from stress.csv_provider import CSV_MODES, parse_csv
 HTTP_ENGINE = "http"
 EXECUTE_ENGINE_OF_HTTP = "locust"
 
+# P1-1 压测流量染色：压测引擎统一注入任务标识头（探针 FilterRootAdvice 捕获后
+# 透传至 trace/slowSql/slowCommand 上报，服务端按 stress_task_id 聚合运行态瓶颈）。
+# 用户显式配置的同名头不覆盖（setdefault 语义）。
+STRESS_TASK_ID_HEADER = "X-Perf-Stress-Task-Id"
+TRAFFIC_TAG_HEADER = "X-Perf-Traffic-Tag"
+TRAFFIC_TAG_STRESS = "stress"
+
 
 @dataclass
 class StageData:
@@ -249,7 +256,16 @@ def _csv_spec(raw) -> CsvSpec | None:
         mode=mode if mode in CSV_MODES else "sequential", text=str(raw.get("text")))
 
 
-def _step_spec(step: dict) -> StepSpec:
+def _inject_stress_headers(headers: dict, task_id: int | None) -> dict:
+    """注入染色头（setdefault：不覆盖用户显式配置的同名头；task_id 为空时仅补流量标签）。"""
+    headers = dict(headers or {})
+    if task_id is not None:
+        headers.setdefault(STRESS_TASK_ID_HEADER, str(task_id))
+    headers.setdefault(TRAFFIC_TAG_HEADER, TRAFFIC_TAG_STRESS)
+    return headers
+
+
+def _step_spec(step: dict, task_id: int | None = None) -> StepSpec:
     extract = [VarExtractSpec.model_construct(
         var=e.get("var"), source=e.get("source") or "body", path=e.get("path"))
         for e in (step.get("extract") or []) if isinstance(e, dict)]
@@ -258,7 +274,7 @@ def _step_spec(step: dict) -> StepSpec:
         alias=step.get("alias"),
         url=str(step.get("url")),
         method=str(step.get("method") or "GET"),
-        headers=_str_map(step, "headers"),
+        headers=_inject_stress_headers(_str_map(step, "headers"), task_id),
         body=step.get("body"),
         # 权重：缺省 → Java 字段默认 1；显式 null → Jackson 基本类型 0
         weight=1 if "weight" not in step else int(step.get("weight") or 0),
@@ -280,33 +296,37 @@ def _load_spec(request: StressTaskRequestData, *, concurrency: int | None = None
     )
 
 
-def _request_spec(request: StressTaskRequestData) -> RequestSpec:
+def _request_spec(request: StressTaskRequestData,
+                  task_id: int | None = None) -> RequestSpec:
     return RequestSpec.model_construct(
         url=str(request.target_url),
         method=request.method,
-        headers=request.headers,
+        headers=_inject_stress_headers(request.headers, task_id),
         body=request.body,
         assertions=_assertion_specs(request.assertions),
         csv=_csv_spec(request.csv),
     )
 
 
-def to_scenario(request: StressTaskRequestData) -> Scenario:
+def to_scenario(request: StressTaskRequestData,
+                task_id: int | None = None) -> Scenario:
     """扁平请求 → 引擎可执行 Scenario。
 
     - 步骤与 request 互斥优先级与 Java 引擎一致（scenario 非空走步骤）；
     - model_construct 绕过 CLI 场景校验（ramp≤warmup 等在 HTTP 契约中是建议项非约束）；
-    - engine 固定 locust（平台 http 引擎的 Python 等价承担者）。
+    - engine 固定 locust（平台 http 引擎的 Python 等价承担者）；
+    - task_id 非空时为单接口与每个多步步骤注入压测染色头（P1-1，见 STRESS_TASK_ID_HEADER）。
     """
     scenario_mode = request.is_scenario_mode
-    steps = [_step_spec(s) for s in (request.scenario or [])] if scenario_mode else []
+    steps = ([_step_spec(s, task_id) for s in (request.scenario or [])]
+             if scenario_mode else [])
     return Scenario.model_construct(
         name=request.task_name or request.target_url or "stress-task",
         description="",
         engine=EXECUTE_ENGINE_OF_HTTP,
         app=request.app_name or "-",
         task_name=request.task_name,
-        request=None if scenario_mode else _request_spec(request),
+        request=None if scenario_mode else _request_spec(request, task_id),
         steps=steps,
         stages=[],
         stage_concurrencies=[],
@@ -319,10 +339,11 @@ def to_scenario(request: StressTaskRequestData) -> Scenario:
 
 
 def stage_scenario(request: StressTaskRequestData, stage: StageData,
-                   with_warmup: bool) -> Scenario:
+                   with_warmup: bool, task_id: int | None = None) -> Scenario:
     """分档子场景：对齐 HttpStressEngine.runStage——并发/时长取档值，
-    仅首档执行 warmup（后续档连接池/JIT 已热），rampUp 与 QPS 上限逐档生效。"""
-    base = to_scenario(request)
+    仅首档执行 warmup（后续档连接池/JIT 已热），rampUp 与 QPS 上限逐档生效。
+    task_id 透传 to_scenario 注入染色头。"""
+    base = to_scenario(request, task_id)
     return Scenario.model_construct(
         **{**base.__dict__,
            "load": _load_spec(request, concurrency=stage.concurrency,

@@ -62,6 +62,21 @@ def _double_val(o) -> float:
     return float(o) if isinstance(o, (int, float)) and not isinstance(o, bool) else 0.0
 
 
+def _stress_task_id_val(o) -> int | None:
+    """解析上报染色字段 stressTaskId：仅纯正整数串/数接受（防伪造脏头落库异常），
+    非法值（0、负数、非数字、超长等）静默置 None（对齐可选字段向后兼容语义）。"""
+    if o is None or isinstance(o, bool):
+        return None
+    if isinstance(o, int):
+        return o if o > 0 else None
+    if isinstance(o, float):
+        return int(o) if o > 0 and float(o).is_integer() else None
+    s = str(o).strip()
+    if not s.isdigit():
+        return None
+    return int(s) if int(s) > 0 else None
+
+
 def handle_report(body: dict, remote_host: str, repo: CollectorRepository) -> None:
     """处理一次批量上报（对齐 Java handleReport 主流程）。"""
     report_type = _str_val(body.get("type"))
@@ -131,6 +146,7 @@ def save_traces(app_name: str, items: list, repo: CollectorRepository) -> None:
                 total_ms=_double_val(item.get("totalMs")),
                 start_time=to_local_datetime(_long_val(item.get("startTime"))),
                 trace_json="{}" if tree is None else compact_json(tree),
+                stress_task_id=_stress_task_id_val(item.get("stressTaskId")),
             ))
         except Exception:  # noqa: BLE001 单条解析失败不影响整批
             log.warning("parse trace failed, app=%s", app_name, exc_info=True)
@@ -158,6 +174,9 @@ def save_jvm_metrics(app_name: str, items: list, repo: CollectorRepository) -> N
                 thread_count=_int_val(item.get("threadCount")),
                 cpu_usage=_double_val(item.get("cpuUsage")),
                 system_cpu=_double_val(item.get("systemCpu")),
+                # P1-5 扩展指标：dict → JSON 文本（可选字段，旧探针为 NULL）
+                extra_metrics=(compact_json(v)
+                               if isinstance(v := item.get("extraMetrics"), dict) else None),
             ))
         except Exception:  # noqa: BLE001
             log.warning("parse jvm metric failed, app=%s", app_name, exc_info=True)
@@ -184,6 +203,7 @@ def save_slow_sqls(app_name: str, items: list, repo: CollectorRepository) -> Non
                 db_host="" if db_host is None else db_host,
                 method_chain=None if chain is None else compact_json(chain),
                 execute_time=to_local_datetime(_long_val(item.get("executeTime"))),
+                stress_task_id=_stress_task_id_val(item.get("stressTaskId")),
             ))
             # agent 上报了库地址且该应用尚未关联连接 → 自动注册（每批同地址仅一次）
             if db_host and db_host.strip() and db_host not in auto_regged:
@@ -213,6 +233,7 @@ def save_slow_commands(app_name: str, items: list, repo: CollectorRepository) ->
                 trace_id=_str_val(item.get("traceId")),
                 method_chain=None if chain is None else compact_json(chain),
                 execute_time=to_local_datetime(_long_val(item.get("executeTime"))),
+                stress_task_id=_stress_task_id_val(item.get("stressTaskId")),
             ))
         except Exception:  # noqa: BLE001
             log.warning("parse slow command failed, app=%s", app_name, exc_info=True)

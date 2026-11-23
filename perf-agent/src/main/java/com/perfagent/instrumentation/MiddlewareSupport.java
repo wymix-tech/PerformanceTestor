@@ -91,7 +91,7 @@ public final class MiddlewareSupport {
             }
             reporter.reportSlowCommand(appName, type, describe(method, e.args), costMs,
                     System.currentTimeMillis(), TraceContext.currentMethodChain(),
-                    TraceContext.currentTraceId());
+                    TraceContext.currentTraceId(), TraceContext.currentStressTaskId());
         } catch (Throwable ignored) {
             // 兜底：观测逻辑绝不因渲染/取链路异常影响业务
         }
