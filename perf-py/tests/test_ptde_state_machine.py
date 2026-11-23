@@ -15,9 +15,10 @@ def _instance() -> DatasetInstance:
 
 
 def test_table_covers_all_states():
-    """转换表覆盖全部状态为键；终态无出边。"""
+    """转换表覆盖全部状态为键；CANCELLED 终态无出边，CLEANED 仅可重建回 PLANNED。"""
     assert set(ALLOWED_TRANSITIONS) == ALL_STATES
-    assert ALLOWED_TRANSITIONS[DatasetState.CLEANED] == frozenset()
+    assert ALLOWED_TRANSITIONS[DatasetState.CLEANED] == frozenset(
+        {DatasetState.PLANNED})
     assert ALLOWED_TRANSITIONS[DatasetState.CANCELLED] == frozenset()
 
 
@@ -77,9 +78,15 @@ def test_operator_and_reason_required(operator, reason):
 
 
 def test_terminal_states_have_no_outgoing():
-    """CLEANED / CANCELLED 为终态：任何目标态均非法。"""
-    for terminal in (DatasetState.CLEANED, DatasetState.CANCELLED):
-        for to_state in ALL_STATES:
-            inst = DatasetInstance(id="i", definition_id="d", status=terminal)
-            with pytest.raises(InvalidStateTransition):
-                transition(inst, to_state, "op", "r")
+    """CANCELLED 为终态：任何目标态均非法；CLEANED 仅允许回 PLANNED（重建）。"""
+    for to_state in ALL_STATES:
+        inst = DatasetInstance(id="i", definition_id="d", status=DatasetState.CANCELLED)
+        with pytest.raises(InvalidStateTransition):
+            transition(inst, to_state, "op", "r")
+    for to_state in ALL_STATES - {DatasetState.PLANNED}:
+        inst = DatasetInstance(id="i", definition_id="d", status=DatasetState.CLEANED)
+        with pytest.raises(InvalidStateTransition):
+            transition(inst, to_state, "op", "r")
+    inst = DatasetInstance(id="i", definition_id="d", status=DatasetState.CLEANED)
+    transition(inst, DatasetState.PLANNED, "op", "rebuild")
+    assert inst.status is DatasetState.PLANNED

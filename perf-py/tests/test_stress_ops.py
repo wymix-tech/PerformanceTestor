@@ -277,6 +277,24 @@ def test_reset_hook_before_and_after(tmp_path):
 
 
 def test_reset_hook_error_does_not_block_task():
+    """after 段钩子异常不阻断任务创建（P0 修复后：仅 before 段失败拒绝发压）。"""
+    factory = _factory()
+
+    def _boom(iid, phase):
+        raise RuntimeError("reset failed")
+
+    svc = StressTaskService(
+        StressRepository(factory), InlineRunner(factory, engine=_EngineStub()),
+        engine_availability=lambda t: True,
+        dataset_lookup=lambda iid: _ready_lookup(),
+        dataset_reset=_boom)
+    out = svc.create_and_run(_payload(dataset={"instanceId": "1",
+                                                "resetPolicy": "after"}))
+    assert out["id"] > 0  # 钩子异常不阻断任务创建
+
+
+def test_before_reset_error_rejects_task():
+    """P0 修复回归：before 重置失败 → 任务标 failed 并拒绝发压（不盲目压空库）。"""
     factory = _factory()
 
     def _boom(iid, phase):
@@ -287,9 +305,49 @@ def test_reset_hook_error_does_not_block_task():
         engine_availability=lambda t: True,
         dataset_lookup=lambda iid: _ready_lookup(),
         dataset_reset=_boom)
-    out = svc.create_and_run(_payload(dataset={"instanceId": "1",
-                                                "resetPolicy": "before_and_after"}))
-    assert out["id"] > 0  # 钩子异常不阻断任务创建
+    with pytest.raises(ValueError, match="before 重置失败"):
+        svc.create_and_run(_payload(
+            dataset={"instanceId": "1", "resetPolicy": "before_and_after"}))
+    repo = StressRepository(factory)
+    row = repo.find_by_id(1)
+    assert row.status == "failed" and "before-reset" in (row.error_msg or "")
+
+
+class _RecordingInlineRunner(InlineRunner):
+    """记录 submit 事件的内嵌执行器（P0 修复事件顺序验证用）。"""
+
+    def __init__(self, factory, engine, events):
+        super().__init__(factory, engine)
+        self._events = events
+
+    def submit(self, task_id, payload):
+        self._events.append("runner_submit")
+        super().submit(task_id, payload)
+
+
+def test_reset_policy_before_and_after_event_order():
+    """P0 修复回归：resetPolicy=before_and_after 事件严格有序——
+    before 重置（submit 前）→ runner.submit → after 重置（任务终局后）。"""
+    factory = _factory()
+    events: list[str] = []
+
+    def reset(iid, phase):
+        events.append("before_reset_done" if phase == "before" else "after_reset_done")
+
+    svc = StressTaskService(
+        StressRepository(factory),
+        _RecordingInlineRunner(factory, _EngineStub(), events),
+        engine_availability=lambda t: True,
+        dataset_lookup=lambda iid: _ready_lookup(),
+        dataset_reset=reset)
+    svc.create_and_run(_payload(
+        dataset={"instanceId": "1", "resetPolicy": "before_and_after"}))
+    import time as _t
+
+    deadline = datetime.now().timestamp() + 10
+    while "after_reset_done" not in events and datetime.now().timestamp() < deadline:
+        _t.sleep(0.2)
+    assert events == ["before_reset_done", "runner_submit", "after_reset_done"]
 
 
 # ---------------------------------------------------------- 参数样本导出

@@ -22,7 +22,9 @@ import json
 import os
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
+from server.crypto import decrypt
 from server.realdb_pipeline import (
     REALDB_URL_ENV,
     build_realdb_pipeline,
@@ -39,16 +41,28 @@ class DatasetPipelineWireError(RuntimeError):
     """真库执行体装配失败（DSN 缺失 / 目标库不可达 / 目标表缺失）。"""
 
 
-def jdbc_url_to_pymysql(url: str) -> str:
+def jdbc_url_to_pymysql(url: str, username: str | None = None,
+                        password: str | None = None) -> str:
     """jdbc:mysql://host:port/db?params → mysql+pymysql://host:port/db?params。
 
     db_conn 表生产口径存 JDBC URL（EXPLAIN/灌数复用）；真库管线 DSN 走
     pymysql 方言（parse_mysql_dsn 仅支持 mysql:// 与 mysql+pymysql://）。
+
+    P0 修复：可选透传 username/password（db_conn 凭据与 URL 分列存储），
+    凭据经 URL 编码后拼入 netloc——防止密码含 @ / : / # 等特殊字符破坏
+    DSN 解析；URL 自身已带凭据时不覆盖。
     """
     prefix = "jdbc:mysql://"
-    if url.startswith(prefix):
-        return "mysql+pymysql://" + url[len(prefix):]
-    return url
+    converted = "mysql+pymysql://" + url[len(prefix):] if url.startswith(prefix) else url
+    if not username:
+        return converted
+    parts = urlsplit(converted)
+    if parts.username:  # URL 自身已带凭据则不覆盖
+        return converted
+    user_q = quote(username, safe="")
+    auth = f"{user_q}:{quote(password, safe='')}" if password else user_q
+    netloc = f"{auth}@{parts.hostname}" + (f":{parts.port}" if parts.port else "")
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def resolve_target_dsn(repo, explicit: str | None = None) -> str:
@@ -56,6 +70,8 @@ def resolve_target_dsn(repo, explicit: str | None = None) -> str:
 
     db_conn 取 is_default=1 优先、id 最小兜底（对齐 matchOrder 语义），
     仅接受 jdbc:mysql:// 前缀（与 EXPLAIN 通道同一准入）。
+    P0 修复：回退 db_conn 表时透传 username 与解密后的 password
+    （decrypt 对存量明文原样透传；错误信息与日志严禁打印完整 dsn）。
     """
     if explicit and explicit.strip():
         return explicit.strip()
@@ -73,7 +89,11 @@ def resolve_target_dsn(repo, explicit: str | None = None) -> str:
             .order_by(DbConnModel.is_default.desc(), DbConnModel.id.asc())
             .limit(10)))
     for row in rows:  # is_default DESC 已排序；首个可转换连接即生效
-        dsn = jdbc_url_to_pymysql(row.db_url)
+        dsn = jdbc_url_to_pymysql(
+            row.db_url,
+            username=row.username,
+            password=decrypt(row.password) if row.password else None,
+        )
         if dsn.startswith(("mysql://", "mysql+pymysql://")):
             return dsn
     raise DatasetPipelineWireError(

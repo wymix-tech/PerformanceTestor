@@ -153,7 +153,8 @@ def test_resolve_target_dsn_env_and_jdbc_fallback(monkeypatch):
                           username="u", password="p", is_default=1))
         s.commit()
     monkeypatch.delenv("PTDE_REALDB_URL", raising=False)
-    assert resolve_target_dsn(repo) == "mysql+pymysql://h:3306/db"
+    # P0 修复：db_conn 凭据（含解密）随 DSN 透传（URL 编码防特殊字符破坏解析）
+    assert resolve_target_dsn(repo) == "mysql+pymysql://u:p@h:3306/db"
     monkeypatch.setenv("PTDE_REALDB_URL", "mysql://env:u@env-host/db")
     assert resolve_target_dsn(repo) == "mysql://env:u@env-host/db"
     assert resolve_target_dsn(repo, "mysql://explicit/db") == "mysql://explicit/db"
@@ -162,6 +163,29 @@ def test_resolve_target_dsn_env_and_jdbc_fallback(monkeypatch):
     empty_repo = PtdeDatasetRepository(_factory())
     with pytest.raises(DatasetPipelineWireError):
         resolve_target_dsn(empty_repo)
+
+
+def test_resolve_target_dsn_db_conn_encrypted_credentials(monkeypatch):
+    """P0 修复：清空 PTDE_REALDB_URL，仅凭 db_conn（加密特殊字符密码）→
+    resolve_target_dsn 返回携带 URL 编码用户名与解密密码的 DSN。"""
+    from server.collector_repo import DbConnModel
+    from server.crypto import encrypt
+    from server.dataset_pipeline_factory import resolve_target_dsn
+    from server.ptde_repo import PtdeDatasetRepository
+
+    monkeypatch.delenv("PTDE_REALDB_URL", raising=False)
+    monkeypatch.setenv("PERF_CRYPTO_SECRET", "test-secret")
+    factory = _factory()
+    repo = PtdeDatasetRepository(factory)
+    with factory() as s:
+        s.add(DbConnModel(conn_name="c1", host="h",
+                          db_url="jdbc:mysql://127.0.0.1:3306/demo",
+                          username="app user", password=encrypt("p@ss/123"),
+                          is_default=1))
+        s.commit()
+    dsn = resolve_target_dsn(repo)
+    assert dsn == "mysql+pymysql://app%20user:p%40ss%2F123@127.0.0.1:3306/demo"
+    assert "p@ss/123" not in dsn  # 特殊字符已 URL 编码，DSN 解析不被破坏
 
 
 # ---------------------------------------------------------------- P0-4 重放快照
@@ -423,3 +447,81 @@ def test_deploy_missing_paramiko_message():
         pytest.skip("paramiko 已安装，跳过缺依赖分支")
     except DeployError as exc:
         assert "perf-py[deploy]" in str(exc)
+
+
+def test_deploy_conn_credentials_encrypted_at_rest(monkeypatch):
+    """P0 修复回归：POST /api/deploy/conns 落库后 password/private_key 非明文。"""
+    from server.crypto import decrypt
+
+    monkeypatch.setenv("PERF_CRYPTO_SECRET", "test-secret")
+    factory = _factory()
+    client = TestClient(create_app(
+        stress_repo=StressRepository(factory),
+        collector_repo=CollectorRepository(factory),
+        deploy_conn_repo=DeployConnRepository(factory),
+        deploy_service=DeployService(DeployConnRepository(factory),
+                                     SourceRepository(factory),
+                                     runner=FakeRunner()),
+        auth_enabled=False))
+    resp = client.post("/api/deploy/conns", json={
+        "connName": "enc-1", "host": "10.0.0.9", "username": "root",
+        "password": "s3cret!", "privateKey": "-----BEGIN PRIVATE KEY-----"}).json()
+    assert resp["code"] == 0
+    with factory() as s:
+        row = s.get(DeployConnModel, resp["data"]["id"])
+        assert row.password.startswith("ENC:") and "s3cret!" not in row.password
+        assert row.private_key.startswith("ENC:")
+        assert decrypt(row.password) == "s3cret!"
+        assert decrypt(row.private_key) == "-----BEGIN PRIVATE KEY-----"
+
+
+def test_deploy_remote_commands_are_shell_quoted(tmp_path):
+    """P0 修复回归：work_dir/app_name 含 ; 与空格时全部远端参数单引号转义，无命令注入。"""
+    import shlex
+
+    factory = _factory()
+    runner = FakeRunner()
+    work = "/opt/p; id"
+    with factory() as s:
+        s.add(DeployConnModel(conn_name="edge-x", host="10.0.0.8", port=22,
+                              username="root", auth_type="password",
+                              password="pwd", work_dir=work))
+        s.commit()
+    svc = DeployService(DeployConnRepository(factory), None, runner=runner)
+    jar = tmp_path / "demo.jar"
+    jar.write_bytes(b"fake-jar")
+    out = svc.start(1, str(jar), app_port=8081, app_name="app; rm -rf /")
+    assert out["appPort"] == 8081
+    assert runner.commands[0] == f"mkdir -p {shlex.quote(work)}"
+    test_agent = next(c for c in runner.commands if c.startswith("test -f"))
+    assert test_agent == f"test -f {shlex.quote(f'{work}/perf-agent.jar')} && echo ok"
+    launch = next(c for c in runner.commands if "nohup java" in c)
+    javaagent = shlex.quote(
+        f"{work}/perf-agent.jar=reportUrl=http://127.0.0.1:8000/api/agent/report"
+        ",appName=app; rm -rf /,appPort=8081")
+    assert launch.startswith(f"cd {shlex.quote(work)} && nohup java")
+    assert f"-javaagent:{javaagent}" in launch
+    assert f"-jar {shlex.quote(f'{work}/app.jar')}" in launch
+    assert f"> {shlex.quote(f'{work}/app.log')}" in launch
+    # 分号注入串只出现在单引号包裹内（作为字面量），未构成命令分隔
+    for c in runner.commands:
+        assert c.count("'") % 2 == 0  # 引号成对闭合
+
+
+def test_deploy_invalid_app_port_rejected(tmp_path):
+    """P0 修复回归：app_port 非整型/越界 → DeployError，远端命令不拼接。"""
+    factory = _factory()
+    runner = FakeRunner()
+    with factory() as s:
+        s.add(DeployConnModel(conn_name="edge-y", host="10.0.0.8",
+                              username="root", work_dir="/opt/p"))
+        s.commit()
+    svc = DeployService(DeployConnRepository(factory), None, runner=runner)
+    jar = tmp_path / "demo.jar"
+    jar.write_bytes(b"x")
+    for bad_port in (0, 99999, "; id"):
+        with pytest.raises(DeployError, match="app_port"):
+            svc.start(1, str(jar), app_port=bad_port)
+    with pytest.raises(DeployError, match="app_port"):
+        svc.status(1, app_port=70000)
+    assert runner.commands == []  # 校验失败不产生任何远端命令

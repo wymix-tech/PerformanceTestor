@@ -48,11 +48,32 @@ public final class TraceContext {
     private static final ClassValue<Method> GET_HEADER_CACHE = new ClassValue<>() {
         @Override
         protected Method computeValue(Class<?> type) {
+            // P0 修复（Fix-5）：非 public ServletRequest 包装类上，getMethod 可查得
+            // 方法但 invoke 抛 IllegalAccessException 被上层静默吞掉 → 染色头变 null。
+            // 优先取类方法并 setAccessible(true)；受模块限制或查找失败时回退遍历
+            // public 接口上的 getHeader(String)（接口反射调用不受实现类可见性限制）。
+            Method declared = null;
             try {
-                return type.getMethod("getHeader", String.class);
+                declared = type.getMethod("getHeader", String.class);
             } catch (Throwable ignored) {
-                return null;
+                // 类上不可查得：走接口回退
             }
+            if (declared != null) {
+                try {
+                    declared.setAccessible(true);
+                    return declared;
+                } catch (Throwable ignored) {
+                    // setAccessible 受模块限制：回退接口方法
+                }
+            }
+            for (Class<?> iface : type.getInterfaces()) {
+                try {
+                    return iface.getMethod("getHeader", String.class);
+                } catch (Throwable ignored) {
+                    // 继续尝试下一个接口
+                }
+            }
+            return null;
         }
     };
 
@@ -302,12 +323,32 @@ public final class TraceContext {
         final boolean sampled;
         /** 父线程当前栈顶节点（子任务方法挂为它的子调用；未采样为 null） */
         final TraceNode parentNode;
+        /**
+         * P0 修复（Fix-3）：attach 之前线程原本的 Ctx 引用（原样保留完整调用栈、
+         * filterOwned 与 nodeCount）。非 null 时 detach 原样归还该 Ctx，不再重建
+         * 单节点 Ctx 破坏外层调用栈；null 表示常规快照（旧语义兼容）。
+         */
+        final Ctx previousCtx;
 
         Snapshot(String traceId, String stressTaskId, boolean sampled, TraceNode parentNode) {
+            this(traceId, stressTaskId, sampled, parentNode, null);
+        }
+
+        private Snapshot(String traceId, String stressTaskId, boolean sampled,
+                         TraceNode parentNode, Ctx previousCtx) {
             this.traceId = traceId;
             this.stressTaskId = stressTaskId;
             this.sampled = sampled;
             this.parentNode = parentNode;
+            this.previousCtx = previousCtx;
+        }
+
+        /** 包装线程已有 Ctx（attach 不覆盖场景）：detach 时原样归还，不动原栈 */
+        static Snapshot ofExisting(Ctx existing) {
+            TraceNode top = existing.sampled && !existing.stack.isEmpty()
+                    ? existing.stack.peek() : null;
+            return new Snapshot(existing.traceId, existing.stressTaskId,
+                    existing.sampled, top, existing);
         }
     }
 
@@ -334,9 +375,11 @@ public final class TraceContext {
      * @return 供 {@link #detach(Snapshot)} 使用的"提交时刻"前上下文快照（可为 null）
      */
     public static Snapshot attach(Snapshot snapshot) {
-        Snapshot prev = capture();
-        if (snapshot == null || CTX.get() != null) {
-            return prev; // 已有上下文不覆盖（防池复用串用）
+        Ctx existing = CTX.get();
+        if (snapshot == null || existing != null) {
+            // 已有上下文不覆盖（防池复用串用）：把原 Ctx 引用暂存进返回值，
+            // 供 detach 原样归还（P0 修复：不动原栈，不丢完整调用栈）
+            return existing == null ? null : Snapshot.ofExisting(existing);
         }
         Ctx ctx = new Ctx(false); // 非 Filter 根：由 detach/end 负责清理
         ctx.sampled = snapshot.sampled;
@@ -347,7 +390,7 @@ public final class TraceContext {
             ctx.stack.push(snapshot.parentNode); // 子任务方法成为父节点子调用
         }
         CTX.set(ctx);
-        return prev;
+        return null; // attach 前无上下文，detach(null) 直接 CTX.remove()
     }
 
     /**
@@ -362,6 +405,13 @@ public final class TraceContext {
             CTX.remove();
             return;
         }
+        if (prev.previousCtx != null) {
+            // P0 修复：attach 前线程已有上下文 → 原样恢复外层 Ctx
+            // （完整调用栈 / filterOwned / nodeCount 不丢失，不重建残缺栈）
+            CTX.set(prev.previousCtx);
+            return;
+        }
+        // 兼容外部直接传入手动 capture() 快照的旧调用
         Ctx ctx = new Ctx(false);
         ctx.sampled = prev.sampled;
         ctx.traceId = prev.traceId;

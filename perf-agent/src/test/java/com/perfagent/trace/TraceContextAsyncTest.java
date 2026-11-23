@@ -109,6 +109,47 @@ class TraceContextAsyncTest {
         TraceContext.end(System.nanoTime());
     }
 
+    /**
+     * P0 修复回归：嵌套栈保护。外层已有 2 层调用栈时 attach(foreign) +
+     * detach(prev)，外层完整调用栈必须原样保留（不重建残缺单节点 Ctx）。
+     */
+    @Test
+    void detachRestoresOuterCallStackIntact() {
+        assertTrue(TraceContext.beginFilterRoot());
+        TraceContext.begin("com.demo.Controller#action");
+        TraceContext.begin("com.demo.Service#do");
+        assertEquals(2, TraceContext.currentMethodChain().size());
+        assertTrue(TraceContext.inSampledContext());
+
+        TraceContext.Snapshot foreign = new TraceContext.Snapshot("foreign-trace", "9", false, null);
+        TraceContext.Snapshot prev = TraceContext.attach(foreign);
+        assertNotNull(prev, "已有上下文时 attach 须返回携带原 Ctx 的快照");
+        TraceContext.detach(prev);
+        // 外层 2 层调用栈完整保留（根 → 叶）
+        assertEquals(2, TraceContext.currentMethodChain().size());
+        assertEquals("com.demo.Controller#action", TraceContext.currentMethodChain().get(0));
+        assertEquals("com.demo.Service#do", TraceContext.currentMethodChain().get(1));
+        assertNull(TraceContext.currentStressTaskId(), "外层上下文未被 foreign 染色标识污染");
+
+        TraceContext.end(System.nanoTime());
+        TraceContext.end(System.nanoTime());
+        TraceContext.endFilterRoot();
+    }
+
+    /**
+     * P0 修复回归（Fix-5）：非 public 请求包装类。包级私有实现类的
+     * public getHeader(String) 须可反射调用（setAccessible），染色头不被静默吞掉。
+     */
+    @Test
+    void extractStressTaskIdFromPackagePrivateRequestWrapper() {
+        class PackagePrivateRequest {
+            public String getHeader(String name) {
+                return TraceContext.STRESS_TASK_ID_HEADER.equals(name) ? "66" : null;
+            }
+        }
+        assertEquals("66", TraceContext.extractStressTaskId(new PackagePrivateRequest()));
+    }
+
     @Test
     void sampledSnapshotCarriesParentNodeForChainJoin() {
         String traceId = TraceContext.beginRoot("com.demo.Controller#action");

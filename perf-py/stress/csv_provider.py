@@ -71,7 +71,7 @@ class CsvDataset:
         self._lock = threading.Lock()
 
     @classmethod
-    def from_spec(cls, spec: CsvSpec | None, label: str = "CSV") -> "CsvDataset | None":
+    def from_spec(cls, spec: CsvSpec | None, label: str = "CSV") -> CsvDataset | None:
         """CsvSpec → 数据集（空文本返回 None；解析错误抛 CsvParseError）。"""
         if spec is None or not (spec.text or "").strip():
             return None

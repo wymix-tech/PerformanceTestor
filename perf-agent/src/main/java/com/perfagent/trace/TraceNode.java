@@ -1,7 +1,7 @@
 package com.perfagent.trace;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 调用链树节点：记录单个业务方法调用的类名#方法名、耗时与子节点。
@@ -19,8 +19,15 @@ public class TraceNode {
     public double offsetMs;
     /** 耗时占父节点/根节点比例（0~100，由平台侧计算或本地计算） */
     public double ratio;
-    /** 子调用节点 */
-    public final List<TraceNode> children = new ArrayList<>();
+    /**
+     * 子调用节点（P0 修复：CopyOnWriteArrayList）。
+     *
+     * <p>异步场景（AsyncSupport 透传）下多个子线程并发向同一父节点 {@code children}
+     * 挂接子调用，ArrayList 非线程安全会触发 ConcurrentModificationException；
+     * COW 列表使业务线程写入与 MetricsReporter 遍历线程序列化并发安全，
+     * 且调用树节点普遍子节点数很少（读多写少），复制开销极低。
+     */
+    public final List<TraceNode> children = new CopyOnWriteArrayList<>();
 
     public TraceNode() {
     }

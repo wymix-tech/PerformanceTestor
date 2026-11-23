@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Query, Request
 
+from server.crypto import encrypt
+
 router = APIRouter(prefix="/api/deploy")
 
 
@@ -41,7 +43,9 @@ def add_conn(request: Request, body: dict = Body(...)) -> dict:
             port=int(body.get("port") or 22),
             username=str(body.get("username") or "root"),
             auth_type=str(body.get("authType") or "password"),
-            password=body.get("password"), private_key=body.get("privateKey"),
+            # P0 修复：凭据加密入库（与 dbconn_service 同口径；空值 encrypt 原样透传 None）
+            password=encrypt(body.get("password")),
+            private_key=encrypt(body.get("privateKey")),
             work_dir=str(body.get("workDir") or "/opt/perftestor"),
             remark=body.get("remark")))
     except Exception as exc:  # noqa: BLE001 — 唯一键冲突等落库错误

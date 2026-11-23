@@ -37,7 +37,7 @@ from server.datagen_plan_service import DatagenPlanService
 from server.datagen_repo import DatagenRepository
 from server.datagen_service import DatagenWriteService
 from server.dataset_api import router as dataset_router
-from server.dataset_service import DatasetLifecycleService
+from server.dataset_service import DatasetLifecycleService, DatasetServiceError
 from server.db import database_url, make_session_factory
 from server.db_explain import DbExplainService
 from server.dbconn_api import router as dbconn_router
@@ -153,12 +153,14 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
     app.state.dataset_repo = dataset_repo if dataset_repo is not None \
         else PtdeDatasetRepository(session_factory)
     # dataset_pipeline：数据集执行体注入缝（generate/load/verify 三段）。
-    # P0-2 真库接线：未显式注入 pipeline/工厂且 PTDE_REALDB_URL 已配置时，
-    # 按数据集实例目标库动态装配 build_realdb_pipeline（db_conn 默认连接兜底）；
-    # 两者皆缺省保持 UnwiredPipeline 显式失败（不伪装可用）。
+    # P0-2 真库接线（P0 修复装配条件）：未显式注入 pipeline/工厂时，非内存
+    # 测试库（或显式配置 PTDE_REALDB_URL）一律装配 realdb_pipeline_factory
+    # ——生产 MySQL 下只配 db_conn（jdbc:mysql:// 默认连接）即可自动生效；
+    # 内存库保持 UnwiredPipeline 显式失败（不伪装可用，兼容既有单测）。
     resolved_pipeline_factory = dataset_pipeline_factory
     if resolved_pipeline_factory is None and dataset_pipeline is None \
-            and os.environ.get("PTDE_REALDB_URL"):
+            and (":memory:" not in resolved_db_url
+                 or bool(os.environ.get("PTDE_REALDB_URL"))):
         from server.dataset_pipeline_factory import realdb_pipeline_factory
 
         resolved_pipeline_factory = realdb_pipeline_factory(app.state.dataset_repo)
@@ -206,11 +208,20 @@ def create_app(llm: LlmClient | None = None, knowledge: KnowledgeService | None 
         except Exception:  # noqa: BLE001 — 样本摘要缺失不阻断绑定
             return None, 0
 
-    # P1-3 数据集重置钩子：cleanup（决策挡生产/未知）→ 重建（尽力而为，异常由钩子捕获留痕）
+    # P1-3 数据集重置钩子（P0 修复后全链）：cleanup → CLEANED→PLANNED 重置 →
+    # build → wait_until_settled 同步等待终局；终态非 READY 显式抛出
+    # （压测侧 before 段失败即拒绝发压，after 段尽力而为留痕）。
     def _dataset_reset(instance_id: str, phase: str) -> None:
-        app.state.dataset_service.cleanup(
-            instance_id, env_class="staging_like", operator=f"stress-reset-{phase}")
-        app.state.dataset_service.build(instance_id, operator=f"stress-reset-{phase}")
+        svc = app.state.dataset_service
+        svc.cleanup(instance_id, env_class="staging_like",
+                    operator=f"stress-reset-{phase}")
+        svc.reset_for_rebuild(instance_id, operator=f"stress-reset-{phase}")
+        svc.build(instance_id, operator=f"stress-reset-{phase}")
+        final_status = svc.wait_until_settled(instance_id)
+        if final_status != "READY":
+            raise DatasetServiceError(
+                f"数据集重置失败：实例 {instance_id} 重建后终态为 {final_status}"
+                "（非 READY），不满足发压前置条件")
 
     app.state.stress_service = StressTaskService(
         app.state.stress_repo, runner, dataset_lookup=_dataset_lookup,

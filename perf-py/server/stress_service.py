@@ -358,8 +358,9 @@ class StressTaskService:
             dataset_schema_fingerprint=binding.get("schemaFingerprint") if binding else None,
             dataset_validation_json=binding.get("validationJson") if binding else None,
         )
+        self._run_before_reset(task_id, binding)
         self._runner.submit(task_id, payload)
-        self._schedule_dataset_reset(task_id, payload, binding)
+        self._schedule_after_reset(task_id, binding)
         return {
             "id": task_id,
             "taskName": task_name,
@@ -453,14 +454,33 @@ class StressTaskService:
             raise ValueError("数据集参数样本超过 1MB 上限（请缩小样本规模后重建）")
         payload["csv"] = {"mode": "sequential", "text": text}
 
-    def _schedule_dataset_reset(self, task_id: int, payload: dict,
-                                binding: dict | None) -> None:
-        """数据集重置钩子调度：before 同步执行；after 终局后异步触发（尽力而为）。"""
+    def _run_before_reset(self, task_id: int, binding: dict | None) -> None:
+        """P0 修复：``before`` 重置必须在 ``submit`` 之前同步执行。
+
+        resetPolicy == "before_and_after" 时先清理数据集再发压——绝不在
+        空库/坏库上盲目发压；before 重置失败 → 任务标 failed 并向上抛出
+        拒绝本次发压（压测任务已建档留痕，不静默吞掉）。
+        """
+        if not binding or binding.get("resetPolicy") != "before_and_after" \
+                or self._dataset_reset is None:
+            return
+        key = binding["resetKey"]
+        try:
+            self._dataset_reset(key, "before")
+        except Exception as exc:  # noqa: BLE001 — 显式拒绝：失败不盲目发压
+            log.error("dataset before-reset failed, instance=%s, taskId=%s（拒绝发压）",
+                      key, task_id, exc_info=True)
+            self._repo.update_failed(
+                task_id, f"dataset before-reset failed: {exc}")
+            raise ValueError(
+                f"数据集 before 重置失败（实例 {key}），已拒绝发压：{exc}") from exc
+
+    def _schedule_after_reset(self, task_id: int, binding: dict | None) -> None:
+        """数据集重置钩子调度（after 段）：后台线程轮询任务终局后触发（尽力而为）。"""
         if not binding or binding.get("resetPolicy", "none") == "none" \
                 or self._dataset_reset is None:
             return
         key = binding["resetKey"]
-        policy = binding["resetPolicy"]
 
         def _invoke(phase: str) -> None:
             try:
@@ -469,9 +489,7 @@ class StressTaskService:
                 log.warning("dataset reset hook failed, instance=%s phase=%s, taskId=%s",
                             key, phase, task_id, exc_info=True)
 
-        if policy == "before_and_after":
-            _invoke("before")
-        if policy in ("after", "before_and_after"):
+        if binding.get("resetPolicy") in ("after", "before_and_after"):
             def _wait_then_reset() -> None:
                 deadline = time.time() + 3600
                 while time.time() < deadline:

@@ -63,27 +63,40 @@ def _probe_columns(conn, database: str, table: str) -> tuple[list[str], str | No
 
 def _fetch_rows(conn, table: str, key_col: str, names: list[str],
                 limit: int) -> list[list]:
-    """按主键三段分层采样：低/中/高 ID 段各取 ceil(limit/3)，合并去重。"""
+    """按主键三段分层采样：低/中/高 ID 段各取 ceil(limit/3)，合并去重。
+
+    P0 修复：主键为 UUID / VARCHAR / 复合非数值列时 int() 强转抛
+    TypeError/ValueError → 优雅降级为按主键顺序取前 limit 行（不中断导出）。
+    """
     with conn.cursor() as cur:
         cur.execute(f"SELECT MIN(`{key_col}`), MAX(`{key_col}`) FROM `{table}`")  # noqa: S608 — 表名来自数据集定义非用户输入
         bounds = cur.fetchone()
         if not bounds or bounds[0] is None:
             return []
-        lo, hi = int(bounds[0]), int(bounds[1])
+        cols = ", ".join(f"`{n}`" for n in names)
+        pk_idx = names.index(key_col) if key_col in names else 0
+        try:
+            lo, hi = int(bounds[0]), int(bounds[1])
+        except (TypeError, ValueError):
+            # 非数值主键（UUID/字符串/复合）：无法分段采样，降级为按主键顺序取前 limit 行
+            cur.execute(  # noqa: S608 — 同上，标识符来自 schema 实探
+                f"SELECT {cols} FROM `{table}` ORDER BY `{key_col}` ASC LIMIT %s",
+                [limit])
+            return [list(r) for r in cur.fetchall()]
         span = max(1, (hi - lo) // _SEGMENTS)
         per_seg = max(1, -(-limit // _SEGMENTS))  # ceil
         collected: dict[tuple, list] = {}
         for i in range(_SEGMENTS):
             seg_lo = lo + i * span
             seg_hi = lo + (i + 1) * span - 1 if i < _SEGMENTS - 1 else hi
-            cols = ", ".join(f"`{n}`" for n in names)
             cur.execute(  # noqa: S608 — 同上，标识符来自 schema 实探
                 f"SELECT {cols} FROM `{table}` WHERE `{key_col}` BETWEEN %s AND %s "
                 f"ORDER BY `{key_col}` ASC LIMIT %s",
                 [seg_lo, seg_hi, per_seg])
             for row in cur.fetchall():
                 collected.setdefault(tuple(row), list(row))
-        return sorted(collected.values(), key=lambda r: str(r[0]))[:limit]
+        # 数值主键按数值顺序（非字典序）
+        return sorted(collected.values(), key=lambda r: r[pk_idx])[:limit]
 
 
 def export_sample_csv(repo, instance_row, out_dir: str | Path, *,

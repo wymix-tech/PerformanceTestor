@@ -31,6 +31,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
 
 from ptde.lifecycle.cleanup import (
@@ -449,6 +450,46 @@ class DatasetLifecycleService:
         future = self._tasks.get(row.id)
         running = future is not None and not future.done()
         return {"taskId": str(row.id), "running": running, "instanceStatus": row.status}
+
+    def wait_until_settled(self, instance_id: str, timeout_sec: float = 600.0) -> str:
+        """同步等待异步任务终局并返回最终状态（P0 修复：压测重置钩子用）。
+
+        - 取 ``self._tasks`` 中该实例的 Future 并阻塞至完成（result 带 timeout）；
+        - 无 Future / 已完成 → 直接返回库中当前状态（幂等，不误等）；
+        - 超时显式抛 DatasetServiceError（不伪装成功）。
+        """
+        row = self._require_instance_row(instance_id)
+        future = self._tasks.get(row.id)
+        if future is not None and not future.done():
+            try:
+                future.result(timeout=timeout_sec)
+            except FuturesTimeoutError as exc:
+                raise DatasetServiceError(
+                    f"数据集实例 {instance_id} 异步任务未在 {timeout_sec}s 内完成"
+                    "（wait_until_settled 超时）") from exc
+        row = self._repo.find_instance(row.id)
+        assert row is not None
+        return row.status
+
+    def reset_for_rebuild(self, instance_id: str, *,
+                          operator: str | None = None) -> dict:
+        """CLEANED → PLANNED（P0 修复：压测重置钩子「清理后重建」用）。
+
+        经状态机唯一入口流转（ALLOWED_TRANSITIONS 增补边，§3.5）并留痕审计；
+        实例 ID 不变——压测任务绑定的 datasetInstanceId 保持有效。
+        非 CLEANED（含已 PLANNED）时幂等直通，不做二次流转。
+        """
+        row = self._require_instance_row(instance_id)
+        if row.status != DatasetState.CLEANED.value:
+            return {"taskId": str(row.id), "accepted": False, "state": row.status}
+        model = self._instance_model(row)
+        transitioned = transition(
+            model, DatasetState.PLANNED, operator=operator or self._operator,
+            reason="数据集重建（压测重置钩子：清理完成后回 PLANNED 可构建态）")
+        self._repo.update_instance_status(
+            row.id, transitioned.status.value,
+            self._repo.transition_log_to_json(transitioned))
+        return {"taskId": str(row.id), "accepted": True, "state": "PLANNED"}
 
     # ------------------------------------------------------------ 清理（T6.8 收编）
 

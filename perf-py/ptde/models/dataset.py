@@ -61,8 +61,11 @@ ALLOWED_TRANSITIONS: dict[DatasetState, frozenset[DatasetState]] = {
     DatasetState.FAILED: frozenset({DatasetState.CLEANING}),
     DatasetState.READY: frozenset({DatasetState.CLEANING}),
     DatasetState.CLEANING: frozenset({DatasetState.CLEANED}),
-    # 终态：CLEANED / CANCELLED 无出边
-    DatasetState.CLEANED: frozenset(),
+    # CLEANED → PLANNED（P0 修复，§3.5 增补边）：压测 resetPolicy=
+    # before_and_after 的重置钩子在同一实例上「清理后重建」，实例 ID 与
+    # 压测绑定关系保持不变；仍须经状态机唯一入口流转并留痕审计。
+    # CANCELLED 保持终态无出边（取消 = 主动废弃，重建须新建实例）。
+    DatasetState.CLEANED: frozenset({DatasetState.PLANNED}),
     DatasetState.CANCELLED: frozenset(),
 }
 

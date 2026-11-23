@@ -9,14 +9,28 @@ deploy/start 与 deploy/status）。
 from __future__ import annotations
 
 import glob
+import io
 import os
+import shlex
 import subprocess
 
+from server.crypto import decrypt
 from server.deploy_repo import DeployConnModel
 
 
 class DeployError(RuntimeError):
     """部署操作失败（SSH 不可达 / 构建失败 / 远程命令非零）。"""
+
+
+def _validate_port(app_port) -> int:
+    """app_port 强校验（P0 修复：远端 shell 拼接前收口，非整型直接拒绝）。"""
+    try:
+        port = int(app_port)
+    except (TypeError, ValueError):
+        raise DeployError(f"app_port 非法：{app_port!r}（须为 1~65535 整数）") from None
+    if not 1 <= port <= 65535:
+        raise DeployError(f"app_port 越界：{port}（须为 1~65535 整数）")
+    return port
 
 
 class ParamikoRunner:
@@ -34,12 +48,11 @@ class ParamikoRunner:
         kwargs: dict = {"hostname": conn.host, "port": conn.port,
                         "username": conn.username, "timeout": 10}
         if conn.auth_type == "privateKey" and conn.private_key:
-            import paramiko
-
+            # P0 修复：取用点解密（decrypt 对存量明文原样透传，test_conn 明文直传不受影响）
             kwargs["pkey"] = paramiko.RSAKey.from_private_key(
-                __import__("io").StringIO(conn.private_key))
+                io.StringIO(decrypt(conn.private_key)))
         else:
-            kwargs["password"] = conn.password
+            kwargs["password"] = decrypt(conn.password)
         client.connect(**kwargs)
         return client
 
@@ -140,15 +153,18 @@ class DeployService:
             raise DeployError(f"deploy conn not found: {conn_id}")
         if not os.path.isfile(jar_path):
             raise DeployError(f"jar 不存在: {jar_path}")
+        port = _validate_port(app_port)
         work = conn.work_dir
         remote_jar = f"{work}/app.jar"
         remote_agent = f"{work}/perf-agent.jar"
-        self._runner.exec(conn, f"mkdir -p {work}")
+        # P0 修复：所有拼接到远端 shell 的变量一律经 shlex.quote 转义（防命令注入）
+        self._runner.exec(conn, f"mkdir -p {shlex.quote(work)}")
         self._runner.upload(conn, jar_path, remote_jar)
         if agent_path and os.path.isfile(agent_path):
             self._runner.upload(conn, agent_path, remote_agent)
         else:
-            rc, _ = self._runner.exec(conn, f"test -f {remote_agent} && echo ok")
+            rc, _ = self._runner.exec(
+                conn, f"test -f {shlex.quote(remote_agent)} && echo ok")
             if rc != 0:
                 raise DeployError(
                     f"未提供 agentPath 且远端不存在 {remote_agent}（请先在平台构建"
@@ -156,16 +172,18 @@ class DeployService:
         report_url = os.environ.get("AGENT_REPORT_URL",
                                     f"{self._platform_base_url}/api/agent/report")
         name = app_name or conn.conn_name
-        launch = (f"cd {work} && nohup java -javaagent:{remote_agent}"
-                  f"=reportUrl={report_url},appName={name},appPort={app_port}"
-                  f" -jar {remote_jar} --server.port={app_port}"
-                  f" > {work}/app.log 2>&1 & echo $!")
+        javaagent = (f"{remote_agent}=reportUrl={report_url}"
+                     f",appName={name},appPort={port}")
+        launch = (f"cd {shlex.quote(work)} && nohup java "
+                  f"-javaagent:{shlex.quote(javaagent)}"
+                  f" -jar {shlex.quote(remote_jar)} --server.port={port}"
+                  f" > {shlex.quote(f'{work}/app.log')} 2>&1 & echo $!")
         rc, out = self._runner.exec(conn, launch, timeout=30)
         if rc != 0:
             raise DeployError(f"远程启动失败：{out[-1000:]}")
         pid = out.strip().splitlines()[-1].strip() if out.strip() else ""
         return {"connId": conn_id, "pid": pid, "jarPath": remote_jar,
-                "agentPath": remote_agent, "appPort": app_port,
+                "agentPath": remote_agent, "appPort": port,
                 "logPath": f"{work}/app.log"}
 
     # ------------------------------------------------------------ 运行状态
@@ -174,18 +192,22 @@ class DeployService:
         conn = self._conns.find_by_id(conn_id)
         if conn is None:
             raise DeployError(f"deploy conn not found: {conn_id}")
+        port = _validate_port(app_port)
         work = conn.work_dir
+        # P0 修复：pgrep 匹配串与日志路径同样经 shlex.quote 转义
         rc, out = self._runner.exec(
-            conn, f"pgrep -f 'java .*{work}/app.jar' || true", timeout=15)
+            conn, f"pgrep -f {shlex.quote(f'java .*{work}/app.jar')} || true",
+            timeout=15)
         pid = out.strip().splitlines()[0].strip() if out.strip() else ""
         running = bool(pid)
         rc, health = self._runner.exec(
             conn, f"curl -s -o /dev/null -w '%{{http_code}}' "
-                  f"--max-time 5 http://127.0.0.1:{app_port}/actuator/health || true",
+                  f"--max-time 5 http://127.0.0.1:{port}/actuator/health || true",
             timeout=15)
         health = health.strip().splitlines()[-1] if health.strip() else ""
         rc, log_tail = self._runner.exec(
-            conn, f"tail -n 50 {work}/app.log 2>/dev/null || true", timeout=15)
+            conn, f"tail -n 50 {shlex.quote(f'{work}/app.log')} 2>/dev/null || true",
+            timeout=15)
         return {"connId": conn_id, "running": running, "pid": pid,
                 "healthStatus": health if health in ("200", "401", "404") else
                 ("up" if "200" in health else ""),
