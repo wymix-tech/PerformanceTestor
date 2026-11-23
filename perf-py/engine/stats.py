@@ -132,3 +132,56 @@ class HistogramStatistician:
             "avg": round2(snap["total_cost_ms"] / total) if total > 0 else 0,
             "error_rate": 0 if total == 0 else round2(errors * 100.0 / total),
         }
+
+    # ------------------------------------------- 分布式直方图精确合并（P2-4）
+    def export_buckets(self) -> dict:
+        """导出可序列化快照（P2-4 分布式聚合协议）。
+
+        buckets 为压缩非零桶 [idx, count] 列表（30000 桶全量传输过大）；
+        total/errors/sumMs/maxMs 随快照导出，供 merge 精确重建全局分位。
+        """
+        with self._lock:
+            return {
+                "bucketCount": self._bucket_count,
+                "buckets": [[i, c] for i, c in enumerate(self._hist) if c > 0],
+                "total": self._total,
+                "errors": self._errors,
+                "sumMs": self._cost_ms,
+                "maxMs": histogram_max(self._hist),
+            }
+
+    @classmethod
+    def merge(cls, snapshots: list[dict]) -> HistogramStatistician:
+        """多 Worker 快照逐桶累加合并（P2-4）。
+
+        红线：分布式全局分位数严禁对各 Worker 的 P95/P99 求平均或取最大值——
+        必须逐桶累加后统一计算（桶下标即毫秒值，平坦直方图合并后与单机全量
+        统计逐位一致）。桶数不一致时取最大桶数（短快照按原下标累加）。
+        """
+        if not snapshots:
+            return cls()
+        bucket_count = max(int(s.get("bucketCount") or BUCKET_COUNT) for s in snapshots)
+        merged = cls(bucket_count)
+        for s in snapshots:
+            for pair in s.get("buckets") or []:
+                idx, cnt = int(pair[0]), int(pair[1])
+                if 0 <= idx < bucket_count and cnt > 0:
+                    merged._hist[idx] += cnt
+            merged._total += int(s.get("total") or 0)
+            merged._errors += int(s.get("errors") or 0)
+            merged._cost_ms += float(s.get("sumMs") or 0.0)
+        return merged
+
+
+def shard_rows(rows: list, worker_index: int, worker_count: int) -> list:
+    """分布式 Worker 任务分片协议（P2-4 预留）：CSV 参数化按
+    ``row_idx % workerCount == workerIndex`` 切分，避免多台施压机重复请求
+    同一批热点 ID（缓存命中率虚高会掩盖真实瓶颈）。
+
+    worker_count <= 0 视为单机（原样返回）；worker_index 越界返回空列表。
+    """
+    if worker_count is None or worker_count <= 1:
+        return list(rows)
+    if worker_index is None or worker_index < 0 or worker_index >= worker_count:
+        return []
+    return [r for i, r in enumerate(rows) if i % worker_count == worker_index]

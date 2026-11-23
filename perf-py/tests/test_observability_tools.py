@@ -20,6 +20,7 @@ from server.collector_repo import (
     DbConnModel,
     HotspotMethodModel,
     JvmMetricModel,
+    ProfileSnapshotModel,
     SlowSqlModel,
     TraceChainModel,
 )
@@ -190,6 +191,49 @@ def test_hotspot_query_by_task_window(repos):
     out = _call(_tools(repos), "hotspot_query", {"stressTaskId": task_id})
     names = [r["methodName"] for r in out["items"]]
     assert names == ["hot.method"]  # 时间窗外的冷方法不混入
+
+
+# ------------------------------------------------------ profile_flamegraph_summary
+
+
+def test_profile_flamegraph_summary_returns_full_call_paths(repos):
+    """P2-1：折叠栈热点路径按完整调用链返回（与 hotspot_query 叶帧视图互补）。"""
+    collector_repo, stress_repo, _, factory = repos
+    task_id = _seed_task(stress_repo)
+    with factory() as s:
+        s.add_all([
+            ProfileSnapshotModel(
+                app_name="demo-app", profile_type="cpu",
+                folded_stacks="com.Api.list;com.Svc.load;com.Dao.q 8\ncom.Api.other 2",
+                total_samples=10,
+                sample_time=NOW - timedelta(seconds=10)),
+            ProfileSnapshotModel(
+                app_name="demo-app", profile_type="lock",
+                folded_stacks="com.Api.list;com.Svc.sync 50",
+                total_samples=50,
+                sample_time=NOW - timedelta(seconds=10)),
+        ])
+        s.commit()
+    out = _call(_tools(repos), "profile_flamegraph_summary",
+                {"stressTaskId": task_id, "profileType": "cpu"})
+    assert out["matchedBy"] == "stress_task" and out["profileType"] == "cpu"
+    assert out["totalSamples"] == 10
+    # 完整路径而非只看叶帧；按样本量降序，占比正确
+    assert out["items"][0]["path"] == "com.Api.list;com.Svc.load;com.Dao.q"
+    assert out["items"][0]["samples"] == 8 and out["items"][0]["pct"] == 80.0
+    assert out["items"][1]["leaf"] == "com.Api.other"
+
+    # lock 维度：多批快照已按维度分桶
+    out_lock = _call(_tools(repos), "profile_flamegraph_summary",
+                     {"stressTaskId": task_id, "profileType": "lock"})
+    assert out_lock["items"][0]["samples"] == 50
+
+    # 非法维度报错；无数据维度报明确提示
+    assert "error" in _call(_tools(repos), "profile_flamegraph_summary",
+                            {"profileType": "net"})
+    out_none = _call(_tools(repos), "profile_flamegraph_summary",
+                     {"stressTaskId": task_id, "profileType": "alloc"})
+    assert "error" in out_none
 
 
 # ---------------------------------------------------------- db_explain_run

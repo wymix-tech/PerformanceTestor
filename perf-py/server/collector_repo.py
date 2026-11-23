@@ -13,6 +13,7 @@ trace_chain / slow_sql / slow_command / hotspot_method / db_conn。
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime
 
@@ -125,13 +126,19 @@ class JvmMetricModel(Base):
 
 
 class TraceChainModel(Base):
-    """trace_chain：业务方法调用链（trace_id 唯一，重放幂等更新）。"""
+    """trace_chain：业务方法调用链（(trace_id, app_name, span_id) 唯一，重放幂等更新）。
+
+    P2-2 微服务串联：A 调 B 共享同一 trace_id，各服务独立 span（旧探针缺省 "root"）。
+    """
 
     __tablename__ = "trace_chain"
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
-    trace_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
     app_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # P2-2 span 串联：旧探针不上报时缺省 "root"，单服务存量数据无缝兼容
+    span_id: Mapped[str] = mapped_column(String(32), nullable=False, default="root")
+    parent_span_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     root_method: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     trace_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     total_ms: Mapped[float] = mapped_column(Double, nullable=False, default=0)
@@ -153,6 +160,8 @@ class SlowSqlModel(Base):
     db_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     method_chain: Mapped[str | None] = mapped_column(Text, nullable=True)
     execute_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # P2-2 指纹归类：字面量归一化后的模板指纹（SHA-1 前 16 位，旧探针为 NULL）
+    sql_fingerprint: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # P1-1 压测流量染色：旧探针不上报时为 NULL（可选字段，向后兼容）
     stress_task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
@@ -183,6 +192,20 @@ class HotspotMethodModel(Base):
     app_name: Mapped[str] = mapped_column(String(128), nullable=False)
     method_name: Mapped[str] = mapped_column(String(512), nullable=False)
     samples: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    sample_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ProfileSnapshotModel(Base):
+    """profile_snapshot：JFR 连续剖析折叠栈快照（P2-1，cpu / alloc / lock）。"""
+
+    __tablename__ = "profile_snapshot"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    app_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    stress_task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    profile_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    folded_stacks: Mapped[str] = mapped_column(Text, nullable=False)
+    total_samples: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     sample_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
@@ -280,16 +303,22 @@ class CollectorRepository:
     # ---------------------------------------------------------- 批量落库
 
     def save_traces(self, rows: list[TraceChainModel]) -> int:
-        """trace：trace_id 冲突时更新（重放幂等）；按 50 条分片提交。"""
+        """trace：(trace_id, app_name, span_id) 冲突时更新（重放幂等）；按 50 条分片提交。
+
+        P2-2：微服务 A→B 共享 trace_id，B 的 span 不再覆盖 A（旧探针 span 缺省 "root"）。
+        """
         saved = 0
         with self._sessions() as s:
             for row in rows:
                 existing = s.scalars(select(TraceChainModel)
                                      .where(TraceChainModel.trace_id == row.trace_id)
+                                     .where(TraceChainModel.app_name == row.app_name)
+                                     .where(TraceChainModel.span_id == row.span_id)
                                      .limit(1)).first()
                 if existing is None:
                     s.add(row)
                 else:
+                    existing.parent_span_id = row.parent_span_id
                     existing.root_method = row.root_method
                     existing.trace_json = row.trace_json
                     existing.total_ms = row.total_ms
@@ -322,6 +351,31 @@ class CollectorRepository:
             s.add_all(rows)
             s.commit()
         return len(rows)
+
+    def save_profile_snapshots(self, rows: list[ProfileSnapshotModel]) -> int:
+        """profile_snapshot：折叠栈快照批量落库（分片提交防超长包）。"""
+        return self._save_chunked(rows)
+
+    def query_profile_snapshots(
+        self, app: str | None, profile_type: str,
+        stress_task_id: int | None, start: datetime | None, end: datetime | None,
+        limit: int = 500,
+    ) -> list[ProfileSnapshotModel]:
+        """时间窗内折叠栈快照（正序返回，供服务端合并累加）。"""
+        stmt = select(ProfileSnapshotModel).where(
+            ProfileSnapshotModel.profile_type == profile_type)
+        if app:
+            stmt = stmt.where(ProfileSnapshotModel.app_name == app)
+        if stress_task_id is not None:
+            stmt = stmt.where(ProfileSnapshotModel.stress_task_id == stress_task_id)
+        if start:
+            stmt = stmt.where(ProfileSnapshotModel.sample_time >= start)
+        if end:
+            stmt = stmt.where(ProfileSnapshotModel.sample_time <= end)
+        stmt = (stmt.order_by(ProfileSnapshotModel.sample_time, ProfileSnapshotModel.id)
+                .limit(max(1, min(2000, limit))))
+        with self._sessions() as s:
+            return list(s.scalars(stmt))
 
     # ---------------------------------------------------------- 观测查询读路径
 
@@ -403,6 +457,64 @@ class CollectorRepository:
                 .where(TraceChainModel.trace_id == trace_id)
                 .limit(1)
             ).first()
+
+    def get_trace_with_child_spans(self, trace_id: str) -> dict | None:
+        """P2-2：主链路（无上游 parent 的 span）+ 关联 childSpans 列表。
+
+        单服务旧数据（span 全为 "root"）childSpans 为空，响应结构不变兼容。
+        """
+        with self._sessions() as s:
+            rows = list(s.scalars(
+                select(TraceChainModel)
+                .where(TraceChainModel.trace_id == trace_id)
+                .order_by(TraceChainModel.id)))
+        if not rows:
+            return None
+        main = next((r for r in rows if not r.parent_span_id), rows[0])
+        children = [r for r in rows if r is not main]
+        return {
+            "main": main,
+            "childSpans": [{
+                "id": r.id, "traceId": r.trace_id, "appName": r.app_name,
+                "spanId": r.span_id, "parentSpanId": r.parent_span_id,
+                "rootMethod": r.root_method, "totalMs": r.total_ms,
+                "startTime": _fmt_dt(r.start_time),
+            } for r in children],
+        }
+
+    def query_slow_sql_fingerprints(
+        self, app: str | None, start: datetime | None, end: datetime | None,
+        stress_task_id: int | None, limit: int = 20,
+    ) -> list[dict]:
+        """按 sql_fingerprint 聚合慢 SQL（P2-2）：次数/平均耗时/P95 耗时/样本 SQL。
+
+        窗口内取上限 2000 条在 Python 侧聚合（P95 需成本分布，跨方言窗口函数难统一）。
+        """
+        rows = self.query_slow_sqls(app=app, min_cost_ms=None, start=start, end=end,
+                                    cursor_pair=None, limit_plus_one=2000,
+                                    stress_task_id=stress_task_id)
+        grouped: dict[str, list[SlowSqlModel]] = {}
+        for r in rows:
+            fp = r.sql_fingerprint
+            if not fp:
+                continue
+            grouped.setdefault(fp, []).append(r)
+        result = []
+        for fp, items in grouped.items():
+            costs = sorted(i.cost_ms for i in items)
+            sample = max(items, key=lambda i: i.cost_ms)
+            result.append({
+                "sqlFingerprint": fp,
+                "count": len(items),
+                "avgCostMs": round(sum(costs) / len(costs), 1),
+                "p95CostMs": costs[min(len(costs), max(1, math.ceil(len(costs) * 0.95))) - 1],
+
+                "sampleSql": sample.sql_text,
+                "dbHost": sample.db_host,
+                "lastExecuteTime": _fmt_dt(sample.execute_time),
+            })
+        result.sort(key=lambda g: g["count"], reverse=True)
+        return result[:max(1, min(100, limit))]
 
     def query_slow_sqls(
         self, app: str | None, min_cost_ms: float | None,

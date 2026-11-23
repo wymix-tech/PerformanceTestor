@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Query, Request
 
 from server.cursor import build_cursor_page, clamp_size, decode_cursor, parse_time
+from server.profile_merge import DEFAULT_MAX_NODES, folded_to_tree, merge_folded
 
 router = APIRouter(prefix="/api")
 
@@ -104,6 +105,7 @@ def list_traces(
         id_getter=lambda r: r.id,
         serializer=lambda r: {
             "id": r.id, "traceId": r.trace_id, "appName": r.app_name,
+            "spanId": r.span_id, "parentSpanId": r.parent_span_id,
             "rootMethod": r.root_method, "totalMs": r.total_ms,
             "startTime": _fmt(r.start_time), "stressTaskId": r.stress_task_id,
         },
@@ -112,13 +114,17 @@ def list_traces(
 
 @router.get("/traces/{trace_id}")
 def trace_detail(trace_id: str, request: Request) -> dict:
-    row = request.app.state.collector_repo.get_trace_by_id(trace_id)
-    if row is None:
+    data = request.app.state.collector_repo.get_trace_with_child_spans(trace_id)
+    if data is None:
         return {"code": 1, "message": f"trace not found: {trace_id}", "data": None}
+    row = data["main"]
     return _ok({
         "id": row.id, "traceId": row.trace_id, "appName": row.app_name,
+        "spanId": row.span_id, "parentSpanId": row.parent_span_id,
         "rootMethod": row.root_method, "traceJson": row.trace_json,
         "totalMs": row.total_ms, "startTime": _fmt(row.start_time),
+        # P2-2 微服务串联：主链路之外的关联服务 span 列表（单服务数据为空，零破坏）
+        "childSpans": data["childSpans"],
     })
 
 
@@ -151,9 +157,29 @@ def list_slow_sqls(
             "id": r.id, "appName": r.app_name, "sqlText": r.sql_text,
             "costMs": r.cost_ms, "source": r.source, "dbHost": r.db_host,
             "methodChain": r.method_chain, "executeTime": _fmt(r.execute_time),
+            "sqlFingerprint": r.sql_fingerprint,
             "stressTaskId": r.stress_task_id,
         },
     ))
+
+
+@router.get("/slow-sqls/aggregate")
+def aggregate_slow_sqls(
+    request: Request,
+    app: str | None = None,
+    stressTaskId: int | None = Query(default=None),
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """按 sql_fingerprint 聚合慢 SQL（P2-2）：同模板次数/平均耗时/P95/样本 SQL，
+    避免 N+1 或全表扫描 SQL 因参数不同刷屏。"""
+    end_dt = parse_time(end) or datetime.now()
+    start_dt = parse_time(start) or (end_dt - timedelta(hours=1))
+    rows = request.app.state.collector_repo.query_slow_sql_fingerprints(
+        app=app, start=start_dt, end=end_dt,
+        stress_task_id=stressTaskId, limit=limit)
+    return _ok(rows)
 
 
 @router.get("/slow-commands")
@@ -204,3 +230,44 @@ def list_hotspots(
     start_dt = parse_time(start) or (end_dt - timedelta(hours=1))
     rows = request.app.state.collector_repo.query_hotspots(app, start_dt, end_dt, limit)
     return _ok(rows)
+
+
+@router.get("/profiles")
+def list_profiles(
+    request: Request,
+    app: str | None = None,
+    profileType: str = Query(default="cpu", pattern="^(cpu|alloc|lock)$"),
+    stressTaskId: int | None = Query(default=None),
+    start: str | None = None,
+    end: str | None = None,
+    format: str = Query(default="folded", pattern="^(folded|tree)$"),
+    maxNodes: int = Query(default=DEFAULT_MAX_NODES, ge=1, le=4000),
+) -> dict:
+    """JFR 折叠栈聚合查询（P2-1）：时间窗内多批快照按栈路径合并累加后返回。
+
+    format=folded 返回标准折叠文本（火焰图组件直用）；format=tree 返回聚合树 JSON
+    （超 maxNodes 聚入 *overflow* 桶，防前端卡顿）。
+    """
+    end_dt = parse_time(end) or datetime.now()
+    start_dt = parse_time(start) or (end_dt - timedelta(hours=1))
+    rows = request.app.state.collector_repo.query_profile_snapshots(
+        app=app, profile_type=profileType, stress_task_id=stressTaskId,
+        start=start_dt, end=end_dt)
+    merged = merge_folded([r.folded_stacks for r in rows])
+    stacks = merged["stacks"]
+    payload: dict = {
+        "appName": app,
+        "profileType": profileType,
+        "stressTaskId": stressTaskId,
+        "window": {"start": _fmt(start_dt), "end": _fmt(end_dt)},
+        "snapshotCount": len(rows),
+        "totalSamples": merged["totalSamples"],
+        "uniqueStacks": len(stacks),
+    }
+    if format == "tree":
+        payload["tree"] = folded_to_tree(stacks, maxNodes)
+    else:
+        payload["folded"] = "\n".join(
+            f"{path} {cnt}" for path, cnt in
+            sorted(stacks.items(), key=lambda kv: kv[1], reverse=True))
+    return _ok(payload)

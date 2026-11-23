@@ -87,6 +87,20 @@ export const hotspotApi = {
     http.get('/hotspots', { params })
 }
 
+export const profileApi = {
+  // JFR 折叠栈聚合（P2-1）：format=folded 标准折叠文本 / tree 聚合树 JSON；
+  // profileType: cpu / alloc / lock；stressTaskId 按压测任务过滤
+  query: (params: {
+    app?: string
+    profileType?: 'cpu' | 'alloc' | 'lock'
+    stressTaskId?: number
+    start?: string | number
+    end?: string | number
+    format?: 'folded' | 'tree'
+    maxNodes?: number
+  }) => http.get('/profiles', { params })
+}
+
 export const stressApi = {
   // 创建并启动压测任务（异步执行）
   create: (data: Record<string, unknown>) => http.post('/stress/tasks', data),

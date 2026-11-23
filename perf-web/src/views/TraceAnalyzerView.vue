@@ -125,28 +125,70 @@
       </div>
     </div>
 
-    <!-- CPU 热点 Tab：agent 弱采样的方法级 CPU 帧命中排行（回答"CPU 烧在哪"） -->
+    <!-- CPU 热点 Tab：agent 弱采样的方法级 CPU 帧命中排行 + JFR 火焰图（P2-1 双视图） -->
     <div v-else-if="activeTab === 'hotspot'">
       <div class="glass-card p-4">
-        <div class="flex items-center justify-between mb-3">
-          <div class="text-sm font-medium">CPU 热点方法（最近 1 小时）</div>
-          <span class="text-[11px] text-fg-sub">需被测应用以 hotspotEnabled=true 启动 agent 采集</span>
-        </div>
-        <div v-if="!hotspots.length" class="text-xs text-fg-sub py-10 text-center">暂无 CPU 热点数据</div>
-        <template v-else>
-          <MetricChart :option="hotspotOption" :height="Math.max(240, hotspots.length * 26) + 'px'" />
-          <div class="mt-3 space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
-            <div v-for="(h, i) in hotspots" :key="h.methodName"
-              class="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5">
-              <span class="text-[11px] w-6 text-right text-fg-sub shrink-0">{{ i + 1 }}</span>
-              <div class="text-xs font-mono text-fg-main truncate flex-1" :title="h.methodName">{{ h.methodName }}</div>
-              <div class="text-xs text-neon-green shrink-0">{{ h.samples }} 次</div>
-              <div class="w-32 h-1.5 rounded bg-white/5 overflow-hidden shrink-0">
-                <div class="h-full bg-gradient-to-r from-neon-green to-neon-teal rounded"
-                  :style="{ width: (h.samples / hotspots[0].samples) * 100 + '%' }"></div>
-              </div>
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div class="text-sm font-medium">CPU 热点（最近 1 小时）</div>
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- 剖析维度切换：cpu / alloc / lock -->
+            <div class="flex gap-1">
+              <button
+                v-for="pt in profileTypes" :key="pt.key"
+                class="px-3 py-1 rounded-lg text-xs transition-all"
+                :class="profileType === pt.key ? 'bg-neon-green/15 text-neon-green border border-neon-green/30' : 'text-fg-sub border border-white/10 hover:text-fg-main'"
+                @click="switchProfileType(pt.key)"
+              >{{ pt.label }}</button>
+            </div>
+            <div class="flex gap-1 ml-2">
+              <button
+                v-for="v in viewModes" :key="v.key"
+                class="px-3 py-1 rounded-lg text-xs transition-all"
+                :class="hotspotView === v.key ? 'bg-neon-blue/15 text-neon-blue border border-neon-blue/30' : 'text-fg-sub border border-white/10 hover:text-fg-main'"
+                @click="hotspotView = v.key"
+              >{{ v.label }}</button>
             </div>
           </div>
+        </div>
+        <div class="text-[11px] text-fg-sub mb-3">
+          火焰图需被测应用以 <span class="font-mono">hotspotEnabled=true</span> 且
+          <span class="font-mono">profilerMode=jfr</span> 启动 agent（JFR 连续剖析）；
+          列表为叶帧排行（兼容旧 HotspotSampler）
+        </div>
+
+        <!-- 火焰图视图：JFR 折叠栈（cpu / alloc / lock 三维度切换） -->
+        <div v-if="hotspotView === 'flame'">
+          <div v-if="!profileLoaded" class="text-xs text-fg-sub py-10 text-center">加载中…</div>
+          <template v-else>
+            <FlameGraph
+              :folded="profileFolded"
+              :total-label="profileType === 'alloc' ? '字节' : profileType === 'lock' ? '毫秒' : '样本'"
+            />
+            <div v-if="profileSummary" class="text-[11px] text-fg-sub mt-2">
+              快照 {{ profileSummary.snapshotCount }} 批 · 唯一栈 {{ profileSummary.uniqueStacks }} 条 ·
+              总量 {{ profileSummary.totalSamples }}
+            </div>
+          </template>
+        </div>
+
+        <!-- 列表视图：叶帧热点排行（原有展示零破坏） -->
+        <template v-else>
+          <div v-if="!hotspots.length" class="text-xs text-fg-sub py-10 text-center">暂无 CPU 热点数据</div>
+          <template v-else>
+            <MetricChart :option="hotspotOption" :height="Math.max(240, hotspots.length * 26) + 'px'" />
+            <div class="mt-3 space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
+              <div v-for="(h, i) in hotspots" :key="h.methodName"
+                class="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5">
+                <span class="text-[11px] w-6 text-right text-fg-sub shrink-0">{{ i + 1 }}</span>
+                <div class="text-xs font-mono text-fg-main truncate flex-1" :title="h.methodName">{{ h.methodName }}</div>
+                <div class="text-xs text-neon-green shrink-0">{{ h.samples }} 次</div>
+                <div class="w-32 h-1.5 rounded bg-white/5 overflow-hidden shrink-0">
+                  <div class="h-full bg-gradient-to-r from-neon-green to-neon-teal rounded"
+                    :style="{ width: (h.samples / hotspots[0].samples) * 100 + '%' }"></div>
+                </div>
+              </div>
+            </div>
+          </template>
         </template>
       </div>
     </div>
@@ -157,9 +199,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { GitBranch } from 'lucide-vue-next'
 import MetricChart from '../components/charts/MetricChart.vue'
+import FlameGraph from '../components/charts/FlameGraph.vue'
 import TraceTree from '../components/TraceTree.vue'
 import { fmtTime } from '../utils/format'
-import { traceApi, slowSqlApi, slowCommandApi, hotspotApi, sourceApi } from '../api'
+import { traceApi, slowSqlApi, slowCommandApi, hotspotApi, profileApi, sourceApi } from '../api'
 import { useRepoStore } from '../stores/repoStore'
 
 const tabs = [
@@ -188,6 +231,51 @@ const minCostMs = ref(0)
 const selectedId = ref<number>()
 /** CPU 热点方法排行（agent HotspotSampler 弱采样） */
 const hotspots = ref<Array<Record<string, any>>>([])
+
+// ---- JFR 火焰图状态（P2-1）：维度切换 + 双视图 ----
+const profileTypes = [
+  { key: 'cpu', label: 'CPU' },
+  { key: 'alloc', label: '分配' },
+  { key: 'lock', label: '锁竞争' }
+] as const
+const viewModes = [
+  { key: 'flame', label: '火焰图' },
+  { key: 'list', label: '列表' }
+] as const
+const hotspotView = ref<'flame' | 'list'>('flame')
+const profileType = ref<'cpu' | 'alloc' | 'lock'>('cpu')
+const profileFolded = ref('')
+const profileSummary = ref<Record<string, any> | null>(null)
+const profileLoaded = ref(false)
+
+/** 切换剖析维度：重拉对应 profileType 的折叠栈聚合 */
+function switchProfileType(key: 'cpu' | 'alloc' | 'lock') {
+  if (profileType.value === key) return
+  profileType.value = key
+  loadProfile()
+}
+
+/** JFR 折叠栈聚合加载（服务端已跨批合并，前端直渲） */
+async function loadProfile() {
+  profileLoaded.value = false
+  const end = Date.now()
+  try {
+    const r = await profileApi.query({
+      app: query.value.app || undefined,
+      profileType: profileType.value,
+      start: end - 3600000,
+      end,
+      format: 'folded'
+    })
+    profileSummary.value = r.data
+    profileFolded.value = r.data?.folded ?? ''
+  } catch {
+    profileSummary.value = null
+    profileFolded.value = ''
+  } finally {
+    profileLoaded.value = true
+  }
+}
 
 // 总耗时 = 根节点（Controller 层）自身耗时；旧数据兜底用后端 totalMs
 const rootCost = computed(() => {
@@ -510,9 +598,13 @@ function shortMethod(name: string): string {
 // Tab 切换联动加载（切换项目时同步刷新）
 watch(activeTab, (tab) => {
   if (tab === 'hotspot' && !hotspots.value.length) loadHotspots()
+  if (tab === 'hotspot') loadProfile()
 })
 watch(() => query.value.app, () => {
-  if (activeTab.value === 'hotspot') loadHotspots()
+  if (activeTab.value === 'hotspot') {
+    loadHotspots()
+    loadProfile()
+  }
   if (activeTab.value === 'slow') loadSlowItems()
 })
 

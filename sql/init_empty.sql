@@ -76,18 +76,42 @@ PARTITION BY RANGE COLUMNS (collect_time) (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS trace_chain (
     id           BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
-    trace_id     VARCHAR(64)   NOT NULL COMMENT '链路 ID',
+    trace_id     VARCHAR(64)   NOT NULL COMMENT '链路 ID（P2-2 W3C：32 位 hex，微服务共享）',
     app_name     VARCHAR(128)  NOT NULL COMMENT '应用名称',
+    span_id      VARCHAR(32)   NOT NULL DEFAULT 'root' COMMENT '本服务 span ID（P2-2，旧探针缺省 root）',
+    parent_span_id VARCHAR(32) NULL COMMENT '上游服务 span ID（P2-2，无上游为 NULL）',
     root_method  VARCHAR(512)  NOT NULL DEFAULT '' COMMENT '根方法（类#方法）',
     trace_json   MEDIUMTEXT    NOT NULL COMMENT '调用树 JSON（TraceNode 树，含每层耗时与占比）',
     total_ms     DOUBLE        NOT NULL DEFAULT 0 COMMENT '总耗时 ms',
     start_time   DATETIME      NOT NULL COMMENT '链路开始时间',
     stress_task_id BIGINT      NULL COMMENT '触发压测任务 ID（压测流量染色，非压测流量为 NULL）',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_trace (trace_id),
+    UNIQUE KEY uk_trace_span (trace_id, app_name, span_id),
     KEY idx_app_time (app_name, start_time, id),
     KEY idx_stress_task (stress_task_id, start_time)
 ) ENGINE = InnoDB COMMENT = '业务方法调用链';
+
+-- 兼容旧库：trace_chain span 列不存在时补充（幂等）
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'trace_chain' AND COLUMN_NAME = 'span_id');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE trace_chain ADD COLUMN span_id VARCHAR(32) NOT NULL DEFAULT ''root'' COMMENT ''本服务 span ID（P2-2，旧探针缺省 root）'' AFTER app_name',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'trace_chain' AND COLUMN_NAME = 'parent_span_id');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE trace_chain ADD COLUMN parent_span_id VARCHAR(32) NULL COMMENT ''上游服务 span ID（P2-2，无上游为 NULL）'' AFTER span_id',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+-- 兼容旧库：唯一键 uk_trace(trace_id) → uk_trace_span(trace_id, app_name, span_id)（幂等）
+SET @uk_exists := (SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'trace_chain'
+      AND INDEX_NAME = 'uk_trace_span');
+SET @ddl := IF(@uk_exists = 0,
+    'ALTER TABLE trace_chain DROP INDEX uk_trace, ADD UNIQUE KEY uk_trace_span (trace_id, app_name, span_id)',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ---------------------------------------------------------------------
 -- 4. slow_sql：慢 SQL 记录（JDBC 拦截 + 慢查询日志解析双通道）
@@ -101,12 +125,22 @@ CREATE TABLE IF NOT EXISTS slow_sql (
     db_host       VARCHAR(255)  NOT NULL DEFAULT '' COMMENT '数据库地址（慢日志解析来源）',
     method_chain  TEXT          NULL COMMENT '触发方法链 JSON 数组（根 → 叶，如 Controller → Service → Mapper）',
     execute_time  DATETIME      NOT NULL COMMENT '执行时间',
+    sql_fingerprint VARCHAR(16) NULL COMMENT 'SQL 指纹（P2-2：字面量归一化模板 SHA-1 前 16 位，旧探针为 NULL）',
     stress_task_id BIGINT      NULL COMMENT '触发压测任务 ID（压测流量染色，非压测流量为 NULL）',
     PRIMARY KEY (id),
     KEY idx_app_time (app_name, execute_time, id),
     KEY idx_stress_task (stress_task_id, execute_time),
-    KEY idx_cost (cost_ms)
+    KEY idx_cost (cost_ms),
+    KEY idx_fingerprint (sql_fingerprint, execute_time)
 ) ENGINE = InnoDB COMMENT = '慢 SQL 记录';
+
+-- 兼容旧库：slow_sql.sql_fingerprint 列不存在时补充（幂等）
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'slow_sql' AND COLUMN_NAME = 'sql_fingerprint');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE slow_sql ADD COLUMN sql_fingerprint VARCHAR(16) NULL COMMENT ''SQL 指纹（P2-2：字面量归一化模板 SHA-1 前 16 位，旧探针为 NULL）'' AFTER execute_time, ADD KEY idx_fingerprint (sql_fingerprint, execute_time)',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ---------------------------------------------------------------------
 -- 4.0 slow_command：中间件慢命令（agent 拦截 Redis / ES / RabbitMQ）
@@ -141,6 +175,22 @@ CREATE TABLE IF NOT EXISTS hotspot_method (
     PRIMARY KEY (id),
     KEY idx_app_time (app_name, sample_time)
 ) ENGINE = InnoDB COMMENT = '方法级 CPU 热点';
+
+-- ---------------------------------------------------------------------
+-- 4.1.1 profile_snapshot：JFR 连续剖析折叠栈快照（P2-1，cpu / alloc / lock）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS profile_snapshot (
+    id             BIGINT UNSIGNED AUTO_INCREMENT COMMENT '主键',
+    app_name       VARCHAR(128) NOT NULL COMMENT '应用名称',
+    stress_task_id BIGINT       NULL COMMENT '压测任务 ID（profiler 开启后随染色流量周期对齐，非压测期为 NULL）',
+    profile_type   VARCHAR(16)  NOT NULL COMMENT '剖析维度：cpu / alloc / lock',
+    folded_stacks  MEDIUMTEXT   NOT NULL COMMENT '标准折叠栈（每行 frame1;frame2;... count）',
+    total_samples  BIGINT       NOT NULL DEFAULT 0 COMMENT '本批样本总量（cpu=次数 / alloc=分配字节 / lock=阻塞毫秒）',
+    sample_time    DATETIME     NOT NULL COMMENT '聚合采样时间',
+    PRIMARY KEY (id),
+    KEY idx_profile_app_type_time (app_name, profile_type, sample_time),
+    KEY idx_profile_stress_task (stress_task_id, profile_type)
+) ENGINE = InnoDB COMMENT = 'JFR 连续剖析折叠栈快照';
 
 -- ---------------------------------------------------------------------
 -- 4.2 stress_schedule：定时压测调度（周期执行 + 版本基线对比 + webhook 回归告警）

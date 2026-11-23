@@ -9,6 +9,8 @@
   无染色命中时自动降级按压测任务时间窗查询并标注 matchedBy；
 - trace_query：最慢调用链摘要 Top N（不含 traceJson 巨树，防 Token 溢出）；
 - hotspot_query：CPU 热点方法 Top N（任务时间窗或最近 1 小时聚合）；
+- profile_flamegraph_summary：JFR 折叠栈热点<b>完整调用路径</b> Top N（P2-1，
+  cpu/alloc/lock 三维度，与 hotspot_query 叶帧视图互补，定位深层调用链瓶颈）；
 - db_explain_run：只读 EXPLAIN（经 DbExplainService 白名单校验；密码仅在
   取用点 decrypt，绝不入返回值与日志）。
 
@@ -21,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+from server.profile_merge import merge_folded, top_call_paths
 from tools.registry import Tool
 
 # Top N 与文本截断上限（防返回体撑爆 LLM 上下文窗口）
@@ -187,6 +190,42 @@ def build_observability_tools(collector_repo, stress_repo,
             } for r in top],
         }
 
+    # ------------------------------------------------------ slow_sql_fingerprint_query
+
+    def slow_sql_fingerprint_query(args: dict) -> dict:
+        """按 sql_fingerprint 聚合慢 SQL（P2-2）：同模板次数/平均/P95/样本 SQL。"""
+        task_id = _positive_int(args.get("stressTaskId"))
+        app = args.get("app") or None
+        limit = _clamp_limit(args.get("limit"), DEFAULT_TOP_N, 30)
+        if task_id is not None:
+            win = _resolve_task_window(stress_repo, task_id)
+            if win is None:
+                return {"error": f"stress task not found: {task_id}"}
+            app = app or win["app"]
+            rows = collector_repo.query_slow_sql_fingerprints(
+                app=app, start=None, end=None, stress_task_id=task_id, limit=limit)
+            matched_by = "stress_task"
+            if not rows:
+                # 降级：旧探针未染色时按任务时间窗聚合
+                rows = collector_repo.query_slow_sql_fingerprints(
+                    app=app, start=win["start"], end=win["end"],
+                    stress_task_id=None, limit=limit)
+                matched_by = "time_window_fallback"
+        else:
+            end = datetime.now()
+            start = end - timedelta(minutes=_positive_int(args.get("minutes")) or 60)
+            rows = collector_repo.query_slow_sql_fingerprints(
+                app=app, start=start, end=end, stress_task_id=None, limit=limit)
+            matched_by = "app_window"
+        return {
+            "matchedBy": matched_by,
+            "app": app,
+            "window": {"start": _iso(start), "end": _iso(end)} if task_id is None
+                      else None,
+            "total": len(rows),
+            "items": rows,
+        }
+
     # ---------------------------------------------------------- trace_query
 
     def trace_query(args: dict) -> dict:
@@ -256,6 +295,53 @@ def build_observability_tools(collector_repo, stress_repo,
             "items": rows,
         }
 
+    # ------------------------------------------------------ profile_flamegraph_summary
+
+    def profile_flamegraph_summary(args: dict) -> dict:
+        """JFR 折叠栈热点调用路径 Top N（P2-1，与 hotspot_query 叶帧视图互补）。
+
+        profileType：cpu（默认）/ alloc（分配字节）/ lock（阻塞毫秒）。
+        """
+        task_id = _positive_int(args.get("stressTaskId"))
+        app = args.get("app") or None
+        profile_type = args.get("profileType") or "cpu"
+        if profile_type not in ("cpu", "alloc", "lock"):
+            return {"error": "profileType 仅支持 cpu / alloc / lock"}
+        limit = _clamp_limit(args.get("limit"), DEFAULT_TOP_N, 30)
+        matched_by = None
+        if task_id is not None:
+            win = _resolve_task_window(stress_repo, task_id)
+            if win is None:
+                return {"error": f"stress task not found: {task_id}"}
+            app = app or win["app"]
+            start, end = win["start"], win["end"]
+            matched_by = "stress_task"
+        else:
+            end = datetime.now()
+            start = end - timedelta(minutes=_positive_int(args.get("minutes")) or 60)
+            matched_by = "app_window"
+        rows = collector_repo.query_profile_snapshots(
+            app=app, profile_type=profile_type, stress_task_id=None,
+            start=start, end=end, limit=1000)
+        if not rows:
+            return {
+                "matchedBy": matched_by,
+                "profileType": profile_type,
+                "window": {"start": _iso(start), "end": _iso(end)},
+                "error": "时间窗内无 JFR 折叠栈快照（需被测应用以 hotspotEnabled=true"
+                         " 且 profilerMode=jfr 启动 agent）",
+            }
+        merged = merge_folded([r.folded_stacks for r in rows])
+        return {
+            "matchedBy": matched_by,
+            "app": app,
+            "profileType": profile_type,
+            "window": {"start": _iso(start), "end": _iso(end)},
+            "snapshotCount": len(rows),
+            "totalSamples": merged["totalSamples"],
+            "items": top_call_paths(merged["stacks"], limit),
+        }
+
     # ---------------------------------------------------------- db_explain_run
 
     def db_explain_run(args: dict) -> dict:
@@ -311,6 +397,18 @@ def build_observability_tools(collector_repo, stress_repo,
             }, "additionalProperties": False},
             slow_sql_query),
         _read_only(
+            "slow_sql_fingerprint_query",
+            "按压测任务时间窗或最近 N 分钟查询慢 SQL 指纹聚合（P2-2）：同模板 SQL 归为一组，"
+            "返回每组指纹、出现次数、平均耗时、P95 耗时与最慢样本 SQL（已脱敏）。"
+            "用于识别 N+1 与全表扫描等模板级问题，避免同模板不同参数刷屏。",
+            {"type": "object", "properties": {
+                "stressTaskId": {"type": "integer"},
+                "app": {"type": "string"},
+                "minutes": {"type": "integer"},
+                "limit": {"type": "integer", "description": "Top N，默认 10，上限 30"},
+            }, "additionalProperties": False},
+            slow_sql_fingerprint_query),
+        _read_only(
             "trace_query",
             "查询最慢调用链摘要 Top N（traceId/根方法/总耗时/开始时间，不含调用树明细）。"
             "按 stressTaskId 或 app+method+minCostMs 过滤。",
@@ -333,6 +431,21 @@ def build_observability_tools(collector_repo, stress_repo,
                 "limit": {"type": "integer"},
             }, "additionalProperties": False},
             hotspot_query),
+        _read_only(
+            "profile_flamegraph_summary",
+            "按压测任务时间窗或最近 N 分钟查询 JFR 连续剖析热点调用路径 Top N"
+            "（完整调用链而非只看叶帧，与 hotspot_query 互补）。"
+            "profileType：cpu CPU 采样 / alloc 对象分配字节 / lock 锁竞争阻塞毫秒。"
+            "返回每条路径的帧序列、样本量与占比，用于定位深层调用链瓶颈。",
+            {"type": "object", "properties": {
+                "stressTaskId": {"type": "integer"},
+                "app": {"type": "string"},
+                "minutes": {"type": "integer"},
+                "profileType": {"type": "string",
+                                "description": "cpu / alloc / lock，默认 cpu"},
+                "limit": {"type": "integer", "description": "Top N，默认 10，上限 30"},
+            }, "additionalProperties": False},
+            profile_flamegraph_summary),
         _read_only(
             "db_explain_run",
             "对一条 SQL 执行只读 EXPLAIN 检测（仅 SELECT/WITH，经白名单校验防注入）："

@@ -98,6 +98,7 @@ def gate(request: Request,
             timeout_sec if timeout_sec is not None else 0,
             fail_on_no_baseline,
             webhook,
+            jvm_repo=getattr(request.app.state, "collector_repo", None),  # P2-3 资源维度
         ))
     except ValueError as exc:
         return _err(str(exc))

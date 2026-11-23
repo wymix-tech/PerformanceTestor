@@ -25,15 +25,19 @@ from server.collector_repo import (
     DbConnModel,
     HotspotMethodModel,
     JvmMetricModel,
+    ProfileSnapshotModel,
     SlowCommandModel,
     SlowSqlModel,
     TraceChainModel,
 )
+from server.sql_fingerprint import mask_sensitive, sql_fingerprint
 
 log = logging.getLogger(__name__)
 
 AGENT_VERSION = "1.0.0"
 MAX_COMMAND_LEN = 1000
+# 折叠栈单批落库上限（MEDIUMTEXT 16MB 留余量，防异常洪水行）
+MAX_FOLDED_LEN = 12 * 1024 * 1024
 
 
 def to_local_datetime(epoch_ms: int) -> datetime:
@@ -106,6 +110,8 @@ def handle_report(body: dict, remote_host: str, repo: CollectorRepository) -> No
             save_slow_commands(app_name, items, repo)
         elif report_type == "hotspot":
             save_hotspots(app_name, items, repo)
+        elif report_type == "profile":
+            save_profiles(app_name, items, repo)
         else:
             log.warning("agent report ignored: unknown type=%s, app=%s",
                         report_type, app_name)
@@ -139,9 +145,13 @@ def save_traces(app_name: str, items: list, repo: CollectorRepository) -> None:
             continue
         try:
             tree = item.get("tree")
+            # P2-2 span 串联：旧探针缺省 "root"（单服务存量数据无缝兼容）
+            span_id = _str_val(item.get("spanId"))
             rows.append(TraceChainModel(
                 app_name=app_name,
                 trace_id=_str_val(item.get("traceId")),
+                span_id=span_id if span_id else "root",
+                parent_span_id=_str_val(item.get("parentSpanId")),
                 root_method=_str_val(item.get("rootMethod")),
                 total_ms=_double_val(item.get("totalMs")),
                 start_time=to_local_datetime(_long_val(item.get("startTime"))),
@@ -195,14 +205,18 @@ def save_slow_sqls(app_name: str, items: list, repo: CollectorRepository) -> Non
             source = _str_val(item.get("source"))
             db_host = _str_val(item.get("dbHost"))
             chain = item.get("methodChain")
+            # P2-2 脱敏 + 指纹：服务端处理（探针热路径零负担）；
+            # 掩码后的 sqlText 与按归一化模板计算的 sql_fingerprint 一并落库
+            sql_text = mask_sensitive(_str_val(item.get("sqlText")) or "")
             rows.append(SlowSqlModel(
                 app_name=app_name,
-                sql_text=_str_val(item.get("sqlText")),
+                sql_text=sql_text,
                 cost_ms=_double_val(item.get("costMs")),
                 source="jdbc" if source is None else source,
                 db_host="" if db_host is None else db_host,
                 method_chain=None if chain is None else compact_json(chain),
                 execute_time=to_local_datetime(_long_val(item.get("executeTime"))),
+                sql_fingerprint=sql_fingerprint(sql_text),
                 stress_task_id=_stress_task_id_val(item.get("stressTaskId")),
             ))
             # agent 上报了库地址且该应用尚未关联连接 → 自动注册（每批同地址仅一次）
@@ -300,3 +314,40 @@ def save_hotspots(app_name: str, items: list, repo: CollectorRepository) -> None
     if rows:
         repo.save_hotspots(rows)
     log.info("agent report: saved %d hotspot methods, app=%s", len(rows), app_name)
+
+
+def save_profiles(app_name: str, items: list, repo: CollectorRepository) -> None:
+    """JFR 折叠栈快照（P2-1）：元素为单批聚合
+    {sampleTime, profileType, foldedStacks, totalSamples, stressTaskId?}。"""
+    rows: list[ProfileSnapshotModel] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            profile_type = _str_val(item.get("profileType"))
+            folded = item.get("foldedStacks")
+            total = _long_val(item.get("totalSamples"))
+            if profile_type is None or profile_type not in ("cpu", "alloc", "lock"):
+                log.warning("parse profile skipped: bad profileType=%s", profile_type)
+                continue
+            if folded is None or not str(folded).strip() or total <= 0:
+                continue
+            # 折叠栈支持字符串或换行数组两种形态（容错 agent 端序列化差异）
+            text = str(folded) if isinstance(folded, str) else "\n".join(
+                str(x) for x in folded if str(x).strip())
+            if len(text) > MAX_FOLDED_LEN:
+                log.warning("parse profile skipped: foldedStacks too large, app=%s", app_name)
+                continue
+            rows.append(ProfileSnapshotModel(
+                app_name=app_name,
+                profile_type=profile_type,
+                folded_stacks=text,
+                total_samples=total,
+                sample_time=to_local_datetime(_long_val(item.get("sampleTime"))),
+                stress_task_id=_stress_task_id_val(item.get("stressTaskId")),
+            ))
+        except Exception:  # noqa: BLE001 单条解析失败不影响整批
+            log.warning("parse profile failed, app=%s", app_name, exc_info=True)
+    if rows:
+        repo.save_profile_snapshots(rows)
+    log.info("agent report: saved %d profile snapshots, app=%s", len(rows), app_name)

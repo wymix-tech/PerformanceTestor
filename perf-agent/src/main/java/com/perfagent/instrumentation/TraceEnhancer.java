@@ -122,6 +122,39 @@ public class TraceEnhancer {
                                             .or(named("executeUpdate")).or(named("executeBatch"))
                                             .and(not(isStatic())))));
         }
+        // 2.5) HTTP 客户端出口拦截（P2-2，默认关闭 httpClientEnabled=false）：请求发出前
+        //      注入 traceparent（W3C 跨服务串联）与 X-Perf-Stress-Task-Id（染色透传）。
+        //      按类型名匹配（类不存在时匹配器自然 false，零编译期依赖），注入全部反射实现。
+        if (config.httpClientEnabled) {
+            agentBuilder = agentBuilder
+                    .type(httpClientTypeMatcher("org.apache.http.client.HttpClient"))
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(HttpClientAdvice.Apache.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on(named("execute").and(not(isStatic()))
+                                            .and(takesArgument(0, Object.class)))));
+            agentBuilder = agentBuilder
+                    .type(httpClientTypeMatcher("okhttp3.OkHttpClient"))
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(HttpClientAdvice.Rebuilding.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on(named("newCall").and(not(isStatic()))
+                                            .and(takesArgument(0, Object.class)))));
+            agentBuilder = agentBuilder
+                    .type(httpClientTypeMatcher("java.net.http.HttpClient"))
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(HttpClientAdvice.Rebuilding.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on((named("send").or(named("sendAsync")))
+                                            .and(not(isStatic()))
+                                            .and(takesArgument(0, Object.class)))));
+            agentBuilder = agentBuilder
+                    .type(httpClientTypeMatcher("org.springframework.http.client.ClientHttpRequest"))
+                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                            builder.visit(Advice.to(HttpClientAdvice.Spring.class)
+                                    .withExceptionHandler(Advice.ExceptionHandler.Default.PRINTING)
+                                    .on(named("execute").and(not(isStatic())))));
+        }
         // 3) 中间件拦截（Redis / ES / MQ）：默认关闭，需 middlewareEnabled=true 显式开启
         if (config.middlewareEnabled) {
             agentBuilder = agentBuilder
@@ -146,6 +179,18 @@ public class TraceEnhancer {
                                     .on(mqMethodMatcher().and(not(isStatic())))));
         }
         return agentBuilder;
+    }
+
+    /**
+     * HTTP 客户端类型匹配（P2-2）：子类型 + 排除接口/抽象/agent 自身（按类型名匹配，
+     * 客户端类无需在 classpath，匹配器自然返回 false）。
+     */
+    private static ElementMatcher.Junction<TypeDescription> httpClientTypeMatcher(String base) {
+        return hasSuperType(named(base))
+                .and(not(isInterface()))
+                .and(not(isAbstract()))
+                .and(not(nameStartsWith("com.perfagent.")))
+                .and(not(nameStartsWith("net.bytebuddy.")));
     }
 
     /**

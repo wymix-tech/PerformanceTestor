@@ -205,7 +205,8 @@ def test_gate_no_baseline_pass_by_default(db_url):
     assert body["code"] == 0
     v = body["data"]
     assert set(v) == {"taskId", "taskName", "status", "passed", "noBaseline",
-                      "regressed", "baselineTaskId", "rows", "summary"}
+                      "regressed", "baselineTaskId", "rows", "summary",
+                      "verdict", "baselineMode", "types"}  # P2-3 verdict 枚举演进
     assert v["status"] == "finished" and v["noBaseline"] is True
     assert v["passed"] is True and v["baselineTaskId"] == 0
     assert v["summary"] == "无可用基线（首次执行或历史任务缺失），本次结果已记录为后续基线，门禁放行"
@@ -229,7 +230,10 @@ def test_gate_regression_detected_and_message_exact(db_url):
         "durationSec": 1, "warmupSec": 0}).json()["data"]
     assert v["regressed"] is True and v["passed"] is False
     assert v["baselineTaskId"] == 7
-    assert v["summary"] == "性能回归：与基线任务 #7 相比，QPS 100 → 80（-20.0%）"
+    # P2-3 演进：summary 携带 baselineMode 与回归类型标注（verdict 枚举同步新增）
+    assert v["summary"] == ("性能回归：与基线任务 #7（latest）相比，"
+                            "QPS 100 → 80（-20.0%）（回归类型：throughput=regressed）")
+    assert v["verdict"] == "regressed" and v["baselineMode"] == "latest"
     labels = [r["label"] for r in v["rows"]]
     assert labels == ["QPS", "P95 (ms)", "P99 (ms)", "错误率 (%)"]
     qps_row = v["rows"][0]
@@ -243,7 +247,7 @@ def test_gate_pass_no_regression(db_url):
         "targetUrl": URL_USER, "appName": "demo-app", "concurrency": 10,
         "durationSec": 1, "warmupSec": 0}).json()["data"]
     assert v["passed"] is True and v["regressed"] is False
-    assert v["summary"] == "性能达标：与基线任务 #7 相比无回归"
+    assert v["summary"] == "性能达标：与基线任务 #7（latest）相比无回归"
 
 
 def test_gate_error_rate_rise_hits_regression_via_diff_fallback(db_url):
@@ -253,7 +257,8 @@ def test_gate_error_rate_rise_hits_regression_via_diff_fallback(db_url):
         "targetUrl": URL_USER, "appName": "demo-app", "concurrency": 10,
         "durationSec": 1, "warmupSec": 0}).json()["data"]
     assert v["regressed"] is True and v["passed"] is False
-    assert v["summary"].endswith("错误率上升超阈值"), "无指标行回归时文案走兜底分支"
+    assert "错误率上升超阈值" in v["summary"], "无指标行回归时文案走兜底分支"
+    assert v["types"]["stability"] == "regressed"
 
 
 def test_gate_explicit_baseline_task_id(db_url):

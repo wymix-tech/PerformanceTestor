@@ -2,6 +2,7 @@ package com.perfagent.jmx;
 
 import com.perfagent.config.AgentConfig;
 import com.perfagent.reporter.MetricsReporter;
+import com.sun.management.GarbageCollectionNotificationInfo;
 import com.sun.management.OperatingSystemMXBean;
 
 import java.lang.management.BufferPoolMXBean;
@@ -39,6 +40,10 @@ public class JvmCollector {
     private final MetricsReporter reporter;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** 单次 GC 停顿明细跟踪器（P2-2：注册到 GarbageCollectorMXBean 的 NotificationEmitter） */
+    private final GcPauseTracker gcPauseTracker = new GcPauseTracker();
+    /** 已注册监听的 GC Bean（stop 时注销，防重复注册/泄漏） */
+    private final java.util.List<javax.management.NotificationEmitter> gcEmitters = new java.util.ArrayList<>();
 
     public JvmCollector(AgentConfig config, MetricsReporter reporter) {
         this.appName = config.appName;
@@ -51,17 +56,58 @@ public class JvmCollector {
         });
     }
 
-    /** 启动定时采集 */
+    /** 启动定时采集（并注册 GC 停顿监听） */
     public void start() {
         if (running.compareAndSet(false, true)) {
+            registerGcPauseListener();
             scheduler.scheduleWithFixedDelay(this::collectOnce, 1, intervalSec, TimeUnit.SECONDS);
         }
     }
 
-    /** 停止采集（JVM 退出钩子调用） */
+    /** 停止采集（注销 GC 监听，JVM 退出钩子调用） */
     public void stop() {
         running.set(false);
         scheduler.shutdownNow();
+        unregisterGcPauseListener();
+    }
+
+    /**
+     * 注册 GC 停顿监听（P2-2）：对实现 {@code NotificationEmitter} 的收集器 Bean 注册
+     * {@code GARBAGE_COLLECTION_NOTIFICATION} 监听。重复 start 幂等（仅注册一次）；
+     * 注册失败静默（个别 JVM 不支持时退化为仅有累计计数）。
+     */
+    private void registerGcPauseListener() {
+        if (!gcEmitters.isEmpty()) {
+            return;
+        }
+        try {
+            for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+                if (gc instanceof javax.management.NotificationEmitter emitter) {
+                    try {
+                        emitter.addNotificationListener(gcPauseTracker, notification ->
+                                GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION
+                                        .equals(notification.getType()), null);
+                        gcEmitters.add(emitter);
+                    } catch (Throwable ignored) {
+                        // 单个 Bean 注册失败不影响其余
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // 监听注册失败：退化为仅有 GC 累计计数（P1 及以前行为）
+        }
+    }
+
+    /** 注销 GC 停顿监听（stop 幂等） */
+    private void unregisterGcPauseListener() {
+        for (javax.management.NotificationEmitter emitter : gcEmitters) {
+            try {
+                emitter.removeNotificationListener(gcPauseTracker);
+            } catch (Throwable ignored) {
+                // Bean 已不可用：静默
+            }
+        }
+        gcEmitters.clear();
     }
 
     /** 采集一次 JVM 指标并上报 */
@@ -81,7 +127,16 @@ public class JvmCollector {
             collectGc(metric);
             collectThread(metric);
             collectCpu(metric);
-            metric.extraMetrics = collectExtraMetrics();
+            // P2-2：单次 GC 停顿明细并入 extraMetrics（maxGcPauseMs / lastGcCause / lastGcAction）
+            Map<String, Object> extra = collectExtraMetrics();
+            Map<String, Object> gcDetail = gcPauseTracker.drain();
+            if (gcDetail != null) {
+                if (extra == null) {
+                    extra = new LinkedHashMap<>();
+                }
+                extra.putAll(gcDetail);
+            }
+            metric.extraMetrics = extra == null || extra.isEmpty() ? null : extra;
 
             reporter.reportJvm(appName, metric.toMap());
         } catch (Throwable t) {

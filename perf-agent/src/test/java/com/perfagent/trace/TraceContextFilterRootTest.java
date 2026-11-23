@@ -44,6 +44,13 @@ class TraceContextFilterRootTest {
         @Override
         public void reportTrace(String traceId, String app, TraceNode root, int nodeCount,
                                 long startTimeMs, String stressTaskId) {
+            reportTrace(traceId, app, root, nodeCount, startTimeMs, stressTaskId, null, null);
+        }
+
+        @Override
+        public void reportTrace(String traceId, String app, TraceNode root, int nodeCount,
+                                long startTimeMs, String stressTaskId,
+                                String spanId, String parentSpanId) {
             submittedRoots.add(root);
             submittedStressTaskIds.add(stressTaskId);
         }

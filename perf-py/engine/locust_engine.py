@@ -46,6 +46,29 @@ def spawn_rate_for(scenario: Scenario) -> float:
     return float(scenario.load.concurrency)
 
 
+# P2-4 施压端饱和自检：事件循环调度漂移阈值与告警门槛
+DRIFT_WARN_MS = 20.0
+DRIFT_WARN_COUNT = 3
+
+
+def saturation_warning(drifts_ms: list[float],
+                       cpu_peak_pct: float | None = None) -> str | None:
+    """漂移样本 → 饱和告警（正式期事件循环漂移 >20ms 达 3 次即告警）。
+
+    返回 None 表示无饱和风险。告警写入 StressTaskResult.warnings，
+    随压测报告与 AI 分析上下文透传（提醒 P95/P99 可能含客户端排队延迟）。
+    """
+    over = [d for d in drifts_ms if d > DRIFT_WARN_MS]
+    if len(over) < DRIFT_WARN_COUNT:
+        return None
+    text = f"施压端事件循环饱和（最大漂移 {max(over):.0f}ms"
+    if cpu_peak_pct is not None:
+        text += f"，进程 CPU 峰值 {cpu_peak_pct:.0f}%"
+    text += ("），当前 P95/P99 可能包含客户端排队延迟，"
+             "建议切换 k6/JMeter 引擎或降低单机并发")
+    return text
+
+
 def pacing_seconds_for(scenario: Scenario) -> float | None:
     """QPS 上限 → 每 worker 固定步进间隔（秒）；不限速返回 None。
 
@@ -220,12 +243,44 @@ def run_locust(
                 except Exception:  # noqa: BLE001 — 监听器异常不影响压测（对齐 Java 行为）
                     pass
 
+    # P2-4 饱和自检：每 1s 测量事件循环调度漂移（gevent.sleep 实际耗时 - 1s）
+    # 与进程 CPU 占比；正式期漂移 >20ms 达 3 次即在 warnings 产出明确告警。
+    drifts: list[float] = []
+    cpu_samples: list[float] = []
+
+    def saturation_watch() -> None:
+        import os
+
+        last_cpu = os.times()
+        while runner.state not in ("stopped", "stopping"):
+            t0 = time.monotonic()
+            last_times = os.times()
+            gevent.sleep(1.0)
+            drift_ms = (time.monotonic() - t0 - 1.0) * 1000
+            cpu_delta = ((last_times.user + last_times.system)
+                         - (last_cpu.user + last_cpu.system))
+            ncpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") \
+                else (os.cpu_count() or 1)
+            cpu_pct = max(0.0, min(100.0, cpu_delta * 100.0 / ncpu))
+            last_cpu = last_times
+            # 仅统计正式期（warmup 期爬坡抖动不代表发压能力饱和）
+            if state["formal_start"] is not None \
+                    and time.time() >= state["formal_start"]:
+                drifts.append(drift_ms)
+                cpu_samples.append(cpu_pct)
+
     started = time.time()
     runner.start(user_count=load.concurrency, spawn_rate=spawn_rate_for(scenario))
     state["formal_start"] = started + load.warmup_sec
     gevent.spawn(sampler_greenlet)
+    gevent.spawn(saturation_watch)
     gevent.spawn_later(load.warmup_sec + load.duration_sec + 2, runner.quit)
     runner.greenlet.join()
+
+    saturation = saturation_warning(
+        drifts, max(cpu_samples) if cpu_samples else None)
+    if saturation:
+        warnings.append(saturation)
 
     formal_elapsed = max(1.0, time.time() - state["formal_start"])
     summary = stats.build_summary(formal_elapsed)

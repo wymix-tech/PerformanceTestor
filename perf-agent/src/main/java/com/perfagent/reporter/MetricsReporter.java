@@ -44,6 +44,8 @@ public class MetricsReporter {
     public static final String TYPE_HOTSPOT = "hotspot";
     /** 中间件慢命令（Redis / ES / MQ，middlewareEnabled 开启后才有数据） */
     public static final String TYPE_SLOW_COMMAND = "slowCommand";
+    /** JFR 连续剖析折叠栈（P2-1，cpu / alloc / lock 三类，profilerMode=jfr 时产生） */
+    public static final String TYPE_PROFILE = "profile";
 
     /** 单条 trace 字节估算：节点数 × 256B（Map + 装箱 + 字符串的保守均值），下限 1KB */
     private static final int BYTES_PER_NODE = 256;
@@ -57,15 +59,26 @@ public class MetricsReporter {
         final long startTimeMs;
         /** 压测流量染色任务 ID（P1-1，未染色为 null，不上报字段） */
         final String stressTaskId;
+        /** 本服务 span ID（P2-2，未染色/旧场景为 null → 服务端缺省 "root"） */
+        final String spanId;
+        /** 上游服务 span ID（P2-2，无上游为 null） */
+        final String parentSpanId;
         final int estBytes;
 
         TraceItem(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs,
                   String stressTaskId) {
+            this(traceId, app, root, nodeCount, startTimeMs, stressTaskId, null, null);
+        }
+
+        TraceItem(String traceId, String app, TraceNode root, int nodeCount, long startTimeMs,
+                  String stressTaskId, String spanId, String parentSpanId) {
             this.traceId = traceId;
             this.app = app;
             this.root = root;
             this.startTimeMs = startTimeMs;
             this.stressTaskId = stressTaskId;
+            this.spanId = spanId;
+            this.parentSpanId = parentSpanId;
             this.estBytes = Math.max(MIN_TRACE_BYTES, nodeCount * BYTES_PER_NODE);
         }
     }
@@ -96,6 +109,8 @@ public class MetricsReporter {
     private final Deque<Object> slowCommandQueue = new ArrayDeque<>();
     /** CPU 热点批量队列（元素为单批聚合结果 Map；新批次取代旧批次） */
     private final Deque<Object> hotspotQueue = new ArrayDeque<>();
+    /** JFR 折叠栈批量队列（元素为单批 {profileType, foldedStacks, ...} Map；新批次取代旧批次） */
+    private final Deque<Object> profileQueue = new ArrayDeque<>();
     /** trace 队列当前估算字节数（仅在 traceQueue 锁内变更） */
     private long traceQueueBytes = 0;
 
@@ -255,10 +270,21 @@ public class MetricsReporter {
     /** 上报一条调用链（P1-1：携带压测染色任务 ID，原生树直接入队，转 Map 在 reporter 线程做） */
     public void reportTrace(String traceId, String app, TraceNode root, int nodeCount,
                             long startTimeMs, String stressTaskId) {
+        reportTrace(traceId, app, root, nodeCount, startTimeMs, stressTaskId, null, null);
+    }
+
+    /**
+     * 上报一条调用链（P2-2：携带 spanId/parentSpanId，微服务跨进程串联）。
+     * spanId 为 null 时服务端缺省 "root"（旧探针 / 非 HTTP 场景向后兼容）。
+     */
+    public void reportTrace(String traceId, String app, TraceNode root, int nodeCount,
+                            long startTimeMs, String stressTaskId,
+                            String spanId, String parentSpanId) {
         if (!running.get()) {
             return;
         }
-        TraceItem item = new TraceItem(traceId, app, root, nodeCount, startTimeMs, stressTaskId);
+        TraceItem item = new TraceItem(traceId, app, root, nodeCount, startTimeMs,
+                stressTaskId, spanId, parentSpanId);
         synchronized (traceQueue) {
             // 条数与字节预算双重限制，超限丢最旧
             while (traceQueue.size() >= bufferSize || traceQueueBytes + item.estBytes > traceBufferBytes) {
@@ -377,6 +403,33 @@ public class MetricsReporter {
         }
     }
 
+    /**
+     * 上报一批 JFR 折叠栈（{@link com.perfagent.hotspot.JfrProfiler} 周期产出，P2-1）。
+     * 周期聚合数据具有时效性：同类型新批次直接取代队列中未送达的旧批次。
+     *
+     * @param profileType  cpu / alloc / lock
+     * @param foldedStacks 标准折叠栈文本（每行 "frame1;frame2;... count"）
+     * @param totalSamples 本批样本总量（cpu=次数，alloc=分配字节，lock=阻塞毫秒）
+     * @param sampleTimeMs 聚合采样时间（epoch 毫秒）
+     */
+    public void reportProfile(String profileType, String foldedStacks,
+                              long totalSamples, long sampleTimeMs) {
+        if (!running.get() || foldedStacks == null || foldedStacks.isBlank()
+                || totalSamples <= 0) {
+            return;
+        }
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("sampleTime", sampleTimeMs);
+        item.put("profileType", profileType);
+        item.put("foldedStacks", foldedStacks);
+        item.put("totalSamples", totalSamples);
+        synchronized (profileQueue) {
+            // 同类型新批次取代旧批次（折叠栈数据量较大，避免排队堆积）
+            profileQueue.removeIf(o -> profileType.equals(((Map<?, ?>) o).get("profileType")));
+            profileQueue.addLast(item);
+        }
+    }
+
     /** 条数超限丢最旧（jvm/slowSql 队列，条数即体积的良好代理） */
     private void dropOldest(Deque<Object> queue, AtomicLong dropped) {
         if (queue.size() >= bufferSize) {
@@ -398,7 +451,8 @@ public class MetricsReporter {
         boolean okSql = flushSimple(TYPE_SLOW_SQL, slowSqlQueue);
         boolean okCommand = flushSimple(TYPE_SLOW_COMMAND, slowCommandQueue);
         boolean okHotspot = flushSimple(TYPE_HOTSPOT, hotspotQueue);
-        if (okTrace && okJvm && okSql && okCommand && okHotspot) {
+        boolean okProfile = flushSimple(TYPE_PROFILE, profileQueue);
+        if (okTrace && okJvm && okSql && okCommand && okHotspot && okProfile) {
             backoffMs = 1000;
         }
     }
@@ -467,6 +521,11 @@ public class MetricsReporter {
         if (t.stressTaskId != null && !t.stressTaskId.isBlank()) {
             item.put("stressTaskId", t.stressTaskId);
         }
+        // P2-2 微服务串联：span 缺省 "root"（与旧探针数据无缝兼容），仅非空 parentSpanId 上报
+        item.put("spanId", t.spanId != null && !t.spanId.isBlank() ? t.spanId : "root");
+        if (t.parentSpanId != null && !t.parentSpanId.isBlank()) {
+            item.put("parentSpanId", t.parentSpanId);
+        }
         item.put("tree", toTreeMap(t.root));
         return item;
     }
@@ -518,6 +577,9 @@ public class MetricsReporter {
                 }
                 synchronized (slowCommandQueue) {
                     slowCommandQueue.clear();
+                }
+                synchronized (profileQueue) {
+                    profileQueue.clear();
                 }
                 System.err.println("[perf-agent] 平台不存在项目「" + targetProjectName
                         + "」，上报数据被全部丢弃，agent 已停止上报。"

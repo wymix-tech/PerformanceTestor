@@ -2,6 +2,8 @@ package com.perfagent;
 
 import com.perfagent.config.AgentConfig;
 import com.perfagent.hotspot.HotspotSampler;
+import com.perfagent.hotspot.JfrProfiler;
+import com.perfagent.hotspot.ProfilerBackend;
 import com.perfagent.instrumentation.JdbcInterceptor;
 import com.perfagent.instrumentation.MiddlewareSupport;
 import com.perfagent.instrumentation.TraceEnhancer;
@@ -80,11 +82,33 @@ public class AgentPremain {
             jvmCollector.start();
         }
 
-        // 2.1) CPU 热点弱采样（默认关闭；开启后回答"CPU 烧在哪"）
-        HotspotSampler hotspotSampler = null;
+        // 2.1) 连续剖析（默认关闭；hotspotEnabled=true 时按 profilerMode 选择后端，P2-1）
+        //   jfr（默认）：JDK 17 内置 JFR 三维度低开销剖析（cpu/alloc/lock），替代 Safepoint 抓栈；
+        //   threadmx：旧 HotspotSampler 弱采样（兼容回退）；off：关闭剖析。
+        ProfilerBackend profiler = null;
+        boolean hotspotSamplerLegacy = false;
         if (config.hotspotEnabled) {
-            hotspotSampler = new HotspotSampler(config, reporter);
-            hotspotSampler.start();
+            String mode = config.profilerMode == null ? "jfr" : config.profilerMode.trim().toLowerCase();
+            if ("off".equals(mode)) {
+                System.out.println("[perf-agent] profilerMode=off，连续剖析已关闭");
+            } else if ("threadmx".equals(mode)) {
+                hotspotSamplerLegacy = true;
+            } else {
+                try {
+                    JfrProfiler jfr = new JfrProfiler(config, reporter);
+                    jfr.start();
+                    profiler = jfr;
+                } catch (Throwable t) {
+                    // JFR 不可用（受限 JDK / 自定义运行时镜像）时回退旧采样，保底不丢能力
+                    System.err.println("[perf-agent] JFR 剖析初始化失败，回退 ThreadMXBean 弱采样：" + t);
+                    hotspotSamplerLegacy = true;
+                }
+            }
+            if (hotspotSamplerLegacy) {
+                HotspotSampler legacy = new HotspotSampler(config, reporter);
+                legacy.start();
+                profiler = legacy;
+            }
         }
 
         // 3) 注册增强规则（方法埋点 + JDBC 拦截 + 中间件拦截）
@@ -95,13 +119,13 @@ public class AgentPremain {
 
         // 4) 优雅停止：JVM 退出时停采集器并冲刷剩余数据
         final JvmCollector collector = jvmCollector;
-        final HotspotSampler hotspot = hotspotSampler;
+        final ProfilerBackend profilerBackend = profiler;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             if (collector != null) {
                 collector.stop();
             }
-            if (hotspot != null) {
-                hotspot.stop();
+            if (profilerBackend != null) {
+                profilerBackend.stop();
             }
             reporter.stop();
         }, "perf-agent-shutdown"));
@@ -110,6 +134,7 @@ public class AgentPremain {
                 + " reportUrl=" + config.reportUrl
                 + " sampleRate=" + config.sampleRate
                 + " jmxCollector=" + (jvmCollector != null)
-                + " hotspotSampler=" + (hotspotSampler != null));
+                + " profiler=" + (profiler != null
+                    ? (profiler instanceof JfrProfiler ? "jfr" : "threadmx") : "off"));
     }
 }

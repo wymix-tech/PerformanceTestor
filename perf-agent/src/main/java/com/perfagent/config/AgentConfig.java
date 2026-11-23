@@ -85,6 +85,13 @@ public class AgentConfig {
      * 调用链唯一采样决策点，消除采样稀释与半截链路。非 Servlet 应用无匹配类，零影响。
      */
     public boolean filterRootEnabled = true;
+    /**
+     * 是否启用 HTTP 客户端出口拦截（P2-2，默认 false）：在请求发出前注入
+     * {@code traceparent}（W3C 跨服务串联）与 {@code X-Perf-Stress-Task-Id}（染色透传），
+     * 支持 Apache HttpClient / OkHttp / Spring ClientHttpRequest / JDK HttpClient。
+     * 默认关闭：需要微服务串联时显式开启（反射注入有极小开销，单体应用无需）。
+     */
+    public boolean httpClientEnabled = false;
     /** 是否启用方法级 CPU 热点采样（默认 false，需要时开启控制常态开销） */
     public boolean hotspotEnabled = false;
     /**
@@ -97,6 +104,18 @@ public class AgentConfig {
     public int hotspotReportSec = 30;
     /** 每次上报的热点方法数上限 */
     public int hotspotTopN = 50;
+    /**
+     * 热点剖析模式（hotspotEnabled=true 时生效，P2-1）：
+     * jfr（默认，JDK 17 内置 JFR 连续剖析，低开销三维度）/ threadmx（旧 ThreadMXBean 弱采样，
+     * 兼容回退）/ off（关闭剖析，只留调用链）。
+     */
+    public String profilerMode = "jfr";
+    /** JFR ExecutionSample 采样周期毫秒（默认 20，CPU 维度） */
+    public int jfrCpuIntervalMs = 20;
+    /** JFR ObjectAllocationSample 节流（次/秒，默认 150，对象分配维度） */
+    public int jfrAllocThrottle = 150;
+    /** JFR JavaMonitorEnter 阈值毫秒（默认 10，锁竞争维度） */
+    public long jfrLockThresholdMs = 10;
     /**
      * 探针上报令牌（agentToken=&lt;值&gt;）：与平台 perf.auth.agent-token 保持一致时，
      * 上报请求会携带 X-Perf-Agent-Token 头。留空则不携带（平台未配置令牌时保持兼容）。
@@ -138,10 +157,15 @@ public class AgentConfig {
         if (kv.containsKey("jmxEnabled")) cfg.jmxEnabled = Boolean.parseBoolean(kv.get("jmxEnabled"));
         if (kv.containsKey("asyncTraceEnabled")) cfg.asyncTraceEnabled = Boolean.parseBoolean(kv.get("asyncTraceEnabled"));
         if (kv.containsKey("filterRootEnabled")) cfg.filterRootEnabled = Boolean.parseBoolean(kv.get("filterRootEnabled"));
+        if (kv.containsKey("httpClientEnabled")) cfg.httpClientEnabled = Boolean.parseBoolean(kv.get("httpClientEnabled"));
         if (kv.containsKey("hotspotEnabled")) cfg.hotspotEnabled = Boolean.parseBoolean(kv.get("hotspotEnabled"));
         if (kv.containsKey("hotspotIntervalMs")) cfg.hotspotIntervalMs = Integer.parseInt(kv.get("hotspotIntervalMs"));
         if (kv.containsKey("hotspotReportSec")) cfg.hotspotReportSec = Integer.parseInt(kv.get("hotspotReportSec"));
         if (kv.containsKey("hotspotTopN")) cfg.hotspotTopN = Integer.parseInt(kv.get("hotspotTopN"));
+        if (kv.containsKey("profilerMode")) cfg.profilerMode = kv.get("profilerMode");
+        if (kv.containsKey("jfrCpuIntervalMs")) cfg.jfrCpuIntervalMs = Integer.parseInt(kv.get("jfrCpuIntervalMs"));
+        if (kv.containsKey("jfrAllocThrottle")) cfg.jfrAllocThrottle = Integer.parseInt(kv.get("jfrAllocThrottle"));
+        if (kv.containsKey("jfrLockThresholdMs")) cfg.jfrLockThresholdMs = Long.parseLong(kv.get("jfrLockThresholdMs"));
         if (kv.containsKey("agentToken")) cfg.agentToken = kv.get("agentToken");
         return cfg;
     }

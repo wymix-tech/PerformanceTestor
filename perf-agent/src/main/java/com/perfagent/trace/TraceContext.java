@@ -31,7 +31,7 @@ public final class TraceContext {
     /** 每线程链路上下文（单 ThreadLocal，热路径仅 1 次 get） */
     private static final ThreadLocal<Ctx> CTX = new ThreadLocal<>();
 
-    /** 链路 ID 序号生成器 */
+    /** 链路 ID 序号生成器（P2-2 前旧格式遗留；现 traceId 为随机 hex，保留防外部引用） */
     private static final AtomicLong TRACE_SEQ = new AtomicLong(0);
 
     /**
@@ -39,6 +39,12 @@ public final class TraceContext {
      * 探针在 Filter 根入口零依赖捕获（兼容 javax/jakarta Servlet）。
      */
     static final String STRESS_TASK_ID_HEADER = "X-Perf-Stress-Task-Id";
+
+    /**
+     * W3C 跨服务链路头（P2-2）：上游服务出口拦截器注入的标准 {@code traceparent}，
+     * 格式 {@code 00-<32hex traceId>-<16hex parentSpanId>-<2hex flags>}。
+     */
+    static final String TRACEPARENT_HEADER = "traceparent";
 
     /**
      * getHeader(String) 反射方法缓存：按 request 实际类缓存（ClassValue，热路径 O(1)）。
@@ -97,6 +103,10 @@ public final class TraceContext {
         int nodeCount;
         /** 压测染色任务 ID（P1-1：与采样决策无关，未采样请求同样携带，供慢 SQL/慢命令关联） */
         String stressTaskId;
+        /** 本服务 span ID（P2-2，16 位 hex；非 Filter 根入口为 null → 服务端缺省 "root"） */
+        String spanId;
+        /** 上游服务 span ID（P2-2，继承 traceparent；无上游为 null） */
+        String parentSpanId;
 
         Ctx(boolean filterOwned) {
             this.filterOwned = filterOwned;
@@ -181,7 +191,8 @@ public final class TraceContext {
             // 根节点完成：提交整条链路（树对象直接入队，转 Map 在 reporter 线程做）
             if (reporter != null) {
                 reporter.reportTrace(ctx.traceId, appName, node, ctx.nodeCount,
-                        System.currentTimeMillis(), ctx.stressTaskId);
+                        System.currentTimeMillis(), ctx.stressTaskId,
+                        ctx.spanId, ctx.parentSpanId);
             }
             ctx.chainSubmitted = true;
             // Filter 根模式：上下文保留至 Filter 退出（sampled 标志仍有效，
@@ -231,15 +242,89 @@ public final class TraceContext {
         }
         Ctx ctx = new Ctx(true);
         ctx.stressTaskId = extractStressTaskId(request);
+        // P2-2 W3C 跨服务串联：合法 traceparent → 继承上游 traceId 并记录 parentSpanId；
+        // 无/非法 → 生成本服务新 32 位 hex traceId。spanId 无论采样与否都生成
+        // （跨服务串联需要每个服务独立 span，采样率只影响调用链明细是否上报）。
+        String[] tp = parseTraceparent(extractHeader(request, TRACEPARENT_HEADER));
+        if (tp != null) {
+            ctx.traceId = tp[0];
+            ctx.parentSpanId = tp[1];
+        } else {
+            ctx.traceId = nextTraceId();
+        }
+        ctx.spanId = nextSpanId();
         if (sampler.shouldSample()) {
             ctx.sampled = true;
-            ctx.traceId = nextTraceId();
             ctx.rootStartNanos = System.nanoTime();
             ctx.nodeCount = 0;
         } else {
             ctx.sampled = false; // NOT_SAMPLED 占位：整链短路标记
         }
         CTX.set(ctx);
+        return true;
+    }
+
+    /**
+     * 通用请求头提取（P2-2）：复用 {@link #GET_HEADER_CACHE} 反射缓存，
+     * 与 {@link #extractStressTaskId(Object)} 同一条零依赖路径。
+     */
+    private static String extractHeader(Object request, String name) {
+        if (request == null) {
+            return null;
+        }
+        try {
+            Method m = GET_HEADER_CACHE.get(request.getClass());
+            if (m == null) {
+                return null;
+            }
+            Object v = m.invoke(request, name);
+            return v == null ? null : v.toString();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * W3C traceparent 解析（P2-2）：{@code 00-<32hex>-<16hex>-<2hex>}。
+     * 合法返回 {traceId, parentSpanId}；版本 ff / ID 全零 / 格式非法返回 null（当作无上游）。
+     */
+    static String[] parseTraceparent(String header) {
+        if (header == null) {
+            return null;
+        }
+        String s = header.trim();
+        if (s.length() != 55 || s.charAt(2) != '-' || s.charAt(35) != '-' || s.charAt(52) != '-') {
+            return null;
+        }
+        String version = s.substring(0, 2);
+        String traceId = s.substring(3, 35);
+        String spanId = s.substring(36, 52);
+        String flags = s.substring(53);
+        if (!isLowerHex(version) || !isLowerHex(traceId) || !isLowerHex(spanId) || !isLowerHex(flags)) {
+            return null;
+        }
+        if ("ff".equals(version) || isAllZero(traceId) || isAllZero(spanId)) {
+            return null;
+        }
+        return new String[]{traceId, spanId};
+    }
+
+    private static boolean isLowerHex(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isAllZero(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) != '0') {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -282,10 +367,29 @@ public final class TraceContext {
         CTX.remove();
     }
 
-    /** 生成链路 ID */
+    /** 生成链路 ID（P2-2：W3C 规范 32 位小写 hex；旧 trace-ts-seq 格式存量数据无缝兼容） */
     public static String nextTraceId() {
-        return "trace-" + System.currentTimeMillis() + "-" + TRACE_SEQ.incrementAndGet();
+        return randomHex(16);
     }
+
+    /** 生成 span ID（W3C 规范 16 位小写 hex） */
+    public static String nextSpanId() {
+        return randomHex(8);
+    }
+
+    /** ThreadLocalRandom → n 字节小写 hex（无锁、无网络 IO，热路径安全） */
+    private static String randomHex(int bytes) {
+        java.util.concurrent.ThreadLocalRandom rnd = java.util.concurrent.ThreadLocalRandom.current();
+        char[] chars = new char[bytes * 2];
+        for (int i = 0; i < chars.length; i += 2) {
+            int b = rnd.nextInt(256);
+            chars[i] = HEX[b >>> 4];
+            chars[i + 1] = HEX[b & 0xF];
+        }
+        return new String(chars);
+    }
+
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     /** 判断当前线程是否处于采样链路中（供 JDBC 拦截等复用采样标志） */
     public static boolean inSampledContext() {
@@ -314,6 +418,31 @@ public final class TraceContext {
     }
 
     /**
+     * 当前 W3C traceparent（P2-2）：供出口拦截器注入下游请求。
+     * 格式 {@code 00-<traceId>-<spanId>-01}；无上下文 / 无 traceId 或 spanId 时返回 null。
+     * 仅在 HTTP 客户端请求发出前调用（慢路径），正常路径零开销。
+     */
+    public static String currentTraceparent() {
+        Ctx ctx = CTX.get();
+        if (ctx == null || ctx.traceId == null || ctx.spanId == null) {
+            return null;
+        }
+        return "00-" + ctx.traceId + "-" + ctx.spanId + "-01";
+    }
+
+    /** 当前 span ID（P2-2，上报 trace_chain.span_id；无上下文返回 null → 服务端缺省 "root"） */
+    public static String currentSpanId() {
+        Ctx ctx = CTX.get();
+        return ctx == null ? null : ctx.spanId;
+    }
+
+    /** 当前上游 span ID（P2-2，上报 trace_chain.parent_span_id；无上游返回 null） */
+    public static String currentParentSpanId() {
+        Ctx ctx = CTX.get();
+        return ctx == null ? null : ctx.parentSpanId;
+    }
+
+    /**
      * 跨线程上下文快照（P1-5 异步透传）：{@link #capture()} 在提交任务时拍快照，
      * 子线程 {@link #attach(Snapshot)} 恢复、{@link #detach(Snapshot)} 清理。
      */
@@ -321,6 +450,9 @@ public final class TraceContext {
         final String traceId;
         final String stressTaskId;
         final boolean sampled;
+        /** P2-2：span 透传（子线程共享本服务同一 span，parentSpanId 原样继承） */
+        final String spanId;
+        final String parentSpanId;
         /** 父线程当前栈顶节点（子任务方法挂为它的子调用；未采样为 null） */
         final TraceNode parentNode;
         /**
@@ -336,9 +468,17 @@ public final class TraceContext {
 
         private Snapshot(String traceId, String stressTaskId, boolean sampled,
                          TraceNode parentNode, Ctx previousCtx) {
+            this(traceId, stressTaskId, sampled, null, null, parentNode, previousCtx);
+        }
+
+        private Snapshot(String traceId, String stressTaskId, boolean sampled,
+                         String spanId, String parentSpanId,
+                         TraceNode parentNode, Ctx previousCtx) {
             this.traceId = traceId;
             this.stressTaskId = stressTaskId;
             this.sampled = sampled;
+            this.spanId = spanId;
+            this.parentSpanId = parentSpanId;
             this.parentNode = parentNode;
             this.previousCtx = previousCtx;
         }
@@ -348,7 +488,8 @@ public final class TraceContext {
             TraceNode top = existing.sampled && !existing.stack.isEmpty()
                     ? existing.stack.peek() : null;
             return new Snapshot(existing.traceId, existing.stressTaskId,
-                    existing.sampled, top, existing);
+                    existing.sampled, existing.spanId, existing.parentSpanId,
+                    top, existing);
         }
     }
 
@@ -362,7 +503,7 @@ public final class TraceContext {
             return null;
         }
         return new Snapshot(ctx.traceId, ctx.stressTaskId, ctx.sampled,
-                ctx.sampled ? ctx.stack.peek() : null);
+                ctx.spanId, ctx.parentSpanId, ctx.sampled ? ctx.stack.peek() : null, null);
     }
 
     /**
@@ -385,6 +526,8 @@ public final class TraceContext {
         ctx.sampled = snapshot.sampled;
         ctx.traceId = snapshot.traceId;
         ctx.stressTaskId = snapshot.stressTaskId;
+        ctx.spanId = snapshot.spanId;
+        ctx.parentSpanId = snapshot.parentSpanId;
         ctx.rootStartNanos = System.nanoTime();
         if (snapshot.sampled && snapshot.parentNode != null) {
             ctx.stack.push(snapshot.parentNode); // 子任务方法成为父节点子调用
@@ -416,6 +559,8 @@ public final class TraceContext {
         ctx.sampled = prev.sampled;
         ctx.traceId = prev.traceId;
         ctx.stressTaskId = prev.stressTaskId;
+        ctx.spanId = prev.spanId;
+        ctx.parentSpanId = prev.parentSpanId;
         ctx.rootStartNanos = System.nanoTime();
         if (prev.sampled && prev.parentNode != null) {
             ctx.stack.push(prev.parentNode);

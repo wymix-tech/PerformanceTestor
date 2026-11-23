@@ -32,9 +32,10 @@ import java.util.concurrent.atomic.LongAdder;
  * </ul>
  *
  * <p>语义说明：RUNNABLE 包含少量不可中断 IO 等待（Linux），统计为"近似 CPU 帧命中"；
- * 与 async-profiler 相比无 safepoint 偏差以外的系统性误差，作为低成本兜底方案。
+ * 与 async-profiler 相比无 safepoint 偏差以外的系统性误差，作为低成本兜底方案
+ * （profilerMode=threadmx 或 JFR 不可用时的回退后端）。
  */
-public class HotspotSampler {
+public class HotspotSampler implements ProfilerBackend {
 
     /** 聚合帧数上限（防内存洪水） */
     private static final int MAX_FRAMES = 8192;

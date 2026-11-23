@@ -55,24 +55,35 @@ GATE_TIMEOUT_OVERHEAD_SEC = 60
 
 
 def engine_available(engine_type: str) -> bool:
-    """引擎可用性（validateCommon 前置校验）。jmeter 探测可执行文件；http→locust 探测安装。"""
+    """引擎可用性（validateCommon 前置校验）。
+
+    jmeter/k6 探测可执行文件；http→locust 探测安装（P2-4 新增 k6 分支）。
+    """
     t = engine_type if engine_type and engine_type.strip() else HTTP_ENGINE
     if t == "jmeter":
         from engine.jmeter_engine import JMeterEngine
 
         return bool(JMeterEngine()._jmeter_bin)
+    if t == "k6":
+        import shutil
+
+        return shutil.which("k6") is not None
     import importlib.util
 
     return importlib.util.find_spec("locust") is not None
 
 
 def _default_engine(request: StressTaskRequestData):
-    """对齐 resolveEngine：场景模式强制回退 http（→locust）；http→locust 等价承担。"""
+    """对齐 resolveEngine：场景模式回退 http（→locust），k6 支持多接口场景不回退。"""
     t = request.engine_type if request.engine_type and request.engine_type.strip() else HTTP_ENGINE
-    if request.is_scenario_mode and t != HTTP_ENGINE:
+    if request.is_scenario_mode and t not in (HTTP_ENGINE, "k6"):
         log.warning("压测引擎「%s」不支持多接口场景，自动回退 http 引擎执行（步骤数 %s）",
                     t, len(request.scenario or []))
         t = HTTP_ENGINE
+    if t == "k6":
+        from engine.k6_engine import K6Engine
+
+        return K6Engine()
     if t == "jmeter":
         from engine.jmeter_engine import JMeterEngine
 
@@ -534,8 +545,14 @@ class StressTaskService:
     # -------------------------------------------------------- POST /gate
 
     def run_gate(self, payload: dict, baseline_task_id: int, timeout_sec: int,
-                 fail_on_no_baseline: bool, webhook: str | None) -> dict:
-        """对齐 StressGateService.runGate：创建压测 → 等待完成 → 基线比对 → 结论。"""
+                 fail_on_no_baseline: bool, webhook: str | None,
+                 jvm_repo=None) -> dict:
+        """对齐 StressGateService.runGate：创建压测 → 等待完成 → 基线比对 → 结论。
+
+        P2-3：jvm_repo 注入后启用资源维度（堆峰值/GC 增量/CPU 峰值）对比；
+        verdict 枚举（passed/regressed/no_baseline/insufficient_data）随基线
+        比对结果填充，旧 passed 布尔字段保留向后兼容。
+        """
         request = parse_stress_request(payload)
         timeout = timeout_sec if timeout_sec > 0 else DEFAULT_GATE_TIMEOUT_SEC
         min_timeout = self._estimate_min_timeout(request)
@@ -550,6 +567,7 @@ class StressTaskService:
         verdict: dict[str, Any] = {
             "taskId": task["id"], "taskName": task["taskName"], "status": "",
             "passed": False, "noBaseline": False, "regressed": False,
+            "verdict": "no_baseline", "baselineMode": "", "types": {},
             "baselineTaskId": 0, "rows": [], "summary": "",
         }
         status = self._await_finish(task["id"], timeout)
@@ -559,9 +577,12 @@ class StressTaskService:
             self._notify(webhook, verdict)
             return verdict
 
-        d = baseline_diff(self._repo, task["id"], baseline_task_id)
+        d = baseline_diff(self._repo, task["id"], baseline_task_id, jvm_repo=jvm_repo)
         verdict["rows"] = d["rows"]
         verdict["noBaseline"] = d["noBaseline"]
+        verdict["verdict"] = d["verdict"]
+        verdict["baselineMode"] = d.get("baselineMode", "")
+        verdict["types"] = d.get("types", {})
         if d["baseline"] is not None and d["baseline"].id is not None:
             verdict["baselineTaskId"] = d["baseline"].id
         verdict["regressed"] = d["regressed"]
@@ -571,13 +592,22 @@ class StressTaskService:
             verdict["summary"] = "无可用基线，按 fail-on-no-baseline 策略判定为失败" \
                 if fail_on_no_baseline else \
                 "无可用基线（首次执行或历史任务缺失），本次结果已记录为后续基线，门禁放行"
+        elif d["verdict"] == "insufficient_data":
+            # P2-3：关键指标缺失（如引擎无 QPS 口径）不武断判失败，交人工复核
+            verdict["passed"] = not fail_on_no_baseline
+            verdict["summary"] = "基线存在但关键指标缺失（insufficient_data），需人工复核"
         elif d["regressed"]:
             verdict["passed"] = False
-            verdict["summary"] = (f"性能回归：与基线任务 #{verdict['baselineTaskId']} 相比，"
-                                  + self._describe_regressions(d["rows"]))
+            types_desc = "；".join(
+                f"{k}={v}" for k, v in verdict["types"].items() if v == "regressed")
+            verdict["summary"] = (f"性能回归：与基线任务 #{verdict['baselineTaskId']}"
+                                  f"（{verdict['baselineMode']}）相比，"
+                                  + self._describe_regressions(d["rows"])
+                                  + (f"（回归类型：{types_desc}）" if types_desc else ""))
         else:
             verdict["passed"] = True
-            verdict["summary"] = (f"性能达标：与基线任务 #{verdict['baselineTaskId']} 相比无回归")
+            verdict["summary"] = (f"性能达标：与基线任务 #{verdict['baselineTaskId']}"
+                                  f"（{verdict['baselineMode']}）相比无回归")
         self._notify(webhook, verdict)
         return verdict
 

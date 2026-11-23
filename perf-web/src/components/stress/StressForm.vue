@@ -269,6 +269,7 @@
         <select v-model="engineType" class="input-select w-full">
           <option value="http">http（内置）</option>
           <option value="jmeter" title="需平台服务器安装 JMeter 并配置 JMETER_HOME">jmeter</option>
+          <option value="k6" title="P2-4 高精度引擎：长尾 P95/P99 更可信；需平台服务器安装 k6">k6（高精度）</option>
         </select>
       </div>
       <div>
