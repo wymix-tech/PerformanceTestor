@@ -14,6 +14,10 @@
 分析链（lang_java 解析器 / workload.compose / llm_enhance /
 datagen_plan_service）继续从本模块导入即可；新代码建议直接从
 ``ptde.models.wire`` 导入。
+
+兼容用途：保留分析链既有导入路径（枚举身份比较依赖同一模型对象），
+避免一次性大范围改路；预计下线条件：上述调用方及相关契约测试全部改路
+至 ``ptde.models.wire``、全局检索无残留导入后，删除本垫片。
 """
 
 from __future__ import annotations

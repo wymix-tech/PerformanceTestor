@@ -1,6 +1,7 @@
 """MySQL 原生批量装载适配器（R5 T5.3，实施方案 §8.2；总方案 §9.3/§9.4）。
 
-通道：``LOAD DATA LOCAL INFILE``（QW4 PoC tests/poc_load_data_infile.py 实测口径）。
+通道：``LOAD DATA LOCAL INFILE``（QW4 实测口径，结论归档见 B5 交接文档，
+回归见 tests/test_ptde_adapters_bulkload.py）。
 
 关键实测结论（勿另起一套）：
 - **secure_file_priv**：LOCAL 通道由客户端读文件直传，不经服务端文件白名单；

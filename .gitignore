@@ -5,6 +5,9 @@ target/
 !.mvn/wrapper/maven-wrapper.jar
 *.war
 
+# ===== Maven shade 构建产物（不入库，避免误提交） =====
+**/dependency-reduced-pom.xml
+
 # ===== 前端 =====
 node_modules/
 dist/

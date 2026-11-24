@@ -1,5 +1,11 @@
 """legacy FieldRule → PTDE 字段规格翻译路径（B7 续批次 9：T7.6/T7.7 最后硬前置）。
 
+兼容用途：承接 legacy 规则 JSON（含 camelCase）→ PTDE FieldSpec 的契约翻译，
+供 perf_cli.ptde_datagen_engine 灌数路径消费；属仍在役的旧载荷过渡入口
+（T7.9 退役清单未列入删除范围，续批次 9 决策 6 明确保留）。
+预计下线条件：旧规则 JSON 载荷及调用方全部切至 wire FieldSpec 直传、
+契约测试不再覆盖 legacy 翻译后，随调用方一并移除。
+
 打通「legacy 规格（规则 JSON）→ PTDE 规格（FieldSpec.distribution + 关系
 四元组）」的翻译路径，为 datagen_runner/datagen_api 切换提供单一出处。
 语义逐项对齐 legacy（datagen/model.py + rule_engine.py + default_engine.py）：

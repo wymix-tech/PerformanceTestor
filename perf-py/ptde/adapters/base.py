@@ -80,7 +80,7 @@ class BulkLoadResult(VersionedModel):
 class BulkLoadError(Exception):
     """原生装载失败（A3：错误计数/样例可见，不静默丢弃错误记录）。
 
-    QW4 实测口径（tests/poc_load_data_infile.py）：LOAD DATA 对非法行默认
+    QW4 实测口径（结论归档见 B5 交接文档）：LOAD DATA 对非法行默认
     跳行继续——故行数核对（rows_loaded vs expected）必须显式比对，短装即失败。
     """
 

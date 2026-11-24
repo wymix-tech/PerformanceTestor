@@ -3,7 +3,7 @@
 协议步骤（版本 PILOT_PROTOCOL_VERSION）：
 1. 取核心表代表性样本（默认 1 万行，可配）；
 2. 经装载通道导入（R3 期间用 DbApiBatchExecutor 降级通道实测；QW4
-   tests/poc_load_data_infile.py 的 LOAD DATA 实测结论作原生通道参照）；
+   LOAD DATA 实测结论作原生通道参照，结论归档见 B5 交接文档）；
 3. 采集表大小/索引大小/行数 → 计算 B_i（行均存储成本，实测而非字段长度相加）；
 4. 扩样 10× 重测，修正非线性偏差（B_i 取大样本轮次；误差区间取两轮偏差）；
 5. 输出 PilotRunReport（可序列化落库）与 CalibratedRowCost。

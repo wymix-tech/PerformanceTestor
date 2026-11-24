@@ -1,5 +1,10 @@
 """A4a legacy 存量迁移（T7.8，实施方案 §12.5）：legacy 三表 → ptde_* 幂等可重放。
 
+兼容用途：存量 legacy 三表（data_gen_task/data_gen_plan/semantic_hint）→
+ptde_* 的迁移入口，由生产 CLI ``perf ptde migrate-legacy`` 调用；T7.9 退役
+清单未将其列入删除范围。
+预计下线条件：所有存量库完成迁移、旧三表归档清退且 CLI 迁移命令下线后移除。
+
 映射（§12.5 原文口径）：
 - ``data_gen_task`` → ``ptde_dataset_instance``（历史灌数登记为历史 Instance，
   ``legacy_task_ids=[task.id]``；definition 按需从 ``tables_json``/单表列反解
