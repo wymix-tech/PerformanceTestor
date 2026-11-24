@@ -223,8 +223,16 @@
       <!-- Step 3：数量与规则 -->
       <section v-else-if="wizardStep === 3" class="space-y-3">
         <div class="grid grid-cols-2 gap-2.5">
-          <div>
-            <label class="text-xs text-fg-sub">{{ gen.tableNames.length > 1 ? '每表生成行数' : '生成行数' }}</label>
+          <div v-if="gen.tableNames.length > 1" class="rounded-lg border border-white/10 px-3 py-2">
+            <div class="text-xs text-fg-sub mb-1">各表生成行数（合计 {{ perTableTotalRows }} 行）</div>
+            <div v-for="t in gen.tableNames" :key="t" class="flex items-center gap-2 py-0.5">
+              <span class="text-xs text-fg-main flex-1 truncate" :title="t">{{ t }}</span>
+              <input v-model.number="gen.rowCounts[t]" type="number" class="input-text w-24 text-right text-xs" min="1" max="1000000" />
+              <span class="text-[10px] text-fg-sub">行</span>
+            </div>
+          </div>
+          <div v-else>
+            <label class="text-xs text-fg-sub">生成行数</label>
             <input v-model.number="gen.rowCount" type="number" class="input-text w-full" min="1" max="1000000" />
           </div>
           <div>
@@ -297,7 +305,11 @@
           </div>
           <div class="px-3 py-2 text-xs flex items-center justify-between">
             <span class="text-fg-sub">生成行数</span>
-            <span class="text-fg-main">{{ gen.tablesJson ? '按表组配置' : (gen.tableNames.length > 1 ? `每表 ${gen.rowCount} 行` : gen.rowCount) }}</span>
+            <span class="text-fg-main truncate max-w-[65%]" :title="gen.tableNames.map(t => `${t} ${gen.rowCounts[t] || 0} 行`).join('，')">
+              {{ gen.tablesJson ? '按表组配置' : (gen.tableNames.length > 1
+                ? gen.tableNames.map(t => `${t} ${gen.rowCounts[t] || 0}`).join(' · ')
+                : gen.rowCount) }}
+            </span>
           </div>
           <div class="px-3 py-2 text-xs flex items-center justify-between">
             <span class="text-fg-sub">字段规则</span>
@@ -439,6 +451,7 @@ const gen = ref({
   dbPassword: props.initialDbPassword || '',
   tableName: '',
   tableNames: [] as string[],
+  rowCounts: {} as Record<string, number>,
   rowCount: props.initialDbUrl ? 10000 : 1000,
   ruleJson: '',
   tablesJson: '',
@@ -449,8 +462,16 @@ const gen = ref({
 /** 表选择变化：单选时同步 tableName（列预览/单表形态提交），多选清空单表名 */
 function onTablesChange() {
   gen.value.tableName = gen.value.tableNames.length === 1 ? gen.value.tableNames[0] : ''
+  // 逐表行数：新勾选表沿用当前行数默认值，已设置过的表保留原值
+  const next: Record<string, number> = {}
+  for (const t of gen.value.tableNames) next[t] = gen.value.rowCounts[t] ?? gen.value.rowCount
+  gen.value.rowCounts = next
   loadColumns()
 }
+
+/** 多选表逐表行数合计（后端按表组求和校验上限 100 万） */
+const perTableTotalRows = computed(() =>
+  Object.values(gen.value.rowCounts).reduce((n, v) => n + (Number(v) || 0), 0))
 
 /** 高级选项是否展开（仅源码项目/孤儿率/JSON 规则：默认收起，避免向导窄空间内表单过高） */
 const advancedOpen = ref(false)
@@ -980,8 +1001,13 @@ async function startDataGen(dryRun: boolean) {
       return
     }
   } else if (gen.value.tableNames.length > 1) {
-    // 多选表 → 每表统一行数的表组形态（后端 tables 数组）
-    tables = gen.value.tableNames.map((t) => ({ tableName: t, rowCount: gen.value.rowCount }))
+    // 多选表 → 逐表行数的表组形态（后端 tables[].rowCount 独立生效）
+    const bad = gen.value.tableNames.find((t) => !(Number(gen.value.rowCounts[t]) > 0))
+    if (bad) {
+      alert(`表 ${bad} 的生成行数须为正数`)
+      return
+    }
+    tables = gen.value.tableNames.map((t) => ({ tableName: t, rowCount: gen.value.rowCounts[t] }))
   }
   if (!gen.value.connId && !gen.value.dbUrl) {
     alert('请先选择常用连接或填写数据库地址')
