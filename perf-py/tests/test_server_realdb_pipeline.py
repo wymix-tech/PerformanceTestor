@@ -391,6 +391,55 @@ def test_realdb_channel_relations_wire_fk_and_verify_layer(tmp_path):
     assert any("t_order.user_id" in c["name"] for c in rel["checks"])
 
 
+def test_realdb_channel_load_order_parent_before_child(tmp_path):
+    """依赖序装载回归：子表字母序在前（perf_order/perf_user 场景）时，
+    装载仍须父先于子——子表先装载会在 FK 校验处 1452 失败
+    （此前 OfflinePipeline.load 按 sorted 字母序逐实体装载的缺陷）。"""
+
+    class _FkEnforcingCursor(FakeCursor):
+        """子表 INSERT 时父表行数不足 → 模拟 MySQL 1452（FK 即时校验）。"""
+
+        def executemany(self, sql, batch) -> None:
+            s = sql.strip()
+            if s.startswith("INSERT INTO"):
+                table = s.split()[2]
+                req = self._conn.fk_requires.get(table)
+                if req:
+                    parent, need = req
+                    if self._conn.row_counts.get(parent, 0) < need:
+                        raise AssertionError(
+                            f"(1452, 'Cannot add or update a child row: a foreign "
+                            f"key constraint fails (`{table}`)）——父表 {parent} "
+                            "尚未装载")
+            super().executemany(sql, batch)
+
+    class _FkEnforcingConn(FakeConn):
+        """FK 即时校验假连接（child → parent 装载序回归测试）。"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.fk_requires: dict[str, tuple[str, int]] = {}
+
+        def cursor(self):
+            cur = _FkEnforcingCursor(self)
+            cur._conn = self
+            return cur
+
+    conn = _FkEnforcingConn()
+    conn.fk_requires["t_order"] = ("t_item", 40)
+    holder = {"conn": conn}
+    pipeline, ctx, _ = _rel_pipeline(tmp_path, holder=holder)
+    pipeline.generate(ctx)
+    load = pipeline.load({"instance": {"id": "1"}})
+    assert load["loaded_rows"] == 80  # 父 40 + 子 40 全量装载
+    # 装载顺序留痕：t_item（父）的 INSERT 先于 t_order（子）
+    first_insert: dict[str, int] = {}
+    for s in conn.executed:
+        if s.startswith("INSERT INTO"):
+            first_insert.setdefault(s.split()[2], len(first_insert))
+    assert first_insert["t_item"] < first_insert["t_order"]
+
+
 def test_realdb_channel_relations_orphan_fail_marks_layer(tmp_path):
     """孤儿违规（DB_FK 声明关系）→ 关系层 FAIL（零孤儿要求，不降级放行）。"""
     holder = {"conn": FakeConn()}

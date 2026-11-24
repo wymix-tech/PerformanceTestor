@@ -101,6 +101,17 @@ def _max_pk(conn, dialect, table: str, pk_column: str) -> int | None:
         cur.close()
 
 
+def _scalar_count(conn, dialect, table: str) -> int | None:
+    """单表当前行数（空表/异常返回 None，调用方决定是否兜底）。"""
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) FROM {dialect.quote_identifier(table)}")
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    finally:
+        cur.close()
+
+
 def _int_pk_watermark(conn, dialect, table: str | None) -> tuple[str, int] | None:
     """单自增整型主键表返回 (主键列, 当前 MAX(pk))；否则 None（无法标记所有权）。"""
     if not table:
@@ -287,7 +298,9 @@ class DatagenWriteService:
         try:
             self._repo.update_task_status(task_id, "running")
             watermarks = self._capture_watermarks(request)
-            result = self._run_engine(request, task_id)
+            row_baselines = self._capture_row_baselines(request)
+            result = self._run_engine(request, task_id, row_baselines,
+                                      watermarks)
             cost_ms = int((time.monotonic() - start) * 1000)
             if result["success"]:
                 if not request.get("dryRun"):
@@ -383,8 +396,15 @@ class DatagenWriteService:
             except Exception as exc:  # noqa: BLE001 — 尽力而为
                 log.warning("persist task scope failed: %s", exc)
 
-    def _run_engine(self, request: dict, task_id: int) -> dict:
-        """对齐 runEngine：spec 装配 → listener → 环依赖降级重试 → detailJson。"""
+    def _run_engine(self, request: dict, task_id: int,
+                    row_baselines: dict[str, int] | None = None,
+                    watermarks: dict[str, tuple[str, int]] | None = None) -> dict:
+        """对齐 runEngine：spec 装配 → listener → 环依赖降级重试 → detailJson。
+
+        row_baselines 为灌数前逐表行数基线；watermarks 为灌数前逐表主键水位。
+        验证钩子据此按「本次新增行数」核对，避免目标库已有存量数据时把
+        总行数/历史脏数据误判为本次灌数结果。
+        """
         from perf_cli.datagen_runner import spec_from_request
 
         engine = self._engine or self._build_engine()
@@ -457,7 +477,8 @@ class DatagenWriteService:
             if sc is not None:
                 detail["selfCheck"] = sc
             # QW3：生成后验证最小集（报告落 detailJson；失败显式标注，不伪装成功）
-            verify = self._verify_after_gen(request)
+            verify = self._verify_after_gen(request, row_baselines or {},
+                                            watermarks or {})
             if verify is not None:
                 detail["verifyMin"] = verify
 
@@ -468,16 +489,28 @@ class DatagenWriteService:
                 "errorMsg": result.error_msg,
                 "verifyPassed": verify["passed"] if verify else None}
 
-    def _verify_after_gen(self, request: dict) -> dict | None:
+    def _verify_after_gen(self, request: dict,
+                          row_baselines: dict[str, int] | None = None,
+                          watermarks: dict[str, tuple[str, int]] | None = None) -> dict | None:
         """灌数成功后的最小验证（QW3）：行数核对 + 外键孤儿抽检 + 枚举合法率。
 
-        连接失败/执行异常仅日志（目标库此刻不可达等），不影响任务结果；
+        行数核对优先按增量口径：``灌数后总行数 - 灌数前基线`` 对比本次期望行数；
+        枚举合法率提供主键水位时只核对本次新增行。未捕获到基线/水位时退回总行数/
+        全表口径。连接失败/执行异常仅日志（目标库此刻不可达等），不影响任务结果；
         dryRun 由调用方保证不进入本路径。
         """
         from ptde.validator.verify_min import verify_min
 
-        tables = [{"table": t, "expected": row_count}
-                  for t, row_count in self._expected_rows(request)]
+        tables = []
+        for t, row_count in self._expected_rows(request):
+            info = (watermarks or {}).get(t.lower())
+            tables.append({
+                "table": t,
+                "expected": row_count,
+                "baseline": (row_baselines or {}).get(t.lower()),
+                "pk_watermark": ({"column": info[0], "max": int(info[1])}
+                                 if info else None),
+            })
         if not tables:
             return None
         try:
@@ -496,6 +529,40 @@ class DatagenWriteService:
                 conn.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _capture_row_baselines(self, request: dict) -> dict[str, int]:
+        """灌数前逐表捕获行数基线（表名小写 → COUNT(*)）。
+
+        用于灌后按「本次新增行数」校验；连接失败/表不可读仅日志，
+        缺基线的表退回总行数核对。
+        """
+        out: dict[str, int] = {}
+        db_url = request.get("dbUrl")
+        if request.get("dryRun") or not db_url:
+            return out
+        try:
+            conn, dialect = _connect(db_url, request.get("dbUser"),
+                                     request.get("dbPassword"))
+        except Exception as exc:  # noqa: BLE001 — 尽力而为
+            log.warning("capture row baselines failed: %s", exc)
+            return out
+        try:
+            for table in self._task_tables(request):
+                if not table:
+                    continue
+                try:
+                    cnt = _scalar_count(conn, dialect, table)
+                except Exception as exc:  # noqa: BLE001 — 单表失败不影响其他表
+                    log.warning("capture row baseline failed, table=%s: %s", table, exc)
+                    continue
+                if cnt is not None:
+                    out[table.lower()] = int(cnt)
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return out
 
     @staticmethod
     def _expected_rows(request: dict) -> list[tuple[str, int]]:
@@ -639,7 +706,10 @@ class DatagenWriteService:
                     cur.execute("SELECT table_name FROM information_schema.tables "
                                 "WHERE table_schema = current_schema() "
                                 "AND table_type = 'BASE TABLE' ORDER BY table_name")
-                tables = [r[0] for r in cur.fetchall()]
+                tables = [t for t in (r[0] for r in cur.fetchall())
+                          if not str(t).lower().startswith("ptde_")]
+                # ptde_ 前缀为 PTDE 引擎内部命名空间（检查点表等自管理），
+                # 不作为灌数目标暴露——前端表清单不应出现 ptde_shard_checkpoint
             finally:
                 cur.close()
         except ValueError:

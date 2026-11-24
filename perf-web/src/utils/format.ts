@@ -8,6 +8,8 @@ export function taskStatusClass(s: string): string {
   const map: Record<string, string> = {
     running: 'text-neon-blue bg-neon-blue/10',
     finished: 'text-neon-green bg-neon-green/10',
+    // 数据已灌入但灌后校验不通过（如行数核对/孤儿抽检失败）：不伪装成功，也不并入失败
+    finished_verify_failed: 'text-amber-400 bg-amber-400/10',
     failed: 'text-red-400 bg-red-400/10'
   }
   return map[s] || FALLBACK

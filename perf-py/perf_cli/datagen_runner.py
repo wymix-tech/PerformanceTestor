@@ -145,9 +145,20 @@ def spec_from_request(req: dict, source_files: list[SourceFile] | None = None) -
     tables: list[TableSpec] = []
     req_tables = req.get("tables")
     if req_tables:
+        # ruleJson 双形态（表组下）：{"tables": {<表名>: {"fields": {...}}}}
+        # 按表指定（同名同名列可不同规则，显式优先）；{"fields": {...}} 为
+        # 未显式携带 fields 的表的缺省规则（向后兼容——此前表组下 ruleJson
+        # 被忽略）；tables[].fields 显式规则永远优先，未被规则覆盖的列自动生成
+        table_rules, default_fields = _parse_rule_json_tables(req.get("ruleJson"))
         for dto in req_tables:
             ts = TableSpec(dto.get("tableName"), int(dto.get("rowCount", 1000)))
             ts.fields = parse_fields(dto.get("fields"))
+            if not ts.fields:
+                tkey = (dto.get("tableName") or "").lower()
+                if tkey in table_rules:
+                    ts.fields = table_rules[tkey]
+                elif default_fields:
+                    ts.fields = dict(default_fields)
             ts.orphan_rate = dto.get("orphanRate")
             tables.append(ts)
     else:
@@ -156,6 +167,36 @@ def spec_from_request(req: dict, source_files: list[SourceFile] | None = None) -
         tables.append(ts)
     spec.tables = tables
     return spec
+
+
+def _parse_rule_json_tables(
+    rule_json: str | None,
+) -> tuple[dict[str, dict[str, FieldRule]], dict[str, FieldRule]]:
+    """ruleJson → (按表规则 {小写表名: fields}, 全局缺省 fields)。
+
+    双形态并存：``{"tables": {...}}`` 逐表；顶层 ``{"fields": {...}}`` 缺省。
+    非 dict / 解析失败 → 空集（表组形态下 ruleJson 旧被忽略，宽容解析
+    不引入新失败面；非法 JSON 由单表形态 parse_fields_json 显式上抛口径不变）。
+    """
+    if rule_json is None or not rule_json.strip():
+        return {}, {}
+    try:
+        node = json.loads(rule_json)
+    except json.JSONDecodeError:
+        return {}, {}
+    if not isinstance(node, dict):
+        return {}, {}
+    table_rules: dict[str, dict[str, FieldRule]] = {}
+    tbl_node = node.get("tables")
+    if isinstance(tbl_node, dict):
+        for tname, tnode in tbl_node.items():
+            if isinstance(tnode, dict) and isinstance(tnode.get("fields"), dict):
+                rules = parse_fields(tnode["fields"])
+                if rules:
+                    table_rules[str(tname).lower()] = rules
+    default_fields = parse_fields(node.get("fields")) \
+        if isinstance(node.get("fields"), dict) else {}
+    return table_rules, default_fields
 
 
 def parse_fields_json(rule_json: str | None) -> dict[str, FieldRule]:

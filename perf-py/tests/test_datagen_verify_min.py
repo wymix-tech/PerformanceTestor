@@ -159,6 +159,33 @@ def test_verify_min_empty_tables_pass():
     assert report == {"passed": True, "checks": [], "sampleLimit": 200}
 
 
+def test_verify_min_row_count_baseline_delta_passes():
+    """目标库已有存量时，行数核对按本次新增行数（COUNT(*) - baseline）。"""
+    conn = _verify_db()
+    _seed(conn, user_rows=30, order_orphan=0)
+    for _ in range(10):
+        conn.execute("INSERT INTO perf_user (status) VALUES ('ACTIVE')")
+    conn.commit()
+    report = verify_min(conn, MysqlLikeDialect(), [
+        {"table": "perf_user", "expected": 10, "baseline": 30},
+    ])
+    rc = report["checks"][0]
+    assert report["passed"] is True
+    assert rc["mode"] == "increment" and rc["baseline"] == 30
+    assert rc["actual"] == 10 and rc["actualTotal"] == 40
+
+
+def test_verify_min_row_count_baseline_delta_fails():
+    conn = _verify_db()
+    _seed(conn, user_rows=30, order_orphan=0)
+    report = verify_min(conn, MysqlLikeDialect(), [
+        {"table": "perf_user", "expected": 10, "baseline": 35},
+    ])
+    rc = report["checks"][0]
+    assert report["passed"] is False
+    assert rc["mode"] == "increment" and rc["actual"] == 0 and rc["ok"] is False
+
+
 # ---------------------------------------------------------------- 服务挂钩
 
 
@@ -180,15 +207,38 @@ class StubEngine:
         return r
 
 
-def _svc_with_sqlite(rows_in_table: int, tmp_path):
+class InsertingStubEngine(StubEngine):
+    """在目标 sqlite 文件库中按比例插入测试行，模拟真实灌数后的增量行数。"""
+
+    def __init__(self, db_file, insert_factor: float = 1.0):
+        self.db_file = db_file
+        self.insert_factor = insert_factor
+
+    def execute(self, spec, listener=None):
+        if not spec.dry_run:
+            conn = sqlite3.connect(str(self.db_file))
+            try:
+                for t in spec.tables:
+                    rows = int(t.row_count * self.insert_factor)
+                    for _ in range(rows):
+                        conn.execute("INSERT INTO user (status) VALUES ('ACTIVE')")
+                conn.commit()
+            finally:
+                conn.close()
+        return super().execute(spec, listener)
+
+
+def _svc_with_sqlite(rows_in_table: int, tmp_path, insert_factor: float | None = None):
     factory = sessionmaker(bind=make_engine("sqlite:///:memory:"), expire_on_commit=False)
     import server.collector_repo  # noqa: F401
     import server.datagen_repo  # noqa: F401
     Base.metadata.create_all(factory.kw["bind"])
-    svc = DatagenWriteService(DatagenRepository(factory), engine=StubEngine(),
-                              executor=SyncExecutor())
     # 文件库：水位捕获/范围落库/验证各自建连（对齐生产每步独立连接语义）
     db_file = tmp_path / "target.db"
+    engine = (InsertingStubEngine(db_file, insert_factor)
+              if insert_factor is not None else StubEngine())
+    svc = DatagenWriteService(DatagenRepository(factory), engine=engine,
+                              executor=SyncExecutor())
     conn = sqlite3.connect(str(db_file))
     conn.execute("CREATE TABLE user (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                  "status VARCHAR(16))")
@@ -204,7 +254,8 @@ def _sqlite_connect(db_file):
 
 
 def test_verify_hook_report_passed_and_status_finished(monkeypatch, tmp_path):
-    svc, db_file = _svc_with_sqlite(rows_in_table=10, tmp_path=tmp_path)
+    svc, db_file = _svc_with_sqlite(rows_in_table=10, tmp_path=tmp_path,
+                                    insert_factor=1.0)
     monkeypatch.setattr(dsvc, "_connect", _sqlite_connect(db_file))
     data = svc.create_and_run({"dbUrl": "jdbc:mysql://stub/db",
                                "tableName": "user", "rowCount": 10})
@@ -213,12 +264,14 @@ def test_verify_hook_report_passed_and_status_finished(monkeypatch, tmp_path):
     detail = json.loads(task.detail_json)
     assert detail["verifyMin"]["passed"] is True
     rc = next(c for c in detail["verifyMin"]["checks"] if c["kind"] == "row_count")
-    assert rc["expected"] == 10 and rc["actual"] == 10
+    assert rc["mode"] == "increment" and rc["baseline"] == 10
+    assert rc["expected"] == 10 and rc["actual"] == 10 and rc["actualTotal"] == 20
 
 
 def test_verify_hook_failure_marks_status_explicitly(monkeypatch, tmp_path):
     """行数不符：verifyMin.passed=false + 状态 finished_verify_failed（不伪装成功）。"""
-    svc, db_file = _svc_with_sqlite(rows_in_table=5, tmp_path=tmp_path)
+    svc, db_file = _svc_with_sqlite(rows_in_table=5, tmp_path=tmp_path,
+                                    insert_factor=0.5)
     monkeypatch.setattr(dsvc, "_connect", _sqlite_connect(db_file))
     data = svc.create_and_run({"dbUrl": "jdbc:mysql://stub/db",
                                "tableName": "user", "rowCount": 10})
@@ -228,6 +281,7 @@ def test_verify_hook_failure_marks_status_explicitly(monkeypatch, tmp_path):
     detail = json.loads(task.detail_json)
     assert detail["verifyMin"]["passed"] is False
     rc = next(c for c in detail["verifyMin"]["checks"] if c["kind"] == "row_count")
+    assert rc["mode"] == "increment" and rc["baseline"] == 5
     assert rc["expected"] == 10 and rc["actual"] == 5 and rc["ok"] is False
 
 
@@ -263,10 +317,13 @@ def test_verify_hook_skipped_for_dry_run(monkeypatch, tmp_path):
     assert "verifyMin" not in detail and "dryRunReport" in detail
 
 
-@pytest.mark.parametrize("rows,expected,status", [(10, 10, "finished"),
-                                                  (5, 10, "finished_verify_failed")])
-def test_verify_status_matrix(monkeypatch, tmp_path, rows, expected, status):
-    svc, db_file = _svc_with_sqlite(rows_in_table=rows, tmp_path=tmp_path)
+@pytest.mark.parametrize("rows,expected,insert_factor,status", [
+    (10, 10, 1.0, "finished"),
+    (5, 10, 0.5, "finished_verify_failed")])
+def test_verify_status_matrix(monkeypatch, tmp_path, rows, expected, insert_factor,
+                              status):
+    svc, db_file = _svc_with_sqlite(rows_in_table=rows, tmp_path=tmp_path,
+                                    insert_factor=insert_factor)
     monkeypatch.setattr(dsvc, "_connect", _sqlite_connect(db_file))
     data = svc.create_and_run({"dbUrl": "jdbc:mysql://stub/db",
                                "tables": [{"tableName": "user",

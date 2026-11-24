@@ -53,6 +53,12 @@ from pathlib import Path
 import ptde
 from ptde.adapters.base import BulkLoadUnsupported
 from ptde.adapters.bulkload.fallback import DbApiBatchInsertLoader, FallbackLoader
+from ptde.generator.deps import (
+    EntityCycleError,
+    build_entity_deps,
+    is_self_loop,
+    topo_groups,
+)
 from ptde.generator.partitioner import build_sharding_plan
 from ptde.generator.samplers.ref import warn_hot_row_share
 from ptde.generator.staging import StagingArea, default_staging_root
@@ -163,7 +169,10 @@ def normalize_relations(
     - 四元组完整性、标识符合法性、子/父表与列均在实体映射内逐项校验
       （缺失/不一致显式失败，不静默降级为空集）；
     - 子列不得为该实体的 planned_range 主键列（pk_columns，缺省 ``id``；
-      主键区间语义列不承载外键）。
+      主键区间语义列不承载外键）；
+    - 父列例外：父实体主键若由 planned_range 接管（含自增主键——库侧自动
+      分配，字段清单按 legacy 口径排除该列），允许不在映射字段清单内，
+      否则「子表在任务内、父表自增主键」的 DB_FK 会被误判为清单不一致。
     """
     normalized: list[RelationModel] = []
     for r in list(relations or []):
@@ -179,7 +188,9 @@ def normalize_relations(
             if m is None:
                 raise OfflinePipelineError(
                     f"关系引用未映射实体 {table!r}（EntityMapping 缺失，显式失败）")
-            if col not in m.columns:
+            parent_pk_exempt = (role == "父" and col == (
+                (pk_by_entity or {}).get(table, "id")))
+            if col not in m.columns and not parent_pk_exempt:
                 raise OfflinePipelineError(
                     f"关系列 {table}.{col} 不在实体映射字段中（清单不一致，显式失败）")
         pk_col = (pk_by_entity or {}).get(rel.child_table, "id")
@@ -464,7 +475,7 @@ class OfflinePipeline:
         shards_loaded = 0
         entities_loaded: list[str] = []
         strategies_used: list[str] = []
-        for step in sorted(self._mapping):
+        for step in self._load_order():
             self._check_cancel(cancel_event, instance_id,
                                f"装载步骤间（实体 {step} 前）")
             sub = orchestrator.run([step])
@@ -480,6 +491,25 @@ class OfflinePipeline:
             "entities_loaded": entities_loaded,
             "strategies_used": strategies_used,
         }
+
+    def _load_order(self) -> list[str]:
+        """装载序（依赖序）：父实体先于子实体（声明关系 child → parent，
+        Tarjan SCC 产出顺序父组先于子组——``deps.topo_groups``，勿另起判定）。
+
+        - 无关系实体不在依赖图内 → 按字母序并入（取消安全点/确定性不变）；
+        - 环组（含自引用）显式失败（``EntityCycleError``）：环安全装载须走
+          cycle_policy 两阶段通道（编排器支持，但本执行体未注入环列投影/
+          回填提供方），按字母序静默装载只会在 FK 校验处伪装性失败——
+          此前子表字母序先于父表装载即触发 1452（perf_order/perf_user 实例）。
+        """
+        deps = build_entity_deps(self._relations)
+        order: list[str] = []
+        for group in topo_groups(deps):
+            if len(group) > 1 or is_self_loop(group[0], deps):
+                raise EntityCycleError(group)
+            if group[0] in self._mapping:
+                order.append(group[0])
+        return order + [e for e in sorted(self._mapping) if e not in order]
 
     # ------------------------------------------------------------ verify
 

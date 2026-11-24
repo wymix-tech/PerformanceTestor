@@ -105,6 +105,49 @@ def test_spec_from_request_tables_form():
     assert spec.tables[1].fields["status"].value == "PAID"
 
 
+def test_spec_from_request_rule_json_per_table_rules(tmp_path=None):
+    """表组 + ruleJson {"tables": {...}} 按表规则：同名列（status）在不同表
+    可有不同规则；未提及的表走全局 {"fields"} 缺省；显式 tables[].fields 优先。"""
+    rule = {
+        "tables": {
+            "perf_user": {"fields": {
+                "status": {"type": "enum", "values": ["ACTIVE", "BANNED"],
+                           "weights": [90, 10]}}},
+            "perf_order": {"fields": {
+                "status": {"type": "enum", "values": ["PENDING", "PAID"],
+                           "weights": [20, 80]}}},
+        },
+        "fields": {"remark": {"type": "fixed", "value": "demo"}},
+    }
+    spec = spec_from_request({
+        "tables": [{"tableName": "perf_user", "rowCount": 10},
+                   {"tableName": "perf_order", "rowCount": 20},
+                   {"tableName": "perf_log", "rowCount": 5}],
+        "ruleJson": json.dumps(rule),
+    })
+    # 同名列 status：两表各自规则（值域不同）
+    u, o = spec.tables[0], spec.tables[1]
+    assert u.fields["status"].values == ["ACTIVE", "BANNED"]
+    assert o.fields["status"].values == ["PENDING", "PAID"]
+    # 全局缺省作用于未提及表
+    assert spec.tables[2].fields["remark"].value == "demo"
+    assert "status" not in spec.tables[2].fields
+
+
+def test_spec_from_request_tables_fields_explicit_overrides_rule_json():
+    """tables[].fields 显式规则优先于 ruleJson（按表/全局缺省均不覆盖）。"""
+    rule = {"tables": {"perf_order": {"fields": {
+        "status": {"type": "fixed", "value": "X"}}}},
+        "fields": {"amount": {"type": "range", "min": 1, "max": 2}}}
+    spec = spec_from_request({
+        "tables": [{"tableName": "perf_order", "rowCount": 10,
+                    "fields": {"status": {"type": "fixed", "value": "PAID"}}}],
+        "ruleJson": json.dumps(rule),
+    })
+    assert spec.tables[0].fields["status"].value == "PAID"
+    assert "amount" not in spec.tables[0].fields, "显式 fields 不被全局缺省扩充"
+
+
 def test_spec_from_request_legacy_single_table():
     spec = spec_from_request({
         "tableName": "perf_order", "rowCount": 10,
