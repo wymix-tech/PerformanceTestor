@@ -146,7 +146,7 @@ sql/init.sql、init_empty.sql                    # [MODIFY] data_gen_task 三列
 perf-web/src/api/index.ts + views/StressCenterView.vue  # [MODIFY] 表组/规则编辑/建议采纳/试运行按钮/警告
 perf-demo/.../DemoDataInitializer.java          # [MODIFY] 幂等补 perf_order FK 约束与列注释
 pom.xml（父）                                    # [MODIFY] modules+dependencyManagement（javaparser/jackson-bom）
-docs/plans/datagen-optimization_交接.md          # [MODIFY] 更新任务状态与模块架构说明
+docs/archive/ptde-handoff/datagen-optimization_交接.md  # [MODIFY] 更新任务状态与模块架构说明（已归档）
 ```
 
 ## 关键代码结构

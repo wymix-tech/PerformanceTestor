@@ -3,7 +3,7 @@
 > 交接日期：2026-08-31（第四轮更新 / 最终版）
 > 前任执行：AI 编码助手（CodeBuddy / Hy4）
 > 交接范围：改进计划 M0–M6 **全部完成**（16/16 任务），已通过真实 MySQL + PostgreSQL 端到端验证
-> 计划文档：`docs/plans/preformance-imporvement-plan-detail.md`（含勾选进度，本交接是其配套执行指南）
+> 计划文档：`docs/plans/performance-improvement-plan-detail.md`（含勾选进度，本交接是其配套执行指南）
 > 基线提交：`d49721f`（M3 完成）；第二轮提交见文末「本轮变更」
 
 ---
@@ -382,19 +382,19 @@ export JMETER_HOME=/opt/jmeter          # JMeter 引擎（可选）
 
 | 文档 | 内容 |
 |---|---|
-| `docs/plans/preformance-imporvement-plan-detail.md` | **总计划**（产品概述/技术栈/六里程碑方案/关键文件清单/TODOS 勾选进度）——执行新任务前先读对应小节 |
-| `docs/plans/performance-improvement-plan.md` | 计划固化版（里程碑任务表/技术约束防回归/关键文件变更清单） |
+| `docs/plans/performance-improvement-plan-detail.md` | **总计划**（产品概述/技术栈/六里程碑方案/关键文件清单/TODOS 勾选进度）——执行新任务前先读对应小节 |
+| `docs/archive/performance-improvement-plan.md` | 计划固化版（历史归档，里程碑任务表/技术约束/关键文件变更清单） |
 | `docs/handoff/environment-setup.md` | 工具链重装指南（JDK/Maven/Maven 镜像，容器重建后用） |
-| `docs/plans/datagen-optimization_交接.md` | 上一轮交接（灌数引擎三任务：联表/枚举/魔法值，已全部实施） |
+| `docs/archive/ptde-handoff/datagen-optimization_交接.md` | 上一轮交接（已归档，灌数引擎三任务：联表/枚举/魔法值，已全部实施） |
 | `docs/design/architecture.md` | 平台整体架构（部署拓扑/模块职责/数据流） |
 | `docs/reports/` | 各子系统设计定稿（压测引擎/agent/datagen/AI 编排等 12 篇） |
 | `docs/issues/` | 已知问题与设计决策记录 |
-| `docs/plans/artifacts/` | 过程产物（验收记录/回归记录/工具链安装记录等） |
+| `docs/artifacts/` | 过程产物（验收记录/回归记录/工具链安装记录等） |
 
 ## 7. 交接确认清单
 
 接手后建议按顺序完成：
-1. ☑ 读本文档 + `docs/plans/preformance-imporvement-plan-detail.md`
+1. ☑ 读本文档 + `docs/plans/performance-improvement-plan-detail.md`
 2. ☑ 验证环境：`mvn -v`、`node -v`、`cd perf-web && npx vue-tsc -b`（全过说明基线完好）
 3. ☑ 跑一次 `mvn test` 确认 144 个测试全绿
 4. ☑ 完成 m4-ai-upgrade 与 m4-fix-verify（按 4.1 / 4.2 开发指导）
@@ -414,7 +414,7 @@ perf-server .../capacity/CapacityResult.java               # [MODIFY] +model/r2/
                                                            #          +FitModel/FittedPoint/ConfidenceInterval，CurvePoint +p50Ms/totalRequests
 perf-server/src/test/.../capacity/CapacityAnalyzerScienceTest.java  # [NEW] 14 单测
 perf-web/src/components/stress/StressReport.vue            # [MODIFY] 模型卡片 + 置信区间表 + 拟合曲线图
-docs/plans/preformance-imporvement-plan-detail.md          # 进度标记（M4 3/3）
+docs/plans/performance-improvement-plan-detail.md          # 进度标记（M4 3/3）
 docs/handoff/handoff-main.md                               # 本交接更新
 ```
 
@@ -453,7 +453,7 @@ perf-web/src/views/AiAssistantView.vue                    # [MODIFY] SSE 流式�
 perf-web/src/views/OptimizeView.vue                       # [MODIFY] 验证修复按钮与结果卡片
 perf-web/src/api/index.ts                                 # [MODIFY] +aiApi.knowledge / verifyIssue / bindIssueStress
 perf-web/src/utils/format.ts                              # [MODIFY] +fixed/resolved 状态样式
-docs/plans/preformance-imporvement-plan-detail.md         # 进度标记
-docs/plans/performance-improvement-plan.md                # 进度标记
+docs/plans/performance-improvement-plan-detail.md         # 进度标记
+docs/archive/performance-improvement-plan.md              # 进度标记（已归档）
 docs/handoff/handoff-main.md                              # 本交接更新
 ```

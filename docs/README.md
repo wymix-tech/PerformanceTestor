@@ -23,7 +23,7 @@
 ├── sql/            # init.sql（含演示数据）/ init_empty.sql（空表，脚本默认）
 ├── scripts/        # build.sh / start-all.sh / start-server.sh / start-agent.sh /
 │                   #   perf-gate.sh(CI 门禁) / verify-datagen-*{,-py}-*.sh / capture-contract.sh
-└── docs/           # 本文档 + design / handoff / plans / reports / issues / artifacts 归档
+└── docs/           # 本文档 + design / plans / archive / handoff / reports / issues / artifacts
 ```
 
 ## 快速开始（单机演示模式）
@@ -187,17 +187,18 @@ perf agent run "对 demo 场景压测并归因 P95 恶化根因" -r pipeline
 
 契约纪律（绞杀者模式）：`tests/contract/` 黑盒契约是迁移切流门禁——先契约后切流，`scripts/capture-contract.sh` 可对运行中的 server 重新捕获 golden。
 
-## 归档约定
+## 文档目录职责
 
-开发过程中的全部中间产出物归档于 `docs/`：
+`docs/` 下各目录职责如下，设计口径以 `design/` 为唯一权威基准：
 
-| 目录 / 文档 | 说明 |
+| 目录 / 文档 | 职责 |
 | ---- | ---- |
-| [design/](design/) | 需求 / 架构 / 技术方案 / 数据库设计（部分描述 Java 时代架构，属历史归档） |
-| [handoff/](handoff/) | 交接文档（Java 时代为主，历史归档） |
-| [plans/](plans/) | 迭代计划与优化方案（PTDE R0–R7 / B4~B7 系列交接等，历史过程文档） |
+| [design/](design/) | **权威设计基准**：需求 / 架构 / 技术方案 / 数据库设计。设计决策以此为准，其他目录不再重复维护设计结论 |
+| [plans/](plans/) | **活跃方案**：当前仍在执行或总览级方案（PTDE 总方案 / 落地与实施路线 / 运维加固 / 改进总计划） |
+| [archive/](archive/) | **历史归档**：已完结阶段的历史交接记录与已落地/过时方案（`ptde-handoff/` 等），不再维护 |
+| [handoff/](handoff/) | 早期工作交接与环境搭建参考（Java 时代为主，历史资料） |
 | [reports/](reports/) | 性能检测报告归档 |
 | [review/](review/) | 架构/闭环评审报告（如 closed-loop-audit：main 分支性能测试闭环诊断与改进方案） |
 | [issues/](issues/) / [artifacts/](artifacts/) | 性能问题分析 / 其他中间产物 |
 
-> Java 时代历史文档（含 perf-server / perf-datagen 相关 design、handoff、plans）按原样保留供追溯；理解当前架构以本 README 与 `perf-py/README.md` 为准。
+> 历史交接与已落地方案已归入 `archive/` 供追溯；理解当前架构以 `design/`、本 README 与 `perf-py/README.md` 为准。

@@ -129,7 +129,7 @@ perf-py/tests/test_ptde_adapters_probe.py     # 9（§10.1 全集 + 未知降级
 perf-py/tests/test_ptde_adapters_bulkload.py  # 18（两通道可用性/装载/失败路径 + 流包装器）
 
 新建（文档）
-docs/plans/PTDE-B4.2交接文档-R4.2关系生成器泛型化.md  # 文档缺口归档
+docs/archive/ptde-handoff/PTDE-B4.2交接文档-R4.2关系生成器泛型化.md  # 文档缺口归档
   （本批曾推定补写；B4.2 原始交接随后归档并以其为准——遗留问题 1/3 的
   R5 侧承接见本文件 §2 勘误与 §7 衔接）
 
